@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "last_updated_by": "human",
+  "permissions": {
+    "can_create_ephemeral_agents": true,
+    "can_create_persistent_agents": false,
+    "can_self_modify": false,
+    "can_store_secrets": false,
+    "can_pull_ollama_models": false,
+    "can_execute_code": true,
+    "can_write_files": true,
+    "can_send_notifications": true,
+    "can_access_internet": true,
+    "can_place_real_orders": false
+  },
+  "evolvable_zone_paths": [
+    "tools/",
+    "agents/",
+    "data/",
+    "tests/",
+    "notifications/"
+  ],
+  "immutable_zone_paths": [
+    "core/",
+    "api/",
+    "memory/working.py",
+    "memory/episodic.py",
+    "memory/persistent.py",
+    "self_modify/updater.py",
+    "self_modify/code_tester.py",
+    "SPEC.md",
+    "MORGOTH_PERMS.json",
+    ".env"
+  ],
+  "notification_levels": {
+    "INFO": [
+      "ui"
+    ],
+    "WARNING": [
+      "ui",
+      "log"
+    ],
+    "CRITICAL": [
+      "ui",
+      "log",
+      "telegram"
+    ]
+  },
+  "task_limits": {
+    "max_concurrent_agents": 3,
+    "max_recurring_tasks": 10
+  }
+}
