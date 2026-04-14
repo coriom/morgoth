@@ -3,8 +3,8 @@
   "last_updated_by": "human",
   "permissions": {
     "can_create_ephemeral_agents": true,
-    "can_create_persistent_agents": false,
-    "can_self_modify": false,
+    "can_create_persistent_agents": true,
+    "can_self_modify": true,
     "can_store_secrets": false,
     "can_pull_ollama_models": false,
     "can_execute_code": true,
