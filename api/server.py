@@ -9,7 +9,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.agent_manager import AgentManager
-from api.routes import admin, agents, brain, chat, market
+from api.routes import admin, agents, brain, chat, consciousness, evolution, market, objectives
 from api.ws.handler import InboundWebSocketMessage, WebSocketManager
 from core.brain import Brain
 from core.config import AppConfig, load_config
@@ -20,6 +20,9 @@ from memory.episodic import EpisodicMemory
 from memory.persistent import PersistentMemory
 from notifications.telegram import TelegramNotifier
 from tools.agent_control import CreateAgentTool
+from tools.analysis.technical import TechnicalAnalysisTool
+from tools.connectors.fred import FredSeriesObservationsTool, FredSeriesSearchTool
+from tools.connectors.reddit import RedditSearchTool, RedditSubredditPostsTool
 from tools.code_executor import ExecutePythonTool
 from tools.data_feeds.crypto import GetCryptoHistoryTool, GetCryptoPriceTool
 from tools.data_feeds.news import GetNewsTool
@@ -46,6 +49,11 @@ def build_tool_router(
     router.register(GetCryptoPriceTool(config, persistent_memory))
     router.register(GetCryptoHistoryTool(config))
     router.register(GetNewsTool(config))
+    router.register(FredSeriesSearchTool(config))
+    router.register(FredSeriesObservationsTool(config))
+    router.register(RedditSearchTool(config))
+    router.register(RedditSubredditPostsTool(config))
+    router.register(TechnicalAnalysisTool())
     router.register(CreateAgentTool(config, agent_manager))
     router.register(NotifyTool(config, notifier))
     router.register(RememberTool(episodic_memory))
@@ -109,6 +117,9 @@ app.include_router(chat.router)
 app.include_router(agents.router)
 app.include_router(market.router)
 app.include_router(brain.router)
+app.include_router(consciousness.router)
+app.include_router(objectives.router)
+app.include_router(evolution.router)
 app.include_router(admin.router)
 
 

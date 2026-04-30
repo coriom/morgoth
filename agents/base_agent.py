@@ -57,8 +57,13 @@ class BaseAgent(BaseModel, ABC):
     def to_dict(self) -> dict[str, Any]:
         """Return a serializable representation for API and logging."""
 
-        payload = self.model_dump()
-        payload["agent_type"] = self.agent_type.value
-        payload["status"] = self.status.value
-        payload["created_at"] = self.created_at.isoformat()
-        return payload
+        return {
+            "agent_id": self.agent_id,
+            "name": self.name,
+            "agent_type": self.agent_type.value,
+            "status": self.status.value,
+            "model": self.model,
+            "tools": list(self.tools),
+            "created_at": self.created_at.isoformat(),
+            "user_id": self.user_id,
+        }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
 
 import httpx
@@ -36,6 +37,20 @@ class ChatMessage(BaseModel):
     name: str | None = None
     tool_call_id: str | None = Field(default=None, alias="tool_call_id")
     tool_calls: list[OllamaToolCall] = Field(default_factory=list)
+
+    def to_ollama_dict(self) -> dict[str, Any]:
+        """Serialize the message in the subset of fields Ollama expects."""
+
+        payload: dict[str, Any] = {"role": self.role}
+        if self.content is not None:
+            payload["content"] = self.content
+        if self.name is not None:
+            payload["name"] = self.name
+        if self.tool_call_id is not None:
+            payload["tool_call_id"] = self.tool_call_id
+        if self.tool_calls:
+            payload["tool_calls"] = [tool_call.model_dump(exclude_none=True) for tool_call in self.tool_calls]
+        return payload
 
 
 class ChatResponse(BaseModel):
@@ -114,7 +129,7 @@ class OllamaLLMClient:
         selected_model = model or self._config.ollama_primary_model
         payload: dict[str, Any] = {
             "model": selected_model,
-            "messages": [message.model_dump(by_alias=True, exclude_none=True) for message in messages],
+            "messages": [message.to_ollama_dict() for message in messages],
             "stream": stream,
         }
         if tools:
@@ -122,9 +137,17 @@ class OllamaLLMClient:
         if options:
             payload["options"] = options
 
-        logger.debug("Sending chat request to Ollama model '{}'", selected_model)
+        logger.debug("Sending chat request to Ollama: {}", json.dumps(payload, default=str))
         response = await self._client.post("/api/chat", json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            logger.error(
+                "Ollama chat request failed with status {} and body: {}",
+                response.status_code,
+                response.text,
+            )
+            raise
         raw_response = response.json()
         return self._normalize_response(raw_response)
 

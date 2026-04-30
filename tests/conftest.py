@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,11 +26,20 @@ from memory.episodic import QueryMatch
 class DummyResponse:
     """Minimal async HTTP response test double."""
 
-    def __init__(self, payload: dict[str, Any] | None = None, text: str = "") -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any] | None = None,
+        text: str = "",
+        *,
+        status_code: int = 200,
+        should_raise: bool = False,
+    ) -> None:
         """Store the payload returned by the double."""
 
         self._payload = payload or {}
         self.text = text
+        self.status_code = status_code
+        self._should_raise = should_raise
 
     def json(self) -> dict[str, Any]:
         """Return the configured JSON payload."""
@@ -38,6 +48,11 @@ class DummyResponse:
 
     def raise_for_status(self) -> None:
         """Simulate a successful HTTP response."""
+
+        if self._should_raise:
+            request = httpx.Request("GET", "https://api.coingecko.com/api/v3/simple/price")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("dummy status error", request=request, response=response)
 
 
 class DummyHTTPClient:
@@ -82,7 +97,15 @@ class DummyPersistentMemory:
 class DummyAgentManager:
     """Minimal agent manager test double."""
 
-    async def create(self, name: str, task: str, agent_type: str, tools: list[str], user_id: str) -> dict[str, Any]:
+    async def create(
+        self,
+        name: str,
+        task: str,
+        agent_type: str,
+        model: str | None,
+        tools: list[str],
+        user_id: str,
+    ) -> dict[str, Any]:
         """Return a predictable created agent payload."""
 
         return {
@@ -90,6 +113,7 @@ class DummyAgentManager:
             "name": name,
             "task": task,
             "agent_type": agent_type,
+            "model": model or "llama3.1:8b",
             "tools": tools,
             "user_id": user_id,
         }

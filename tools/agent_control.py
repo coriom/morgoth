@@ -11,7 +11,15 @@ from tools.base_tool import BaseTool
 class AgentCreator(Protocol):
     """Protocol describing the subset of agent manager functionality needed by the tool."""
 
-    async def create(self, name: str, task: str, agent_type: str, tools: list[str], user_id: str) -> dict[str, Any]:
+    async def create(
+        self,
+        name: str,
+        task: str,
+        agent_type: str,
+        model: str | None,
+        tools: list[str],
+        user_id: str,
+    ) -> dict[str, Any]:
         """Create a new agent and optionally start it."""
 
 
@@ -26,6 +34,7 @@ class CreateAgentTool(BaseTool):
             "name": {"type": "string"},
             "task": {"type": "string"},
             "agent_type": {"type": "string", "enum": ["ephemeral", "persistent"], "default": "ephemeral"},
+            "model": {"type": "string"},
             "tools": {"type": "array", "items": {"type": "string"}},
             "user_id": {"type": "string", "default": "default"},
         },
@@ -51,6 +60,7 @@ class CreateAgentTool(BaseTool):
             name=str(kwargs["name"]),
             task=str(kwargs["task"]),
             agent_type=agent_type,
+            model=str(kwargs["model"]) if kwargs.get("model") else None,
             tools=list(kwargs.get("tools", [])),
             user_id=str(kwargs.get("user_id", "default")),
         )

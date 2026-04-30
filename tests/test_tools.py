@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from tools.agent_control import CreateAgentTool
@@ -95,6 +97,73 @@ async def test_get_crypto_price_tool_parses_payload(
     assert persistent_memory.snapshots
 
 
+async def test_get_crypto_price_tool_uses_cache_within_ttl(
+    app_config,
+    DummyPersistentMemoryFixture,
+    DummyHTTPClientFixture,
+    DummyResponseFixture,
+) -> None:
+    """Crypto price tool should reuse the cached CoinGecko result within 60 seconds."""
+
+    persistent_memory = DummyPersistentMemoryFixture()
+    client = DummyHTTPClientFixture(
+        DummyResponseFixture(
+            {
+                "bitcoin": {
+                    "usd": 100000.0,
+                    "usd_24h_change": 1.5,
+                    "usd_24h_vol": 12345.0,
+                }
+            }
+        )
+    )
+    tool = GetCryptoPriceTool(app_config, persistent_memory=persistent_memory, client=client)
+
+    first = await tool.execute(symbol="bitcoin")
+    second = await tool.execute(symbol="bitcoin")
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["metadata"]["cached"] is True
+    assert len(client.calls) == 1
+
+
+async def test_get_crypto_price_tool_returns_cached_data_on_rate_limit(
+    app_config,
+    DummyPersistentMemoryFixture,
+    DummyHTTPClientFixture,
+    DummyResponseFixture,
+) -> None:
+    """Crypto price tool should fall back to cached data when CoinGecko returns 429."""
+
+    persistent_memory = DummyPersistentMemoryFixture()
+    warm_client = DummyHTTPClientFixture(
+        DummyResponseFixture(
+            {
+                "bitcoin": {
+                    "usd": 100000.0,
+                    "usd_24h_change": 1.5,
+                    "usd_24h_vol": 12345.0,
+                }
+            }
+        )
+    )
+    tool = GetCryptoPriceTool(app_config, persistent_memory=persistent_memory, client=warm_client)
+    await tool.execute(symbol="bitcoin")
+    tool._cache["bitcoin"].payload["metadata"]["fetched_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=61)
+    ).isoformat()
+
+    rate_limited_client = DummyHTTPClientFixture(DummyResponseFixture(status_code=429, should_raise=True))
+    tool._client = rate_limited_client  # type: ignore[assignment]
+
+    result = await tool.execute(symbol="bitcoin")
+
+    assert result["success"] is True
+    assert result["metadata"]["cached"] is True
+    assert result["metadata"]["rate_limited"] is True
+
+
 async def test_get_crypto_history_tool_returns_prices(app_config, DummyHTTPClientFixture, DummyResponseFixture) -> None:
     """Crypto history tool should return normalized price points."""
 
@@ -122,9 +191,10 @@ async def test_create_agent_tool_delegates_to_manager(app_config, DummyAgentMana
     """Create agent tool should delegate to the agent manager."""
 
     tool = CreateAgentTool(app_config, DummyAgentManagerFixture())
-    result = await tool.execute(name="researcher", task="summarize")
+    result = await tool.execute(name="researcher", task="summarize", model="llama3:8b")
     assert result["success"] is True
     assert result["result"]["agent_id"] == "agent-123"
+    assert result["result"]["model"] == "llama3:8b"
 
 
 async def test_notify_tool_sends_notification(app_config, DummyNotifierFixture) -> None:

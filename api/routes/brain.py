@@ -29,3 +29,14 @@ async def get_tasks(request: Request) -> dict[str, Any]:
     """Return scheduled tasks."""
 
     return {"items": await request.app.state.brain.get_tasks()}
+
+
+@router.get("/self-modifications")
+async def get_self_modifications(request: Request, limit: int = 100) -> dict[str, Any]:
+    """Return recent self-modification entries."""
+
+    rows = await request.app.state.persistent_memory.fetch(
+        "SELECT * FROM self_modifications ORDER BY timestamp DESC LIMIT $1",
+        limit,
+    )
+    return {"items": [dict(row) for row in rows]}

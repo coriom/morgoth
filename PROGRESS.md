@@ -7,10 +7,10 @@
 
 ## Current Status
 
-**Phase**: 2 — Self-Modification Engine + Robustness  
-**Overall**: Phase 1 stable, Phase 2 deliverables implemented  
-**Last updated**: 2026-04-14 by Codex  
-**Next action**: Human review Phase 2 implementation and verify live runtime behavior
+**Phase**: 3 — Intelligence Expansion  
+**Overall**: Phase 1 stable, Phase 2 implemented, Phase 2b backend endpoints complete, Phase 3 Steps 1-6 plus agent and tool-router registration complete  
+**Last updated**: 2026-04-28 by Codex — Phase 3 tools registered in runtime tool router bootstrap  
+**Next action**: Human review Phase 3 backend changes
 
 ---
 
@@ -132,6 +132,42 @@
 
 ---
 
+## Phase 2b — UI Refactor Backend Support
+
+| File | Status | Notes |
+|---|---|---|
+| `api/routes/consciousness.py` | ✅ Done | Added recent THOUGHT aggregation for clusters and concept co-occurrence graph |
+| `api/routes/objectives.py` | ✅ Done | Added objective list, create, and status-update endpoints backed by `core/objectives.py` |
+| `api/routes/evolution.py` | ✅ Done | Added growth metrics and cumulative timeline endpoints from PostgreSQL tables |
+| `api/server.py` | ✅ Done | Registered the new consciousness, objectives, and evolution routers |
+| `tests/test_phase2b_routes.py` | ✅ Done | Added targeted tests for cluster/concept/timeline aggregation helpers |
+
+---
+
+## Phase 3 — Intelligence Expansion
+
+| File | Status | Notes |
+|---|---|---|
+| `agents/research_agent.py` | ✅ Done | Deep research and synthesis agent with timeout degradation and UI task metadata |
+| `agents/sentiment_agent.py` | ✅ Done | News and social sentiment analysis agent with timeout degradation and UI task metadata |
+| `agents/macro_agent.py` | ✅ Done | Macro economic indicator agent backed by FRED tool context and UI task metadata |
+| `tools/connectors/fred.py` | ✅ Done | FRED series search and observations tools using `FRED_API_KEY` from environment |
+| `tools/connectors/reddit.py` | ✅ Done | Reddit public search and subreddit post tools |
+| `tools/analysis/technical.py` | ✅ Done | Local RSI, MACD, SMA, and EMA analysis tool |
+| `agents/agent_manager.py` | ✅ Done | Registers research, sentiment, and macro specialist agents without touching `core/` |
+| `api/server.py` | ✅ Done | Registers Phase 3 FRED, Reddit, and technical-analysis tools in `build_tool_router()` |
+| `tests/test_phase3_intelligence.py` | ✅ Done | Focused tests for specialist agent selection, FRED, Reddit, and TA tools |
+
+### Verification
+
+| Check | Status | Notes |
+|---|---|---|
+| `./.venv/bin/python -m pytest -q tests/test_phase3_intelligence.py` | ✅ | 8 passed |
+| `./.venv/bin/python -m compileall agents/research_agent.py agents/sentiment_agent.py agents/macro_agent.py agents/agent_manager.py tools/connectors/fred.py tools/connectors/reddit.py tools/analysis/technical.py tests/test_phase3_intelligence.py` | ✅ | All Phase 3 backend modules compile |
+| `python3 -m compileall core/tool_router.py` | ✅ | Tool router module compiles after registration pass; literal `python` executable is not present on this machine |
+
+---
+
 ## Bootstrap Checklist
 
 > To be completed by human before declaring Morgoth OPERATIONAL.
@@ -162,6 +198,12 @@
 | 2026-04-14 | `ui_widgets` table created during Phase 2 instead of waiting for Phase 5 | Root-level instructions required DB schema parity when introducing new tables |
 | 2026-04-14 | `SafeUpdater` rolls back immediately on failed pytest validation | Robustness-first requirement forbids leaving partially integrated code in place |
 | 2026-04-14 | Health monitor escalates repeated failures into monitoring objectives | Repeated faults should become tracked autonomous work, not only alerts |
+| 2026-04-15 | `GetCryptoPriceTool` now serves per-symbol cached prices for 60 seconds and reuses stale cache on CoinGecko 429s | The UI poll cadence was exhausting CoinGecko limits and the market route needed a stable last-known-data fallback |
+| 2026-04-15 | Agent creation accepts an optional `model` override | The API contract needed to accept the provided creation payload and return the actual model the UI should display |
+| 2026-04-16 | Consciousness topics are derived from recent THOUGHT log tokens instead of a stored topic field | Existing logs do not persist explicit topic metadata, so Step 1 aggregates from content while keeping the API contract stable |
+| 2026-04-17 | Ollama chat payloads now omit empty message fields and strip unsupported JSON Schema keywords from tool definitions | The local Ollama integration was rejecting tool-enabled requests with HTTP 400, and the safest contract is the minimal supported payload |
+| 2026-04-25 | Phase 3 tools were implemented but not registered in `core/tool_router.py` | The session hard rule forbids touching `core/`; runtime registration needs human approval or a later task that allows that file |
+| 2026-04-28 | Phase 3 tools are registered in `api/server.py` bootstrap | The existing runtime registration block is `build_tool_router()`, while `core/tool_router.py` only defines the registry class |
 
 ---
 
@@ -182,6 +224,13 @@
 | Issue | Status | Notes |
 |---|---|---|
 | Task `result` loaded from PostgreSQL as string `'null'` caused `Task` validation failure on startup | ✅ Resolved | Fixed task row normalization to deserialize JSON text and coerce `'null'` to `None` before building `Task` models |
+| CoinGecko `429 Too Many Requests` errors from `/api/market/prices` | ✅ Resolved | `GetCryptoPriceTool` now caches the last successful result per symbol for 60 seconds and returns cached data when CoinGecko rate-limits; `/api/market/prices` also catches `httpx.HTTPStatusError` and serves last known values |
+| Chat POST/UI payload mismatch and duplicate live-response risk | ✅ Resolved | UI chat sender now includes `user_id`, uses the websocket when connected, and falls back to REST only when needed; backend POST contract remains `{content, user_id}` returning `BrainResponse` |
+| Agent creation payload/response drift | ✅ Resolved | `POST /api/agents` now accepts optional `model` and returns the created agent shape the UI expects; the UI inserts the returned agent immediately instead of waiting for the next poll |
+| `GET /api/agents` raised `PydanticSerializationError` because runtime agent objects leaked `OllamaLLMClient` into API payloads | ✅ Resolved | `BaseAgent.to_dict()` now returns an explicit serializable DTO and no longer serializes subclass runtime dependencies |
+| Ollama `/api/chat` returned `400 Bad Request` for tool-enabled chat payloads | ✅ Resolved | Chat messages now serialize only supported fields, tool schemas are sanitized before dispatch, the exact payload is logged before send, and `Brain.process_message()` retries once without tools to isolate and bypass tool-schema rejections |
+| `python main.py` startup verification on this machine | ⚠️ Partial | The process reached `Waiting for application startup.` but did not bind port `8000` within the local timeout window, so live curl verification against the full app remains blocked by startup duration/dependencies |
+| Live verification of `curl http://localhost:8000/api/agents` and websocket chat response | ⚠️ Blocked by environment | After the fixes, `main.py` still stops at `Waiting for application startup.` on 2026-04-17 and never exposes port `8000`, so the requested end-to-end checks could not be completed in this session |
 
 ---
 
@@ -193,3 +242,8 @@
 |---|---|---|
 | Project init | Human | Repos created, SPEC.md written, environment set up |
 | 2026-04-14 | Codex | Implemented Phase 2 deliverables and added focused tests for self-modify components |
+| 2026-04-15 | Codex | Added CoinGecko caching/rate-limit fallback, aligned chat and agent creation API contracts, and verified targeted backend tests plus Python compilation for touched modules |
+| 2026-04-16 | Codex | Completed Phase 2b Step 1 by adding consciousness, objectives, and evolution endpoints plus focused backend aggregation tests |
+| 2026-04-17 | Codex | Fixed the `/api/agents` serialization boundary, hardened Ollama chat payload construction and fallback behavior, added focused regression tests in `tests/test_agents_and_llm.py`, and confirmed targeted tests/compilation pass; live port-8000 verification stayed blocked by startup |
+| 2026-04-25 | Codex | Completed Phase 3 backend Steps 1-6 and specialist agent registration: added research, sentiment, and macro agents; FRED, Reddit, and technical-analysis tools; and focused tests passing without live network calls |
+| 2026-04-28 | Codex | Registered Phase 3 FRED, Reddit, and technical-analysis tools in the runtime tool router bootstrap and verified `core/tool_router.py` compilation with `python3` and the project venv |

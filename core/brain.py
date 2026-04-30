@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -190,14 +191,27 @@ class Brain:
         )
 
         messages = [ChatMessage(role="user", content=content)]
-        response = await self._llm_client.chat(messages, tools=self._tool_router.get_schemas())
+        tool_schemas = self._tool_router.get_schemas()
+        try:
+            response = await self._llm_client.chat(messages, tools=tool_schemas)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 400 or not tool_schemas:
+                raise
+            logger.warning("Ollama rejected tool-enabled chat payload; retrying without tools")
+            response = await self._llm_client.chat(messages)
         tool_results: list[dict[str, Any]] = []
 
         if response.message.tool_calls:
+            messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=response.message.content,
+                    tool_calls=response.message.tool_calls,
+                )
+            )
             for tool_call in response.message.tool_calls:
                 tool_result = await self._tool_router.execute_tool(tool_call.function.name, tool_call.function.arguments)
                 tool_results.append({"tool": tool_call.function.name, "result": tool_result})
-                messages.append(ChatMessage(role="assistant", content=response.message.content, tool_calls=response.message.tool_calls))
                 messages.append(
                     ChatMessage(
                         role="tool",

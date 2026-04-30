@@ -9,30 +9,52 @@ from typing import Any
 from loguru import logger
 
 from agents.base_agent import AgentStatus, AgentType, BaseAgent
+from agents.macro_agent import MacroAgent
+from agents.research_agent import ResearchAgent
+from agents.sentiment_agent import SentimentAgent
 from core.config import AppConfig
 from core.llm_client import ChatMessage, OllamaLLMClient
 from memory.persistent import PersistentMemory
 
 
+SPECIALIST_AGENT_REGISTRY: dict[str, type[BaseAgent]] = {
+    "research": ResearchAgent,
+    "sentiment": SentimentAgent,
+    "macro": MacroAgent,
+}
+
+
 class ManagedAgent(BaseAgent):
     """Concrete agent managed by the phase 1 runtime."""
 
-    llm_client: OllamaLLMClient
+    llm_client: Any
+    current_task: str | None = None
+    last_error: str | None = None
+    specialization: str = "general"
 
     async def run(self, task: str) -> dict[str, Any]:
         """Run a single LLM call for the assigned task."""
 
         self.status = AgentStatus.RUNNING
-        response = await self.llm_client.chat(
-            [ChatMessage(role="user", content=task)],
-            model=self.model,
-        )
-        self.status = AgentStatus.COMPLETED if self.agent_type == AgentType.EPHEMERAL else AgentStatus.IDLE
-        return {
-            "agent_id": self.agent_id,
-            "message": response.message.content,
-            "tool_calls": [item.model_dump() for item in response.message.tool_calls],
-        }
+        self.current_task = task
+        self.last_error = None
+        try:
+            response = await self.llm_client.chat(
+                [ChatMessage(role="user", content=task)],
+                model=self.model,
+            )
+            self.status = AgentStatus.COMPLETED if self.agent_type == AgentType.EPHEMERAL else AgentStatus.IDLE
+            return {
+                "agent_id": self.agent_id,
+                "specialization": self.specialization,
+                "message": response.message.content,
+                "tool_calls": [item.model_dump() for item in response.message.tool_calls],
+            }
+        except Exception as exc:
+            self.status = AgentStatus.FAILED
+            self.last_error = str(exc)
+            logger.exception("General agent '{}' failed", self.agent_id)
+            raise
 
     async def pause(self) -> None:
         """Pause the agent."""
@@ -43,6 +65,20 @@ class ManagedAgent(BaseAgent):
         """Stop the agent."""
 
         self.status = AgentStatus.COMPLETED
+        self.current_task = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a serializable representation for API and UI consumers."""
+
+        payload = super().to_dict()
+        payload.update(
+            {
+                "current_task": self.current_task,
+                "last_error": self.last_error,
+                "specialization": self.specialization,
+            }
+        )
+        return payload
 
 
 class AgentManager:
@@ -54,7 +90,7 @@ class AgentManager:
         self._config = config
         self._llm_client = llm_client
         self._persistent_memory = persistent_memory
-        self._agents: dict[str, ManagedAgent] = {}
+        self._agents: dict[str, BaseAgent] = {}
         self._tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
     async def create(
@@ -62,6 +98,7 @@ class AgentManager:
         name: str,
         task: str,
         agent_type: str = "ephemeral",
+        model: str | None = None,
         tools: list[str] | None = None,
         user_id: str = "default",
     ) -> dict[str, Any]:
@@ -71,14 +108,17 @@ class AgentManager:
             raise RuntimeError("Maximum concurrent agents reached")
 
         enum_type = AgentType(agent_type)
-        agent = ManagedAgent(
+        agent_class = self._select_agent_class(name=name, task=task, tools=tools or [])
+        agent = agent_class(
             name=name,
             agent_type=enum_type,
-            model=self._config.choose_model_for_task("agent_subtask"),
+            model=model or self._config.choose_model_for_task("agent_subtask"),
             tools=tools or [],
             user_id=user_id,
             llm_client=self._llm_client,
         )
+        if hasattr(agent, "current_task"):
+            agent.current_task = task
         self._agents[agent.agent_id] = agent
         await self._persistent_memory.save_agent(agent.to_dict() | {"stopped_at": None})
         self._tasks[agent.agent_id] = asyncio.create_task(self._run_agent(agent, task))
@@ -118,7 +158,7 @@ class AgentManager:
         logger.info("Stopped agent '{}'", agent_id)
         return True
 
-    async def _run_agent(self, agent: ManagedAgent, task: str) -> dict[str, Any]:
+    async def _run_agent(self, agent: BaseAgent, task: str) -> dict[str, Any]:
         """Run an agent task and persist the final state."""
 
         try:
@@ -134,7 +174,27 @@ class AgentManager:
             logger.exception("Agent '{}' failed", agent.agent_id)
             raise
 
-    def _require_agent(self, agent_id: str) -> ManagedAgent:
+    def _select_agent_class(self, *, name: str, task: str, tools: list[str]) -> type[BaseAgent]:
+        """Return the registered agent implementation for the requested mission."""
+
+        explicit = " ".join([name, *tools]).lower()
+        if "research" in explicit or "synthesis" in explicit:
+            return SPECIALIST_AGENT_REGISTRY["research"]
+        if "sentiment" in explicit or "reddit" in explicit or "news" in explicit:
+            return SPECIALIST_AGENT_REGISTRY["sentiment"]
+        if "macro" in explicit or "fred" in explicit or "economic" in explicit:
+            return SPECIALIST_AGENT_REGISTRY["macro"]
+
+        haystack = " ".join([name, task, *tools]).lower()
+        if "sentiment" in haystack or "reddit" in haystack or "news" in haystack:
+            return SPECIALIST_AGENT_REGISTRY["sentiment"]
+        if "macro" in haystack or "fred" in haystack or "economic" in haystack:
+            return SPECIALIST_AGENT_REGISTRY["macro"]
+        if "research" in haystack or "synthesis" in haystack:
+            return SPECIALIST_AGENT_REGISTRY["research"]
+        return ManagedAgent
+
+    def _require_agent(self, agent_id: str) -> BaseAgent:
         """Return an existing agent or raise an error."""
 
         agent = self._agents.get(agent_id)

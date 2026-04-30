@@ -17,6 +17,7 @@ class AgentCreateRequest(BaseModel):
     name: str
     task: str
     agent_type: str = "ephemeral"
+    model: str | None = None
     tools: list[str] = Field(default_factory=list)
     user_id: str = "default"
 
@@ -37,6 +38,7 @@ async def create_agent(payload: AgentCreateRequest, request: Request) -> dict[st
         name=payload.name,
         task=payload.task,
         agent_type=payload.agent_type,
+        model=payload.model,
         tools=payload.tools,
         user_id=payload.user_id,
     )
