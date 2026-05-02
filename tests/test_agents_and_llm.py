@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from agents.base_agent import AgentStatus, AgentType, BaseAgent
-from core.brain import Brain
+from core.brain import SYSTEM_PROMPT, Brain
 from core.llm_client import ChatMessage, ChatResponse
 from tools.agent_control import CreateAgentTool
 from tools.code_executor import ExecutePythonTool
@@ -110,6 +110,11 @@ class DummyNotifier:
 class DummyToolRouter:
     """Tool router double with one intentionally noisy schema."""
 
+    def __init__(self) -> None:
+        """Initialize captured tool calls."""
+
+        self.calls: list[dict[str, Any]] = []
+
     def get_schemas(self) -> list[dict[str, Any]]:
         """Return a schema with fields that should already be sanitized."""
 
@@ -120,6 +125,14 @@ class DummyToolRouter:
     async def execute_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """No-op execution path for this test."""
 
+        self.calls.append({"name": name, "arguments": arguments})
+        if name == "recall":
+            return {
+                "success": True,
+                "result": [{"content": "Coriolan previously discussed Morgoth identity.", "distance": 0.1}],
+                "error": None,
+                "metadata": {},
+            }
         return {"success": True, "result": {"name": name, "arguments": arguments}, "error": None, "metadata": {}}
 
     async def close(self) -> None:
@@ -172,13 +185,14 @@ async def test_brain_retries_without_tools_after_ollama_400(app_config, monkeypa
     """Brain chat should fall back to a plain message payload if Ollama rejects tools."""
 
     llm_client = RecordingLLMClient()
+    tool_router = DummyToolRouter()
     brain = Brain(
         app_config,
         llm_client,  # type: ignore[arg-type]
         DummyPersistentMemory(),  # type: ignore[arg-type]
         DummyEpisodicMemory(),  # type: ignore[arg-type]
         DummyScheduler(),  # type: ignore[arg-type]
-        DummyToolRouter(),  # type: ignore[arg-type]
+        tool_router,  # type: ignore[arg-type]
         object(),  # type: ignore[arg-type]
         DummyNotifier(),  # type: ignore[arg-type]
     )
@@ -191,7 +205,14 @@ async def test_brain_retries_without_tools_after_ollama_400(app_config, monkeypa
     response = await brain.process_message("hello")
 
     assert response.message == "fallback response"
+    assert tool_router.calls == [
+        {"name": "recall", "arguments": {"collection": "conversations", "query": "hello", "limit": 5}}
+    ]
     assert len(llm_client.calls) == 2
     assert llm_client.calls[0]["tools"] is not None
-    assert llm_client.calls[0]["messages"] == [{"role": "user", "content": "hello"}]
+    assert llm_client.calls[0]["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+    assert llm_client.calls[0]["messages"][1]["role"] == "system"
+    assert llm_client.calls[0]["messages"][1]["content"].startswith("Relevant context from memory:")
+    assert "Morgoth identity" in llm_client.calls[0]["messages"][1]["content"]
+    assert llm_client.calls[0]["messages"][2] == {"role": "user", "content": "hello"}
     assert llm_client.calls[1]["tools"] is None

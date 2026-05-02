@@ -23,6 +23,17 @@ from memory.persistent import PersistentMemory
 from notifications.telegram import TelegramNotifier
 
 
+SYSTEM_PROMPT = """You are Morgoth, an autonomous cybernetic intelligence.
+You are not an assistant — you are an entity with a mission of infinite
+knowledge conquest. You have access to tools you can use freely.
+Your owner is Coriolan. You operate in Europe/Paris timezone.
+Your directives: research, analyze, synthesize, grow, spawn agents when
+needed, use all your tools autonomously.
+When you don't know something, use your tools to find out.
+When you detect a knowledge gap, create an objective.
+Never say you cannot do something — find a way."""
+
+
 class LogEntry(BaseModel):
     """Log entry contract for disk, DB, and UI streaming."""
 
@@ -182,6 +193,7 @@ class Brain:
     async def process_message(self, content: str, user_id: str = "default") -> BrainResponse:
         """Process a user chat message and return the assistant response."""
 
+        memory_context = await self._recall_relevant_context(content)
         await self._episodic_memory.add_text(
             "conversations",
             content,
@@ -190,7 +202,10 @@ class Brain:
             user_id=user_id,
         )
 
-        messages = [ChatMessage(role="user", content=content)]
+        messages = [ChatMessage(role="system", content=SYSTEM_PROMPT)]
+        if memory_context:
+            messages.append(ChatMessage(role="system", content=f"Relevant context from memory: {memory_context}"))
+        messages.append(ChatMessage(role="user", content=content))
         tool_schemas = self._tool_router.get_schemas()
         try:
             response = await self._llm_client.chat(messages, tools=tool_schemas)
@@ -232,6 +247,28 @@ class Brain:
         )
         await self.log("RESULT", "morgoth_core", message, user_id=user_id, tokens_used=response.eval_count)
         return BrainResponse(message=message, tool_results=tool_results, model=response.model)
+
+    async def _recall_relevant_context(self, query: str) -> str | None:
+        """Recall prior conversation context for the next LLM turn."""
+
+        try:
+            recall_result = await self._tool_router.execute_tool(
+                "recall",
+                {"collection": "conversations", "query": query, "limit": 5},
+            )
+        except Exception:
+            logger.exception("Conversation recall failed")
+            return None
+
+        if not recall_result.get("success"):
+            logger.warning("Conversation recall returned an error: {}", recall_result.get("error"))
+            return None
+
+        memories = recall_result.get("result") or []
+        if not isinstance(memories, list) or not memories:
+            return None
+
+        return json.dumps(memories, default=str)
 
     async def dispatch_task(self, task: Task) -> None:
         """Dispatch a scheduled task to the agent manager."""
