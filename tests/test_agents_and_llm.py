@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from agents.base_agent import AgentStatus, AgentType, BaseAgent
-from core.brain import SYSTEM_PROMPT, Brain
+from core.brain import CHAT_TOOL_NAMES, SYSTEM_PROMPT, Brain
 from core.llm_client import ChatMessage, ChatResponse
 from tools.agent_control import CreateAgentTool
 from tools.code_executor import ExecutePythonTool
@@ -115,9 +115,10 @@ class DummyToolRouter:
 
         self.calls: list[dict[str, Any]] = []
 
-    def get_schemas(self) -> list[dict[str, Any]]:
+    def get_schemas(self, allowed_tools: list[str] | None = None) -> list[dict[str, Any]]:
         """Return a schema with fields that should already be sanitized."""
 
+        self.calls.append({"name": "get_schemas", "arguments": {"allowed_tools": allowed_tools}})
         return [
             CreateAgentTool.parameters,  # type: ignore[attr-defined]
         ]
@@ -206,13 +207,14 @@ async def test_brain_retries_without_tools_after_ollama_400(app_config, monkeypa
 
     assert response.message == "fallback response"
     assert tool_router.calls == [
-        {"name": "recall", "arguments": {"collection": "conversations", "query": "hello", "limit": 5}}
+        {"name": "recall", "arguments": {"collection": "conversations", "query": "hello", "limit": 3}},
+        {"name": "get_schemas", "arguments": {"allowed_tools": CHAT_TOOL_NAMES}},
     ]
     assert len(llm_client.calls) == 2
     assert llm_client.calls[0]["tools"] is not None
     assert llm_client.calls[0]["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
     assert llm_client.calls[0]["messages"][1]["role"] == "system"
-    assert llm_client.calls[0]["messages"][1]["content"].startswith("Relevant context from memory:")
+    assert llm_client.calls[0]["messages"][1]["content"].startswith("Recent context:")
     assert "Morgoth identity" in llm_client.calls[0]["messages"][1]["content"]
     assert llm_client.calls[0]["messages"][2] == {"role": "user", "content": "hello"}
     assert llm_client.calls[1]["tools"] is None

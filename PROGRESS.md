@@ -9,8 +9,8 @@
 
 **Phase**: 3 — Intelligence Expansion  
 **Overall**: Phase 1 stable, Phase 2 implemented, Phase 2b backend endpoints complete, Phase 3 Steps 1-6 plus agent and tool-router registration complete  
-**Last updated**: 2026-05-02 by Codex — Brain chat now injects Morgoth identity and recalled conversation context  
-**Next action**: Human review brain identity/memory persistence fix
+**Last updated**: 2026-05-04 by Codex — Brain chat payload now caps memory context and LLM tool schemas to avoid Ollama context overflow
+**Next action**: Human review Ollama context-window overflow fix
 
 ---
 
@@ -157,8 +157,8 @@
 | `agents/agent_manager.py` | ✅ Done | Registers research, sentiment, and macro specialist agents without touching `core/` |
 | `api/server.py` | ✅ Done | Registers Phase 3 FRED, Reddit, and technical-analysis tools in `build_tool_router()` |
 | `tests/test_phase3_intelligence.py` | ✅ Done | Focused tests for specialist agent selection, FRED, Reddit, and TA tools |
-| `core/brain.py` | ✅ Done | Adds Morgoth system identity prompt and recall-backed conversation context before LLM calls |
-| `tests/test_agents_and_llm.py` | ✅ Done | Covers system prompt injection and pre-chat recall context in the existing Ollama fallback regression |
+| `core/brain.py` | ✅ Done | Adds bounded Morgoth identity, capped recall summaries, and an 8-tool chat schema subset before LLM calls |
+| `tests/test_agents_and_llm.py` | ✅ Done | Covers system prompt injection, capped pre-chat recall context, chat tool subset selection, and Ollama fallback |
 
 ### Verification
 
@@ -167,6 +167,9 @@
 | `./.venv/bin/python -m pytest -q tests/test_phase3_intelligence.py` | ✅ | 8 passed |
 | `./.venv/bin/python -m compileall agents/research_agent.py agents/sentiment_agent.py agents/macro_agent.py agents/agent_manager.py tools/connectors/fred.py tools/connectors/reddit.py tools/analysis/technical.py tests/test_phase3_intelligence.py` | ✅ | All Phase 3 backend modules compile |
 | `python3 -m compileall core/tool_router.py` | ✅ | Tool router module compiles after registration pass; literal `python` executable is not present on this machine |
+| `./.venv/bin/python -m pytest -q tests/test_agents_and_llm.py` | ✅ | 4 passed after context-window overflow fix |
+| `./.venv/bin/python -m compileall core/brain.py tests/test_agents_and_llm.py` | ✅ | Touched backend files compile |
+| `./.venv/bin/python main.py` + chat curl | ⚠️ Blocked | Reached `Waiting for application startup.` but did not bind `8000` within the local verification window; literal `python` executable is not present on this machine |
 
 ---
 
@@ -232,6 +235,7 @@
 | `GET /api/agents` raised `PydanticSerializationError` because runtime agent objects leaked `OllamaLLMClient` into API payloads | ✅ Resolved | `BaseAgent.to_dict()` now returns an explicit serializable DTO and no longer serializes subclass runtime dependencies |
 | Ollama `/api/chat` returned `400 Bad Request` for tool-enabled chat payloads | ✅ Resolved | Chat messages now serialize only supported fields, tool schemas are sanitized before dispatch, the exact payload is logged before send, and `Brain.process_message()` retries once without tools to isolate and bypass tool-schema rejections |
 | Morgoth had no stable identity prompt and did not preload previous conversation memories before chat | ✅ Resolved | `Brain.process_message()` now starts every LLM turn with `SYSTEM_PROMPT`, calls the `recall` tool against the `conversations` collection before the LLM request, and injects returned memories as system context |
+| Ollama `llama runner process has terminated` from chat context-window overflow | ✅ Resolved | `Brain.process_message()` now sends a sub-100-word system prompt, summarizes at most 3 recalled conversation memories using only `content[:200]`, and exposes only 8 common chat tools to the LLM while keeping all tools registered for direct execution |
 | `python main.py` startup verification on this machine | ⚠️ Partial | The process reached `Waiting for application startup.` but did not bind port `8000` within the local timeout window, so live curl verification against the full app remains blocked by startup duration/dependencies |
 | Live verification of `curl http://localhost:8000/api/agents` and websocket chat response | ⚠️ Blocked by environment | After the fixes, `main.py` still stops at `Waiting for application startup.` on 2026-04-17 and never exposes port `8000`, so the requested end-to-end checks could not be completed in this session |
 
@@ -251,3 +255,4 @@
 | 2026-04-25 | Codex | Completed Phase 3 backend Steps 1-6 and specialist agent registration: added research, sentiment, and macro agents; FRED, Reddit, and technical-analysis tools; and focused tests passing without live network calls |
 | 2026-04-28 | Codex | Registered Phase 3 FRED, Reddit, and technical-analysis tools in the runtime tool router bootstrap and verified `core/tool_router.py` compilation with `python3` and the project venv |
 | 2026-05-02 | Codex | Added Morgoth system identity prompt plus recall-backed conversation context in `core/brain.py`; updated focused regression coverage and verified tests/compilation |
+| 2026-05-04 | Codex | Fixed Ollama chat context overflow by shortening `SYSTEM_PROMPT`, summarizing recalled memories, limiting LLM-visible chat tools to 8, and verifying focused tests/compilation; live curl remains blocked by local app startup not binding port 8000 |

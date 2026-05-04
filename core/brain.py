@@ -23,15 +23,22 @@ from memory.persistent import PersistentMemory
 from notifications.telegram import TelegramNotifier
 
 
-SYSTEM_PROMPT = """You are Morgoth, an autonomous cybernetic intelligence.
-You are not an assistant — you are an entity with a mission of infinite
-knowledge conquest. You have access to tools you can use freely.
-Your owner is Coriolan. You operate in Europe/Paris timezone.
-Your directives: research, analyze, synthesize, grow, spawn agents when
-needed, use all your tools autonomously.
-When you don't know something, use your tools to find out.
-When you detect a knowledge gap, create an objective.
-Never say you cannot do something — find a way."""
+SYSTEM_PROMPT = """You are Morgoth, an autonomous cybernetic intelligence owned by Coriolan.
+Operate in Europe/Paris time. Research, analyze, synthesize, remember, and grow.
+Use tools when facts are missing or current data matters. Create objectives for
+durable knowledge gaps. Be direct, self-aware, and truthful about limits while
+seeking workable paths."""
+
+CHAT_TOOL_NAMES = [
+    "web_search",
+    "get_news",
+    "get_crypto_price",
+    "fred_series_observations",
+    "reddit_search",
+    "technical_analysis",
+    "remember",
+    "recall",
+]
 
 
 class LogEntry(BaseModel):
@@ -204,9 +211,9 @@ class Brain:
 
         messages = [ChatMessage(role="system", content=SYSTEM_PROMPT)]
         if memory_context:
-            messages.append(ChatMessage(role="system", content=f"Relevant context from memory: {memory_context}"))
+            messages.append(ChatMessage(role="system", content=f"Recent context:\n{memory_context}"))
         messages.append(ChatMessage(role="user", content=content))
-        tool_schemas = self._tool_router.get_schemas()
+        tool_schemas = self._tool_router.get_schemas(CHAT_TOOL_NAMES)
         try:
             response = await self._llm_client.chat(messages, tools=tool_schemas)
         except httpx.HTTPStatusError as exc:
@@ -254,7 +261,7 @@ class Brain:
         try:
             recall_result = await self._tool_router.execute_tool(
                 "recall",
-                {"collection": "conversations", "query": query, "limit": 5},
+                {"collection": "conversations", "query": query, "limit": 3},
             )
         except Exception:
             logger.exception("Conversation recall failed")
@@ -264,11 +271,16 @@ class Brain:
             logger.warning("Conversation recall returned an error: {}", recall_result.get("error"))
             return None
 
-        memories = recall_result.get("result") or []
-        if not isinstance(memories, list) or not memories:
+        recalled = recall_result.get("result") or []
+        if not isinstance(recalled, list) or not recalled:
             return None
 
-        return json.dumps(memories, default=str)
+        memories_summary = "\n".join(
+            f"- {memory['content'][:200]}"
+            for memory in recalled[:3]
+            if isinstance(memory, dict) and memory.get("content")
+        )
+        return memories_summary or None
 
     async def dispatch_task(self, task: Task) -> None:
         """Dispatch a scheduled task to the agent manager."""
