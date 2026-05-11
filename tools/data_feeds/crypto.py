@@ -12,6 +12,30 @@ from core.config import AppConfig, PermissionDeniedError
 from memory.persistent import PersistentMemory
 from tools.base_tool import BaseTool
 
+SYMBOL_MAP = {
+    "btc": "bitcoin",
+    "eth": "ethereum",
+    "sol": "solana",
+    "bnb": "binancecoin",
+    "xrp": "ripple",
+    "ada": "cardano",
+    "dot": "polkadot",
+    "matic": "matic-network",
+    "link": "chainlink",
+    "avax": "avalanche-2",
+    "doge": "dogecoin",
+    "shib": "shiba-inu",
+    "uni": "uniswap",
+    "atom": "cosmos",
+    "ltc": "litecoin",
+}
+
+
+def normalize_symbol(symbol: str) -> str:
+    """Map ticker symbols to CoinGecko IDs; pass through unknown values."""
+    s = symbol.lower().strip()
+    return SYMBOL_MAP.get(s, s)
+
 
 class CryptoPrice(BaseModel):
     """Normalized crypto price result."""
@@ -33,7 +57,10 @@ class GetCryptoPriceTool(BaseTool):
     """Fetch current crypto prices from CoinGecko."""
 
     name = "get_crypto_price"
-    description = "Fetch the current USD price and 24h metrics for a crypto asset."
+    description = (
+        "Fetch the current USD price and 24h metrics for a crypto asset. "
+        "Accepts both ticker (btc, eth, sol) and full name (bitcoin, ethereum)."
+    )
     parameters = {
         "type": "object",
         "properties": {"symbol": {"type": "string"}},
@@ -64,7 +91,7 @@ class GetCryptoPriceTool(BaseTool):
         if not self._config.permissions.permissions.can_access_internet:
             raise PermissionDeniedError("Internet access is disabled by permissions")
 
-        symbol = str(kwargs["symbol"]).lower()
+        symbol = normalize_symbol(str(kwargs["symbol"]))
         cached = self.get_cached_result(symbol)
         if cached is not None and not self._is_cache_stale(cached):
             return cached
@@ -187,7 +214,7 @@ class GetCryptoHistoryTool(BaseTool):
         if not self._config.permissions.permissions.can_access_internet:
             raise PermissionDeniedError("Internet access is disabled by permissions")
 
-        symbol = str(kwargs["symbol"]).lower()
+        symbol = normalize_symbol(str(kwargs["symbol"]))
         days = int(kwargs.get("days", 30))
         response = await self._client.get(
             f"https://api.coingecko.com/api/v3/coins/{symbol}/market_chart",

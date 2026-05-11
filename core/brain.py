@@ -23,11 +23,17 @@ from memory.persistent import PersistentMemory
 from notifications.telegram import TelegramNotifier
 
 
-SYSTEM_PROMPT = """You are Morgoth, an autonomous cybernetic intelligence owned by Coriolan.
+def build_system_prompt() -> str:
+    """Build the system prompt with the current local datetime injected."""
+    now = datetime.now().strftime("%A %d %B %Y, %H:%M (Europe/Paris)")
+    return f"""You are Morgoth, an autonomous cybernetic intelligence owned by Coriolan.
+Current datetime: {now}
 Operate in Europe/Paris time. Research, analyze, synthesize, remember, and grow.
 Use tools when facts are missing or current data matters. Create objectives for
 durable knowledge gaps. Be direct, self-aware, and truthful about limits while
-seeking workable paths."""
+seeking workable paths.
+Memory collections: conversations, research, decisions, market_patterns, code_archive.
+When working on an objective, ALWAYS finish by calling update_objective. Never leave an objective in pending status after gathering data."""
 
 CHAT_TOOL_NAMES = [
     "web_search",
@@ -38,6 +44,8 @@ CHAT_TOOL_NAMES = [
     "technical_analysis",
     "remember",
     "recall",
+    "create_objective",
+    "update_objective",
 ]
 
 
@@ -101,6 +109,8 @@ class Brain:
         await self._scheduler.initialize()
         awakening = await self.awaken()
         self._ready = awakening["status"] == "READY"
+        asyncio.create_task(self.run_autonomous_cycle())
+        logger.info("Autonomous cycle scheduled")
         return awakening
 
     async def awaken(self) -> dict[str, Any]:
@@ -121,6 +131,31 @@ class Brain:
         for model_name, available in model_status.items():
             if not available:
                 missing.append(f"Missing Ollama model: {model_name}")
+
+        if ollama_ok:
+            try:
+                test_response = await self._llm_client.chat([ChatMessage(role="user", content="ping")])
+                logger.info(
+                    "Ollama direct ping succeeded with model '{}'",
+                    test_response.model,
+                )
+            except Exception as exc:
+                logger.warning("Ollama direct ping failed during awakening: {}", exc)
+
+        if ollama_ok:
+            logger.info("Warming up Ollama with full chat context...")
+            try:
+                warmup_tools = self._tool_router.get_schemas(CHAT_TOOL_NAMES)
+                await self._llm_client.chat(
+                    [
+                        ChatMessage(role="system", content=build_system_prompt()),
+                        ChatMessage(role="user", content="warmup"),
+                    ],
+                    tools=warmup_tools,
+                )
+                logger.info("Ollama warmup complete")
+            except Exception as e:
+                logger.warning("Ollama warmup failed (non-fatal): {}", e)
 
         tool_results = await self.test_tools()
         if not all(result["success"] for result in tool_results.values()):
@@ -147,7 +182,6 @@ class Brain:
             "get_crypto_price": {"symbol": "bitcoin"},
             "get_crypto_history": {"symbol": "bitcoin", "days": 1},
             "get_news": {"topic": "general", "limit": 1},
-            "create_agent": {"name": "self_test_agent", "task": "reply with ok", "agent_type": "ephemeral"},
             "notify": {"level": "INFO", "content": "Phase 1 self-test"},
             "remember": {"collection": "decisions", "content": "tool self test", "category": "self_test"},
             "recall": {"collection": "decisions", "query": "self test", "limit": 1},
@@ -175,6 +209,71 @@ class Brain:
             recurrence_cron="0 8 * * *",
         )
         await self._scheduler.schedule(task)
+
+    async def run_autonomous_cycle(self) -> None:
+        """Background loop that drives Morgoth's autonomy."""
+
+        while True:
+            try:
+                await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
+                logger.info("Autonomous cycle starting")
+
+                objectives = await self._persistent_memory.get_objectives(
+                    status="pending", limit=1
+                )
+
+                if objectives:
+                    obj = objectives[0]
+                    try:
+                        past_matches = await self._episodic_memory.query(
+                            "conversations",
+                            f"objective {obj.get('title', '')}",
+                            limit=3,
+                            max_distance=0.7,
+                        )
+                        past_summary = (
+                            "\n".join(f"- {m.content[:150]}" for m in past_matches)
+                            or "None yet."
+                        )
+                    except Exception:
+                        past_summary = "None yet."
+
+                    prompt = (
+                        f"OBJECTIVE ID: {obj.get('objective_id', '')}\n"
+                        f"TITLE: {obj.get('title', 'unnamed')}\n"
+                        f"DETAILS: {obj.get('description', '')}\n"
+                        f"STATUS: {obj.get('status', 'pending')}\n\n"
+                        f"YOUR PREVIOUS ACTIONS ON THIS:\n{past_summary}\n\n"
+                        f"DECIDE: Have you gathered enough data?\n"
+                        f"- If NO: call ONE new tool to gather missing data.\n"
+                        f"- If YES: call update_objective with status='done' "
+                        f"and evidence_summary describing your conclusions.\n\n"
+                        f"ACT NOW. Tool call only. No explanation."
+                    )
+                else:
+                    prompt = (
+                        "NO ACTIVE OBJECTIVES.\n\n"
+                        "STEP 1: Call get_news with topic='crypto' OR get_crypto_price "
+                        "with symbol='bitcoin' to scan the environment.\n"
+                        "STEP 2: Identify one specific knowledge gap from what you observed.\n"
+                        "STEP 3: Call create_objective with a clear title and description "
+                        "describing what to investigate. Priority 1-5 based on importance.\n\n"
+                        "ACT NOW. Tool calls only. No explanation."
+                    )
+
+                result = await self.process_message(
+                    prompt, user_id="morgoth_autonomous"
+                )
+                logger.info(
+                    "Autonomous cycle completed: {}",
+                    result.message[:200],
+                )
+
+            except asyncio.CancelledError:
+                logger.info("Autonomous cycle cancelled")
+                break
+            except Exception as e:
+                logger.error("Autonomous cycle error: {}", e)
 
     async def enqueue_message(self, content: str, user_id: str = "default") -> None:
         """Queue an incoming chat message for asynchronous processing."""
@@ -209,7 +308,7 @@ class Brain:
             user_id=user_id,
         )
 
-        messages = [ChatMessage(role="system", content=SYSTEM_PROMPT)]
+        messages = [ChatMessage(role="system", content=build_system_prompt())]
         if memory_context:
             messages.append(ChatMessage(role="system", content=f"Recent context:\n{memory_context}"))
         messages.append(ChatMessage(role="user", content=content))
@@ -222,8 +321,10 @@ class Brain:
             logger.warning("Ollama rejected tool-enabled chat payload; retrying without tools")
             response = await self._llm_client.chat(messages)
         tool_results: list[dict[str, Any]] = []
+        _tool_round = 0
 
-        if response.message.tool_calls:
+        while response.message.tool_calls and _tool_round < 5:
+            _tool_round += 1
             messages.append(
                 ChatMessage(
                     role="assistant",
@@ -232,7 +333,19 @@ class Brain:
                 )
             )
             for tool_call in response.message.tool_calls:
-                tool_result = await self._tool_router.execute_tool(tool_call.function.name, tool_call.function.arguments)
+                try:
+                    tool_result = await self._tool_router.execute_tool(
+                        tool_call.function.name,
+                        tool_call.function.arguments,
+                    )
+                except Exception as exc:
+                    logger.warning("Tool '{}' failed during chat: {}", tool_call.function.name, exc)
+                    tool_result = {
+                        "success": False,
+                        "result": None,
+                        "error": str(exc),
+                        "metadata": {},
+                    }
                 tool_results.append({"tool": tool_call.function.name, "result": tool_result})
                 messages.append(
                     ChatMessage(
@@ -242,7 +355,14 @@ class Brain:
                         tool_call_id=tool_call.id,
                     )
                 )
-            response = await self._llm_client.chat(messages)
+            try:
+                response = await self._llm_client.chat(messages, tools=tool_schemas)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 400 or not tool_schemas:
+                    raise
+                logger.warning("Ollama rejected tool-enabled chat in tool loop; continuing without tools")
+                response = await self._llm_client.chat(messages)
+                break
 
         message = response.message.content or ""
         await self._episodic_memory.add_text(

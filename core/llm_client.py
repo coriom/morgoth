@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Literal
 
@@ -10,6 +11,9 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import AppConfig
+
+
+_ollama_lock = asyncio.Lock()
 
 
 class OllamaFunction(BaseModel):
@@ -126,30 +130,31 @@ class OllamaLLMClient:
     ) -> ChatResponse:
         """Send a chat request to Ollama and return a normalized response."""
 
-        selected_model = model or self._config.ollama_primary_model
-        payload: dict[str, Any] = {
-            "model": selected_model,
-            "messages": [message.to_ollama_dict() for message in messages],
-            "stream": stream,
-        }
-        if tools:
-            payload["tools"] = tools
-        if options:
-            payload["options"] = options
+        async with _ollama_lock:
+            selected_model = model or self._config.ollama_primary_model
+            payload: dict[str, Any] = {
+                "model": selected_model,
+                "messages": [message.to_ollama_dict() for message in messages],
+                "stream": stream,
+            }
+            if tools:
+                payload["tools"] = tools
+            if options:
+                payload["options"] = options
 
-        logger.debug("Sending chat request to Ollama: {}", json.dumps(payload, default=str))
-        response = await self._client.post("/api/chat", json=payload)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError:
-            logger.error(
-                "Ollama chat request failed with status {} and body: {}",
-                response.status_code,
-                response.text,
-            )
-            raise
-        raw_response = response.json()
-        return self._normalize_response(raw_response)
+            logger.debug("Sending chat request to Ollama: {}", json.dumps(payload, default=str))
+            response = await self._client.post("/api/chat", json=payload)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError:
+                logger.error(
+                    "Ollama chat request failed with status {} and body: {}",
+                    response.status_code,
+                    response.text,
+                )
+                raise
+            raw_response = response.json()
+            return self._normalize_response(raw_response)
 
     async def generate_tool_response(
         self,

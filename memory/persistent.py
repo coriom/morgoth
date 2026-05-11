@@ -265,6 +265,96 @@ class PersistentMemory:
         rows = await self.fetch("SELECT * FROM logs ORDER BY timestamp DESC LIMIT $1", limit)
         return [dict(row) for row in rows]
 
+    async def get_objectives(
+        self,
+        status: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return objectives from PostgreSQL, optionally filtered by status."""
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            if status is not None:
+                rows = await conn.fetch(
+                    "SELECT * FROM objectives WHERE status = $1 "
+                    "ORDER BY priority ASC, created_at ASC LIMIT $2",
+                    status,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM objectives "
+                    "ORDER BY priority ASC, created_at ASC LIMIT $1",
+                    limit,
+                )
+        return [dict(row) for row in rows]
+
+    async def update_objective(
+        self,
+        objective_id: str,
+        status: str | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Update an objective's status and/or append an evidence entry, return the updated row."""
+
+        import uuid as _uuid
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            set_clauses: list[str] = []
+            params: list[Any] = []
+            idx = 1
+
+            if status is not None:
+                set_clauses.append(f"status = ${idx}")
+                params.append(status)
+                idx += 1
+                if status == "done":
+                    set_clauses.append("completed_at = NOW()")
+
+            if evidence is not None:
+                set_clauses.append(f"evidence = evidence || ${idx}::jsonb")
+                params.append(json.dumps([evidence]))
+                idx += 1
+
+            if not set_clauses:
+                row = await conn.fetchrow(
+                    "SELECT * FROM objectives WHERE objective_id = $1",
+                    _uuid.UUID(objective_id),
+                )
+            else:
+                params.append(_uuid.UUID(objective_id))
+                query = (
+                    f"UPDATE objectives SET {', '.join(set_clauses)} "
+                    f"WHERE objective_id = ${idx} RETURNING *"
+                )
+                row = await conn.fetchrow(query, *params)
+
+        if row is None:
+            raise ValueError(f"Objective {objective_id} not found")
+        return dict(row)
+
+    async def create_objective(
+        self,
+        title: str,
+        description: str,
+        priority: int = 3,
+    ) -> dict[str, Any]:
+        """Insert a new objective into PostgreSQL and return the created row."""
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO objectives "
+                "(objective_id, title, description, category, priority, generated_by, status, user_id) "
+                "VALUES (gen_random_uuid(), $1, $2, 'research', $3, 'morgoth_autonomous', 'pending', 'default') "
+                "RETURNING *",
+                title,
+                description,
+                priority,
+            )
+        return dict(row)
+
     async def insert_market_snapshot(self, payload: dict[str, Any]) -> QueryResult:
         """Insert a market snapshot row."""
 

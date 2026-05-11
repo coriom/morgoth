@@ -28,6 +28,7 @@ from tools.data_feeds.crypto import GetCryptoHistoryTool, GetCryptoPriceTool
 from tools.data_feeds.news import GetNewsTool
 from tools.file_manager import ReadFileTool, WriteFileTool
 from tools.memory_tools import RecallTool, RememberTool
+from tools.objectives_tool import CreateObjectiveTool, UpdateObjectiveTool
 from tools.notifications import NotifyTool
 from tools.web_search import WebSearchTool
 
@@ -58,6 +59,8 @@ def build_tool_router(
     router.register(NotifyTool(config, notifier))
     router.register(RememberTool(episodic_memory))
     router.register(RecallTool(episodic_memory))
+    router.register(CreateObjectiveTool(persistent_memory))
+    router.register(UpdateObjectiveTool(persistent_memory))
     return router
 
 

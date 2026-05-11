@@ -118,12 +118,14 @@ class EpisodicMemory:
         query_text: str,
         *,
         limit: int = 5,
+        max_distance: float = 0.8,
     ) -> list[QueryMatch]:
-        """Query similar documents from a collection."""
+        """Query similar documents from a collection, filtered by distance threshold."""
 
         collection = self._get_collection(collection_name)
         result = await asyncio.to_thread(collection.query, query_texts=[query_text], n_results=limit)
-        return self._parse_query_result(result)
+        matches = self._parse_query_result(result)
+        return [m for m in matches if m.distance is None or m.distance < max_distance]
 
     async def get_document(self, collection_name: str, document_id: str) -> QueryMatch | None:
         """Fetch a document by id from a collection."""

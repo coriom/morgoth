@@ -83,6 +83,7 @@ class AppConfig(BaseModel):
     max_concurrent_agents: int = Field(alias="MAX_CONCURRENT_AGENTS")
     log_retention_days: int = Field(alias="LOG_RETENTION_DAYS")
     log_level_thought: bool = Field(alias="LOG_LEVEL_THOUGHT")
+    autonomous_cycle_minutes: int = Field(default=10, alias="AUTONOMOUS_CYCLE_MINUTES")
     root_dir: Path = ROOT_DIR
     data_dir: Path = ROOT_DIR / "data"
     logs_dir: Path = ROOT_DIR / "data" / "logs"
@@ -182,6 +183,7 @@ async def load_config() -> AppConfig:
         "MAX_CONCURRENT_AGENTS": os.getenv("MAX_CONCURRENT_AGENTS"),
         "LOG_RETENTION_DAYS": os.getenv("LOG_RETENTION_DAYS"),
         "LOG_LEVEL_THOUGHT": os.getenv("LOG_LEVEL_THOUGHT"),
+        "AUTONOMOUS_CYCLE_MINUTES": os.getenv("AUTONOMOUS_CYCLE_MINUTES", "10"),
         "permissions": permissions,
     }
 

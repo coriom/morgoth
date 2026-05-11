@@ -9,8 +9,8 @@
 
 **Phase**: 3 — Intelligence Expansion  
 **Overall**: Phase 1 stable, Phase 2 implemented, Phase 2b backend endpoints complete, Phase 3 Steps 1-6 plus agent and tool-router registration complete  
-**Last updated**: 2026-05-04 by Codex — Brain chat payload now caps memory context and LLM tool schemas to avoid Ollama context overflow
-**Next action**: Human review Ollama context-window overflow fix
+**Last updated**: 2026-05-11 by Codex — Objective progression loop fixed: UpdateObjectiveTool added, autonomous cycle injects past-action context, system prompt mandates update_objective on completion  
+**Next action**: Human to `pm2 restart morgoth`, wait 2-3 cycles (~30 min), then check `curl http://localhost:8000/api/objectives | python3 -m json.tool` for status=in_progress or done
 
 ---
 
@@ -92,7 +92,8 @@
 
 | File | Status | Notes |
 |---|---|---|
-| `scripts/setup_pm2.sh` | ✅ Done | Idempotent PM2 bootstrap with restart delay and persisted logs |
+| `ecosystem.config.js` | ✅ Done | PM2 app definition; interpreter=none, 2G memory cap, timestamped logs to data/logs/, PYTHONUNBUFFERED=1 |
+| `scripts/setup_pm2.sh` | ✅ Done | Idempotent: installs pm2 if absent, deletes+restarts from ecosystem.config.js, saves, tails 50 lines, prints cheatsheet |
 | `scripts/health_monitor.py` | ✅ Done | 60-second checks for Ollama, PostgreSQL, ChromaDB, persistent agents, memory, and stalled tasks |
 | `scripts/init_db.py` | ✅ Done | Adds `objectives` and `ui_widgets` tables after base schema initialization |
 | `core/objectives.py` | ✅ Done | Objective persistence, status updates, heuristic + LLM-assisted generation |
@@ -108,6 +109,36 @@
 | `./.venv/bin/python -m pytest -q tests/test_phase2.py` | ✅ | 3 tests passed |
 | `./.venv/bin/python -m compileall core/objectives.py self_modify scripts/health_monitor.py` | ✅ | All new Python modules compile |
 | `./.venv/bin/python main.py` | ⚠️ Partial | Reached uvicorn startup and entered application startup without immediate traceback; full READY state not observed in short timeout window |
+
+### PM2 Service Verification (2026-05-11)
+
+| Check | Status | Notes |
+|---|---|---|
+| `bash scripts/setup_pm2.sh` | ✅ | pm2 installed via npm; morgoth started from ecosystem.config.js; logs tailed for 60s |
+| `pm2 status` shows morgoth online | ✅ | PID 1742, 3m uptime, 0 restarts, 178.9 MB RAM |
+| `curl http://localhost:8000/api/brain/status` → 200 | ✅ | Returned 200 immediately after startup |
+| `pm2 logs morgoth \| grep -i "autonomous cycle"` | ✅ | "Autonomous cycle scheduled" present in logs |
+| `pkill -f "main.py"; sleep 10; curl …/api/brain/status` → 200 | ✅ | PM2 restarted to PID 2433 (↺=1); 200 returned after 20s startup |
+
+---
+
+## PM2 Operations
+
+Morgoth runs as a persistent PM2 service. Start with `bash scripts/setup_pm2.sh` on a fresh machine.
+
+```
+pm2 status              # check state
+pm2 logs morgoth        # tail logs
+pm2 restart morgoth     # restart
+pm2 stop morgoth        # stop
+pm2 monit               # live dashboard
+pm2 startup             # configure auto-start on OS boot
+```
+
+Log files:
+- Combined: `data/logs/pm2-combined.log`
+- stdout:   `data/logs/pm2-out.log`
+- stderr:   `data/logs/pm2-error.log`
 
 ---
 
@@ -158,7 +189,7 @@
 | `api/server.py` | ✅ Done | Registers Phase 3 FRED, Reddit, and technical-analysis tools in `build_tool_router()` |
 | `tests/test_phase3_intelligence.py` | ✅ Done | Focused tests for specialist agent selection, FRED, Reddit, and TA tools |
 | `core/brain.py` | ✅ Done | Adds bounded Morgoth identity, capped recall summaries, and an 8-tool chat schema subset before LLM calls |
-| `tests/test_agents_and_llm.py` | ✅ Done | Covers system prompt injection, capped pre-chat recall context, chat tool subset selection, and Ollama fallback |
+| `tests/test_agents_and_llm.py` | ✅ Done | Covers system prompt injection, capped pre-chat recall context, chat tool subset selection, Ollama fallback, and non-fatal chat tool failures |
 
 ### Verification
 
@@ -167,9 +198,9 @@
 | `./.venv/bin/python -m pytest -q tests/test_phase3_intelligence.py` | ✅ | 8 passed |
 | `./.venv/bin/python -m compileall agents/research_agent.py agents/sentiment_agent.py agents/macro_agent.py agents/agent_manager.py tools/connectors/fred.py tools/connectors/reddit.py tools/analysis/technical.py tests/test_phase3_intelligence.py` | ✅ | All Phase 3 backend modules compile |
 | `python3 -m compileall core/tool_router.py` | ✅ | Tool router module compiles after registration pass; literal `python` executable is not present on this machine |
-| `./.venv/bin/python -m pytest -q tests/test_agents_and_llm.py` | ✅ | 4 passed after context-window overflow fix |
-| `./.venv/bin/python -m compileall core/brain.py tests/test_agents_and_llm.py` | ✅ | Touched backend files compile |
-| `./.venv/bin/python main.py` + chat curl | ⚠️ Blocked | Reached `Waiting for application startup.` but did not bind `8000` within the local verification window; literal `python` executable is not present on this machine |
+| `./.venv/bin/python -m pytest -q tests/test_agents_and_llm.py` | ✅ | 5 passed after Ollama serialization/bootstrap race fix |
+| `./.venv/bin/python -m compileall core/llm_client.py core/brain.py tests/test_agents_and_llm.py` | ✅ | Touched backend files compile |
+| `./.venv/bin/python main.py` + chat curl | ✅ | Startup completed with no startup 500s; `POST /api/chat` returned `200` and identified Morgoth as Morgoth. Literal `python` executable is not present on this machine |
 
 ---
 
@@ -209,6 +240,11 @@
 | 2026-04-17 | Ollama chat payloads now omit empty message fields and strip unsupported JSON Schema keywords from tool definitions | The local Ollama integration was rejecting tool-enabled requests with HTTP 400, and the safest contract is the minimal supported payload |
 | 2026-04-25 | Phase 3 tools were implemented but not registered in `core/tool_router.py` | The session hard rule forbids touching `core/`; runtime registration needs human approval or a later task that allows that file |
 | 2026-04-28 | Phase 3 tools are registered in `api/server.py` bootstrap | The existing runtime registration block is `build_tool_router()`, while `core/tool_router.py` only defines the registry class |
+| 2026-05-11 | `tool_choice: required` not passed — Ollama API does not support it | The Ollama `/api/chat` endpoint accepts model-inference `options` (temperature etc.) but has no `tool_choice` parameter; the imperative prompt alone is sufficient |
+| 2026-05-11 | `update_objective` uses dynamic SQL parameter building instead of a single fixed query | The method must handle any combination of status-only, evidence-only, or both; a single query with NULLable params would silently overwrite existing evidence with NULL |
+| 2026-05-11 | Autonomous cycle stores objectives in ChromaDB, not PostgreSQL | `remember` tool writes to ChromaDB; `/api/objectives` reads PostgreSQL `objectives` table; bridging these is a future task |
+| 2026-05-11 | `create_objective` uses hardcoded category='research' | `ObjectiveCategory` enum only has research/capability/monitoring/optimization; 'autonomous' caused a 500 on list endpoint; 'research' is the most appropriate default for autonomous knowledge-gap objectives |
+| 2026-05-11 | process_message() converted from single-round to 5-round agentic tool loop | Single round prevented the model from calling create_objective after seeing news/price data; the while loop passes tools on every subsequent call so the model can chain discoveries into objective creation |
 
 ---
 
@@ -236,8 +272,10 @@
 | Ollama `/api/chat` returned `400 Bad Request` for tool-enabled chat payloads | ✅ Resolved | Chat messages now serialize only supported fields, tool schemas are sanitized before dispatch, the exact payload is logged before send, and `Brain.process_message()` retries once without tools to isolate and bypass tool-schema rejections |
 | Morgoth had no stable identity prompt and did not preload previous conversation memories before chat | ✅ Resolved | `Brain.process_message()` now starts every LLM turn with `SYSTEM_PROMPT`, calls the `recall` tool against the `conversations` collection before the LLM request, and injects returned memories as system context |
 | Ollama `llama runner process has terminated` from chat context-window overflow | ✅ Resolved | `Brain.process_message()` now sends a sub-100-word system prompt, summarizes at most 3 recalled conversation memories using only `content[:200]`, and exposes only 8 common chat tools to the LLM while keeping all tools registered for direct execution |
-| `python main.py` startup verification on this machine | ⚠️ Partial | The process reached `Waiting for application startup.` but did not bind port `8000` within the local timeout window, so live curl verification against the full app remains blocked by startup duration/dependencies |
-| Live verification of `curl http://localhost:8000/api/agents` and websocket chat response | ⚠️ Blocked by environment | After the fixes, `main.py` still stops at `Waiting for application startup.` on 2026-04-17 and never exposes port `8000`, so the requested end-to-end checks could not be completed in this session |
+| Concurrent Ollama runner crash from bootstrap self-test agent and chat race | ✅ Resolved | All `OllamaLLMClient.chat()` calls now share a module-level `asyncio.Lock`, awakening uses a direct Ollama ping instead of creating `self_test_agent`, and chat tool failures are returned to the model instead of surfacing as HTTP 500s |
+| `python main.py` startup verification on this machine | ✅ Resolved | `./.venv/bin/python main.py` completed application startup and exposed port `8000`; the literal `python` executable is not installed in this shell |
+| Live verification of chat response | ✅ Resolved | `curl -X POST http://localhost:8000/api/chat ...` returned `200 OK` with Morgoth identifying itself as Morgoth |
+| Ollama runner crashes on first post-awakening chat request (`llama runner process has terminated: %!w(<nil>)`) | ✅ Resolved | `Brain.awaken()` now sends a full-context warmup chat (system prompt + 8 chat tools) immediately after the direct ping, so the model is loaded into VRAM with the same inference shape it will see in production before any real request arrives. Warmup is non-fatal. |
 
 ---
 
@@ -256,3 +294,10 @@
 | 2026-04-28 | Codex | Registered Phase 3 FRED, Reddit, and technical-analysis tools in the runtime tool router bootstrap and verified `core/tool_router.py` compilation with `python3` and the project venv |
 | 2026-05-02 | Codex | Added Morgoth system identity prompt plus recall-backed conversation context in `core/brain.py`; updated focused regression coverage and verified tests/compilation |
 | 2026-05-04 | Codex | Fixed Ollama chat context overflow by shortening `SYSTEM_PROMPT`, summarizing recalled memories, limiting LLM-visible chat tools to 8, and verifying focused tests/compilation; live curl remains blocked by local app startup not binding port 8000 |
+| 2026-05-10 | Human | Full live end-to-end verification: startup OK, datetime chat OK (web_search called, 200 returned), ETH price OK (CoinGecko 2360.24 EUR +1.11%), brain logs OK, objectives empty. Ollama runner crashed on first chat attempt then self-recovered without restart. No code changes. |
+| 2026-05-11 | Codex | Added post-awakening Ollama warmup in `Brain.awaken()` (full chat context + 8 tools, non-fatal); added `Brain.run_autonomous_cycle()` background loop driven by `AUTONOMOUS_CYCLE_MINUTES` config; started loop as asyncio task in `Brain.initialize()`; added `PersistentMemory.get_objectives()` for pending-objective queries. 34 tests pass; all three modules compile. |
+| 2026-05-11 | Codex | Live verification: warmup PASS (both log lines present, ~1.7s), first chat PASS (200 OK, no Ollama crash), 1st autonomous cycle PASS (fired at ~58s after startup), 2nd autonomous cycle PASS (count reached 2). Objective creation: NO — model replied without calling tools (tool_calls=0); response stored in conversations episodic memory only. `.env` restored to AUTONOMOUS_CYCLE_MINUTES=10. |
+| 2026-05-11 | Codex | Rewrote autonomous cycle prompts to be imperative ("ACT NOW. Tool calls only."). Verified: both cycles fired tool_calls=3 (get_news + get_crypto_price + remember). Note: `tool_choice: required` is not supported by Ollama API — prompt-only fix is sufficient. Objectives still show empty in `/api/objectives` because `remember` writes to ChromaDB while that endpoint reads PostgreSQL `objectives` table (architectural gap, not a regression). `.env` restored to AUTONOMOUS_CYCLE_MINUTES=10. |
+| 2026-05-11 | Codex | Added `CreateObjectiveTool` (tools/objectives_tool.py) writing to PostgreSQL `objectives` table with valid category='research'; added `create_objective()` to `PersistentMemory`; registered tool in api/server.py; added to CHAT_TOOL_NAMES; updated autonomous cycle prompt to call `create_objective` in STEP 3; converted tool execution from single-round `if` to 5-round agentic `while` loop in `process_message()` so model can chain tool calls across rounds. Live result: objective "Crypto Market Sentiment Analysis" confirmed in PostgreSQL at 09:58:26; `/api/objectives` returns 200 with data. 39 tests pass. `.env` restored to AUTONOMOUS_CYCLE_MINUTES=10. |
+| 2026-05-11 | Codex | Created `ecosystem.config.js` (PM2 app definition with interpreter=none, autorestart, 2G cap, timestamped logs); rewrote `scripts/setup_pm2.sh` to be fully idempotent (installs pm2 if absent, delete+start from ecosystem config, save, tail, cheatsheet); chmod +x applied. All 5 verification checks passed: script clean, pm2 status online, brain/status 200, autonomous cycle in logs, survived pkill+restart with 200 returned. |
+| 2026-05-11 | Codex | Fixed infinite reddit_search loop: (1) Added `UpdateObjectiveTool` (`tools/objectives_tool.py`) writing status+evidence to PostgreSQL; added `PersistentMemory.update_objective()` (`memory/persistent.py`); registered in `api/server.py`; added to `CHAT_TOOL_NAMES` in `core/brain.py`. (2) Rewrote autonomous cycle objective branch to recall past actions from episodic memory and prompt Morgoth to decide done/not-done explicitly. (3) Added progression rule to SYSTEM_PROMPT. 42 tests pass; all 5 touched modules compile. |
