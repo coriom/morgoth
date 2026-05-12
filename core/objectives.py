@@ -38,7 +38,8 @@ class ObjectiveStatus(str, Enum):
 class ObjectiveEvidence(BaseModel):
     """Evidence item that triggered an objective."""
 
-    trigger: str
+    # trigger is optional because auto-completion evidence (written by brain.py) omits it
+    trigger: str = ""
     summary: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

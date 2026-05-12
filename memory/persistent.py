@@ -121,6 +121,12 @@ class PersistentMemory:
             await connection.execute(CREATE_EXTENSION_SQL)
             for statement in TABLE_STATEMENTS:
                 await connection.execute(statement)
+            try:
+                await connection.execute(
+                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS cycle_count INTEGER DEFAULT 0;"
+                )
+            except Exception as exc:
+                logger.warning("Could not add cycle_count column (objectives table may not exist yet): {}", exc)
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 
@@ -295,7 +301,11 @@ class PersistentMemory:
         status: str | None = None,
         evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Update an objective's status and/or append an evidence entry, return the updated row."""
+        """Update an objective's status and/or append an evidence entry, return the updated row.
+
+        evidence is a JSONB array that grows over time; each call appends one entry via ||.
+        Callers pass a single dict; this method wraps it in a list before concatenating.
+        """
 
         import uuid as _uuid
 
@@ -334,6 +344,20 @@ class PersistentMemory:
             raise ValueError(f"Objective {objective_id} not found")
         return dict(row)
 
+    async def increment_cycle_count(self, objective_id: str) -> int:
+        """Atomically increment cycle_count for an objective and return the new value."""
+
+        import uuid as _uuid
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE objectives SET cycle_count = cycle_count + 1 "
+                "WHERE objective_id = $1 RETURNING cycle_count",
+                _uuid.UUID(str(objective_id)),
+            )
+        return row["cycle_count"] if row else 0
+
     async def create_objective(
         self,
         title: str,
@@ -354,6 +378,64 @@ class PersistentMemory:
                 priority,
             )
         return dict(row)
+
+    async def get_objectives_stats(self) -> dict[str, Any]:
+        """Return aggregated statistics about objectives, computed in SQL."""
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    status,
+                    AVG(cycle_count) AS avg_cycles,
+                    COUNT(*) FILTER (WHERE evidence @> '[{"auto_completed": true}]'::jsonb) AS auto_done,
+                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') AS last_24h
+                FROM objectives
+                GROUP BY status
+                """
+            )
+            title_rows = await conn.fetch(
+                """
+                SELECT title FROM objectives
+                GROUP BY title
+                ORDER BY MAX(created_at) DESC
+                LIMIT 20
+                """
+            )
+
+        total = 0
+        by_status: dict[str, int] = {}
+        auto_completed = 0
+        manually_completed = 0
+        weighted_cycles = 0.0
+        last_24h_count = 0
+
+        for row in rows:
+            status = row["status"]
+            count = int(row["total"])
+            total += count
+            by_status[status] = count
+            auto_completed += int(row["auto_done"])
+            if status == "done":
+                manually_completed += count - int(row["auto_done"])
+            last_24h_count += int(row["last_24h"])
+            if row["avg_cycles"] is not None:
+                weighted_cycles += float(row["avg_cycles"]) * count
+
+        avg_cycles = weighted_cycles / total if total > 0 else 0.0
+        topics = [row["title"] for row in title_rows]
+
+        return {
+            "total": total,
+            "by_status": by_status,
+            "auto_completed": auto_completed,
+            "manually_completed": manually_completed,
+            "topics": topics,
+            "avg_cycles_per_objective": avg_cycles,
+            "objectives_per_hour": last_24h_count / 24,
+        }
 
     async def insert_market_snapshot(self, payload: dict[str, Any]) -> QueryResult:
         """Insert a market snapshot row."""

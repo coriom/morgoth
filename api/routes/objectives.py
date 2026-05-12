@@ -39,6 +39,13 @@ def _build_manager(request: Request) -> ObjectivesManager:
     )
 
 
+@router.get("/stats")
+async def get_objectives_stats(request: Request) -> dict[str, Any]:
+    """Return aggregated statistics about all objectives."""
+
+    return await request.app.state.persistent_memory.get_objectives_stats()
+
+
 @router.get("")
 async def list_objectives(request: Request, status: ObjectiveStatus | None = None, limit: int = 100) -> dict[str, Any]:
     """Return objectives for the Mind page."""

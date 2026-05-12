@@ -224,6 +224,37 @@ class Brain:
 
                 if objectives:
                     obj = objectives[0]
+                    obj_id = str(obj["objective_id"])
+
+                    new_count = await self._persistent_memory.increment_cycle_count(obj_id)
+                    if new_count >= self._config.max_cycles_per_objective:
+                        try:
+                            past_matches = await self._episodic_memory.query(
+                                "conversations",
+                                f"objective {obj.get('title', '')}",
+                                limit=5,
+                            )
+                            evidence_lines = "\n".join(
+                                f"- {m.content[:200]}" for m in past_matches[:3]
+                            )
+                        except Exception:
+                            evidence_lines = ""
+                        evidence = (
+                            f"Auto-completed after {new_count} cycles. Findings:\n"
+                            + (evidence_lines or "No prior findings captured.")
+                        )
+                        await self._persistent_memory.update_objective(
+                            objective_id=obj_id,
+                            status="done",
+                            evidence={"summary": evidence, "auto_completed": True},
+                        )
+                        logger.info(
+                            "Objective {} auto-completed after {} cycles",
+                            obj_id,
+                            new_count,
+                        )
+                        return
+
                     try:
                         past_matches = await self._episodic_memory.query(
                             "conversations",
@@ -239,10 +270,11 @@ class Brain:
                         past_summary = "None yet."
 
                     prompt = (
-                        f"OBJECTIVE ID: {obj.get('objective_id', '')}\n"
+                        f"OBJECTIVE ID: {obj_id}\n"
                         f"TITLE: {obj.get('title', 'unnamed')}\n"
                         f"DETAILS: {obj.get('description', '')}\n"
-                        f"STATUS: {obj.get('status', 'pending')}\n\n"
+                        f"STATUS: {obj.get('status', 'pending')}\n"
+                        f"CYCLE: {new_count}/{self._config.max_cycles_per_objective}\n\n"
                         f"YOUR PREVIOUS ACTIONS ON THIS:\n{past_summary}\n\n"
                         f"DECIDE: Have you gathered enough data?\n"
                         f"- If NO: call ONE new tool to gather missing data.\n"
@@ -253,12 +285,13 @@ class Brain:
                 else:
                     prompt = (
                         "NO ACTIVE OBJECTIVES.\n\n"
-                        "STEP 1: Call get_news with topic='crypto' OR get_crypto_price "
-                        "with symbol='bitcoin' to scan the environment.\n"
-                        "STEP 2: Identify one specific knowledge gap from what you observed.\n"
-                        "STEP 3: Call create_objective with a clear title and description "
-                        "describing what to investigate. Priority 1-5 based on importance.\n\n"
-                        "ACT NOW. Tool calls only. No explanation."
+                        "STEP 1: Call get_crypto_price with symbol='bitcoin' to scan markets.\n"
+                        "STEP 2: After receiving the price, IMMEDIATELY call create_objective "
+                        "with a title and description based on what you observed. "
+                        "Pick a specific topic to investigate next "
+                        "(e.g., on-chain metrics, sentiment shift, news event, technical pattern).\n\n"
+                        "MANDATORY: end this cycle by calling create_objective. "
+                        "Do not narrate. Tool calls only."
                     )
 
                 result = await self.process_message(
