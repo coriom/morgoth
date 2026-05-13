@@ -30,7 +30,7 @@ class ObjectiveStatus(str, Enum):
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
+    DONE = "done"
     FAILED = "failed"
     BLOCKED = "blocked"
 
@@ -177,7 +177,7 @@ class ObjectivesManager:
         """Update an objective status."""
 
         completion_time = completed_at
-        if status == ObjectiveStatus.COMPLETED and completion_time is None:
+        if status == ObjectiveStatus.DONE and completion_time is None:
             completion_time = datetime.now(timezone.utc)
         result = await self._persistent_memory.execute(
             "UPDATE objectives SET status = $1, completed_at = $2 WHERE objective_id = $3",

@@ -136,6 +136,7 @@ class DummyEpisodicMemory:
         category: str,
         agent_id: str,
         user_id: str = "default",
+        objective_id: str | None = None,
     ) -> str:
         """Pretend the memory write succeeded."""
 

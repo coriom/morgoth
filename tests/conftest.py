@@ -139,12 +139,13 @@ class DummyEpisodicMemory:
         category: str,
         agent_id: str,
         user_id: str = "default",
+        objective_id: str | None = None,
     ) -> str:
         """Return a predictable document id."""
 
         return "doc-123"
 
-    async def query(self, collection_name: str, query_text: str, *, limit: int = 5) -> list[QueryMatch]:
+    async def query(self, collection_name: str, query_text: str, *, limit: int = 5, max_distance: float = 0.8, metadata_filter: dict | None = None) -> list[QueryMatch]:
         """Return a predictable query result."""
 
         return [

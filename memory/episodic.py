@@ -30,6 +30,7 @@ class EpisodicMetadata(BaseModel):
     agent_id: str
     user_id: str = "default"
     category: str
+    objective_id: str | None = None
 
 
 class EpisodicDocument(BaseModel):
@@ -85,7 +86,7 @@ class EpisodicMemory:
             collection.add,
             ids=[document.document_id],
             documents=[document.content],
-            metadatas=[document.metadata.model_dump()],
+            metadatas=[document.metadata.model_dump(exclude_none=True)],
         )
         logger.debug("Stored episodic document '{}' in '{}'", document.document_id, collection_name)
         return document.document_id
@@ -98,6 +99,7 @@ class EpisodicMemory:
         category: str,
         agent_id: str,
         user_id: str = "default",
+        objective_id: str | None = None,
     ) -> str:
         """Create and store an episodic document from raw text."""
 
@@ -108,6 +110,7 @@ class EpisodicMemory:
                 agent_id=agent_id,
                 user_id=user_id,
                 category=category,
+                objective_id=objective_id,
             ),
         )
         return await self.add_document(collection_name, document)
@@ -119,11 +122,15 @@ class EpisodicMemory:
         *,
         limit: int = 5,
         max_distance: float = 0.8,
+        metadata_filter: dict | None = None,
     ) -> list[QueryMatch]:
         """Query similar documents from a collection, filtered by distance threshold."""
 
         collection = self._get_collection(collection_name)
-        result = await asyncio.to_thread(collection.query, query_texts=[query_text], n_results=limit)
+        kwargs: dict[str, Any] = {"query_texts": [query_text], "n_results": limit}
+        if metadata_filter:
+            kwargs["where"] = metadata_filter
+        result = await asyncio.to_thread(collection.query, **kwargs)
         matches = self._parse_query_result(result)
         return [m for m in matches if m.distance is None or m.distance < max_distance]
 

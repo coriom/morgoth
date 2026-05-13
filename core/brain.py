@@ -97,6 +97,9 @@ class Brain:
         self._websocket_manager = websocket_manager
         self._ready = False
         self._message_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._total_cycles_completed: int = 0
+        self._last_cycle_at: str | None = None
+        self._last_cycle_action: str | None = None
 
     async def initialize(self) -> dict[str, Any]:
         """Run startup checks and initialize runtime dependencies."""
@@ -233,6 +236,7 @@ class Brain:
                                 "conversations",
                                 f"objective {obj.get('title', '')}",
                                 limit=5,
+                                metadata_filter={"objective_id": obj_id},
                             )
                             evidence_lines = "\n".join(
                                 f"- {m.content[:200]}" for m in past_matches[:3]
@@ -248,11 +252,15 @@ class Brain:
                             status="done",
                             evidence={"summary": evidence, "auto_completed": True},
                         )
+                        action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
                         logger.info(
                             "Objective {} auto-completed after {} cycles",
                             obj_id,
                             new_count,
                         )
+                        self._total_cycles_completed += 1
+                        self._last_cycle_at = datetime.now(timezone.utc).isoformat()
+                        self._last_cycle_action = action_desc
                         return
 
                     try:
@@ -261,6 +269,7 @@ class Brain:
                             f"objective {obj.get('title', '')}",
                             limit=3,
                             max_distance=0.7,
+                            metadata_filter={"objective_id": obj_id},
                         )
                         past_summary = (
                             "\n".join(f"- {m.content[:150]}" for m in past_matches)
@@ -297,6 +306,25 @@ class Brain:
                 result = await self.process_message(
                     prompt, user_id="morgoth_autonomous"
                 )
+
+                if objectives:
+                    obj = objectives[0]
+                    obj_id = str(obj["objective_id"])
+                    await self._episodic_memory.add_text(
+                        "conversations",
+                        result.message[:500] if result.message else "(no output)",
+                        category="objective_action",
+                        agent_id="morgoth_autonomous",
+                        user_id="morgoth_autonomous",
+                        objective_id=obj_id,
+                    )
+                    action_desc = f"worked on objective {obj.get('title', obj_id)}"
+                else:
+                    action_desc = "no objectives — created new objective"
+
+                self._total_cycles_completed += 1
+                self._last_cycle_at = datetime.now(timezone.utc).isoformat()
+                self._last_cycle_action = action_desc
                 logger.info(
                     "Autonomous cycle completed: {}",
                     result.message[:200],
@@ -504,6 +532,9 @@ class Brain:
             "primary_model": self._config.ollama_primary_model,
             "agent_model": self._config.ollama_agent_model,
             "max_concurrent_agents": self._config.max_concurrent_agents,
+            "total_cycles_completed": self._total_cycles_completed,
+            "last_cycle_at": self._last_cycle_at,
+            "last_cycle_action": self._last_cycle_action,
         }
 
     async def get_logs(self, limit: int = 100) -> list[dict[str, Any]]:
