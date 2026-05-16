@@ -31,6 +31,13 @@ async def get_tasks(request: Request) -> dict[str, Any]:
     return {"items": await request.app.state.brain.get_tasks()}
 
 
+@router.get("/cycle-feed")
+async def get_cycle_feed(request: Request, limit: int = 50) -> list[dict[str, Any]]:
+    """Return recent cycle-feed events, newest first (max 200)."""
+
+    return request.app.state.brain.get_cycle_feed(limit=limit)
+
+
 @router.get("/self-modifications")
 async def get_self_modifications(request: Request, limit: int = 100) -> dict[str, Any]:
     """Return recent self-modification entries."""

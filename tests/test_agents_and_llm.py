@@ -159,6 +159,16 @@ class DummyToolRouter:
 
         self.calls: list[dict[str, Any]] = []
 
+    def has_tool(self, name: str) -> bool:
+        """Accept any tool name — catch-all double."""
+
+        return True
+
+    def list_names(self) -> list[str]:
+        """Return a placeholder list of tool names."""
+
+        return ["web_search", "recall", "update_objective"]
+
     def get_schemas(self, allowed_tools: list[str] | None = None) -> list[dict[str, Any]]:
         """Return a schema with fields that should already be sanitized."""
 

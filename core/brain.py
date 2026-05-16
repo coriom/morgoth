@@ -408,6 +408,27 @@ class Brain:
                 )
             )
             for tool_call in response.message.tool_calls:
+                _name = tool_call.function.name
+                if not self._tool_router.has_tool(_name):
+                    logger.warning(
+                        "Rejected hallucinated tool '{}' with args {}",
+                        _name,
+                        tool_call.function.arguments,
+                    )
+                    self._feed_append("ERROR", f"rejected hallucinated tool: {_name}")
+                    messages.append(
+                        ChatMessage(
+                            role="tool",
+                            content=(
+                                f"ERROR: tool '{_name}' does not exist. "
+                                f"Available tools: {', '.join(self._tool_router.list_names())}. "
+                                "Call only a real tool, or call update_objective to finish this objective."
+                            ),
+                            name=_name,
+                            tool_call_id=tool_call.id,
+                        )
+                    )
+                    continue
                 _t0 = time.monotonic()
                 try:
                     self._feed_append("ACTION", f"calling {tool_call.function.name}", tool=tool_call.function.name)
