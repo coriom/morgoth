@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -100,6 +102,9 @@ class Brain:
         self._total_cycles_completed: int = 0
         self._last_cycle_at: str | None = None
         self._last_cycle_action: str | None = None
+        self._started_at = datetime.now(timezone.utc)
+        self._cycle_feed: collections.deque[dict[str, Any]] = collections.deque(maxlen=200)
+        self._last_vram_used_mb: int | None = None
 
     async def initialize(self) -> dict[str, Any]:
         """Run startup checks and initialize runtime dependencies."""
@@ -220,6 +225,7 @@ class Brain:
             try:
                 await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
                 logger.info("Autonomous cycle starting")
+                self._feed_append("SYSTEM", "autonomous cycle started")
 
                 objectives = await self._persistent_memory.get_objectives(
                     status="pending", limit=1
@@ -261,7 +267,13 @@ class Brain:
                         self._total_cycles_completed += 1
                         self._last_cycle_at = datetime.now(timezone.utc).isoformat()
                         self._last_cycle_action = action_desc
-                        return
+                        self._feed_append("OK", action_desc)
+                        # INTENTIONAL continue (not return): ends this cycle iteration
+                        # after forced auto-completion. The scheduler enforces the
+                        # inter-cycle delay, so this does not cause a tight loop. Do
+                        # NOT change to return without understanding the
+                        # MAX_CYCLES_PER_OBJECTIVE design (forced completion safety net).
+                        continue
 
                     try:
                         past_matches = await self._episodic_memory.query(
@@ -325,6 +337,7 @@ class Brain:
                 self._total_cycles_completed += 1
                 self._last_cycle_at = datetime.now(timezone.utc).isoformat()
                 self._last_cycle_action = action_desc
+                self._feed_append("OK", f"cycle complete: {action_desc}")
                 logger.info(
                     "Autonomous cycle completed: {}",
                     result.message[:200],
@@ -335,6 +348,7 @@ class Brain:
                 break
             except Exception as e:
                 logger.error("Autonomous cycle error: {}", e)
+                self._feed_append("ERROR", f"cycle error: {e}")
 
     async def enqueue_message(self, content: str, user_id: str = "default") -> None:
         """Queue an incoming chat message for asynchronous processing."""
@@ -394,13 +408,25 @@ class Brain:
                 )
             )
             for tool_call in response.message.tool_calls:
+                _t0 = time.monotonic()
                 try:
+                    self._feed_append("ACTION", f"calling {tool_call.function.name}", tool=tool_call.function.name)
                     tool_result = await self._tool_router.execute_tool(
                         tool_call.function.name,
                         tool_call.function.arguments,
                     )
+                    _dur = int((time.monotonic() - _t0) * 1000)
+                    _ok = tool_result.get("success", True)
+                    self._feed_append(
+                        "OK" if _ok else "ERROR",
+                        tool_result.get("error") or f"{tool_call.function.name} returned",
+                        tool=tool_call.function.name,
+                        duration_ms=_dur,
+                    )
                 except Exception as exc:
+                    _dur = int((time.monotonic() - _t0) * 1000)
                     logger.warning("Tool '{}' failed during chat: {}", tool_call.function.name, exc)
+                    self._feed_append("ERROR", str(exc), tool=tool_call.function.name, duration_ms=_dur)
                     tool_result = {
                         "success": False,
                         "result": None,
@@ -524,9 +550,44 @@ class Brain:
         )
         await self._websocket_manager.broadcast(message)
 
+    _VRAM_TOTAL_MB: int = 6144  # RTX 3060 6 GB
+
+    def _feed_append(
+        self,
+        level: str,
+        message: str,
+        *,
+        tool: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        """Append one entry to the in-memory cycle feed ring buffer."""
+        self._cycle_feed.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "tool": tool,
+            "duration_ms": duration_ms,
+            "message": message,
+        })
+
+    async def _fetch_vram_used_mb(self) -> int | None:
+        """Query Ollama /api/ps and return total VRAM used in MB, or None."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self._config.ollama_base_url}/api/ps")
+                resp.raise_for_status()
+                data = resp.json()
+            models = data.get("models") or []
+            total_bytes = sum(m.get("size_vram", 0) for m in models)
+            self._last_vram_used_mb = total_bytes // (1024 * 1024)
+            return self._last_vram_used_mb
+        except Exception:
+            return self._last_vram_used_mb
+
     async def get_status(self) -> dict[str, Any]:
         """Return a compact brain status payload."""
 
+        uptime = int((datetime.now(timezone.utc) - self._started_at).total_seconds())
+        vram_used = await self._fetch_vram_used_mb()
         return {
             "ready": self._ready,
             "primary_model": self._config.ollama_primary_model,
@@ -535,7 +596,16 @@ class Brain:
             "total_cycles_completed": self._total_cycles_completed,
             "last_cycle_at": self._last_cycle_at,
             "last_cycle_action": self._last_cycle_action,
+            "uptime_seconds": uptime,
+            "vram_used_mb": vram_used,
+            "vram_total_mb": self._VRAM_TOTAL_MB,
         }
+
+    def get_cycle_feed(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the most recent cycle feed entries, newest first."""
+        limit = min(limit, 200)
+        entries = list(self._cycle_feed)
+        return list(reversed(entries[-limit:]))
 
     async def get_logs(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return recent log entries from PostgreSQL."""

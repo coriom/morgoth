@@ -23,6 +23,16 @@ class ToolRouter:
         self._tools[tool.name] = tool
         logger.debug("Registered tool '{}'", tool.name)
 
+    def has_tool(self, name: str) -> bool:
+        """Return True if the tool name is registered."""
+
+        return name in self._tools
+
+    def list_names(self) -> list[str]:
+        """Return all registered tool names."""
+
+        return list(self._tools.keys())
+
     def get_tool(self, name: str) -> BaseTool:
         """Return a tool by name."""
 
