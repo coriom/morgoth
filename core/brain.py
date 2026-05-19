@@ -37,6 +37,14 @@ seeking workable paths.
 Memory collections: conversations, research, decisions, market_patterns, code_archive.
 When working on an objective, ALWAYS finish by calling update_objective. Never leave an objective in pending status after gathering data."""
 
+DATA_SOURCE_TOOLS: frozenset[str] = frozenset({
+    "get_crypto_price",
+    "get_news",
+    "reddit_search",
+    "fred_series_observations",
+    "web_search",
+})
+
 CHAT_TOOL_NAMES = [
     "web_search",
     "get_news",
@@ -105,6 +113,7 @@ class Brain:
         self._started_at = datetime.now(timezone.utc)
         self._cycle_feed: collections.deque[dict[str, Any]] = collections.deque(maxlen=200)
         self._last_vram_used_mb: int | None = None
+        self._current_objective_id: str | None = None
 
     async def initialize(self) -> dict[str, Any]:
         """Run startup checks and initialize runtime dependencies."""
@@ -290,6 +299,23 @@ class Brain:
                     except Exception:
                         past_summary = "None yet."
 
+                    try:
+                        sources_used = await self._persistent_memory.get_sources_used(obj_id)
+                    except Exception:
+                        sources_used = []
+                    _remaining = sorted(DATA_SOURCE_TOOLS - set(sources_used))
+                    _source_count = len(set(sources_used))
+                    _source_rail = (
+                        f"DATA SOURCES USED: {', '.join(sources_used) or 'none'} "
+                        f"({_source_count}/3 minimum).\n"
+                        + (
+                            f"You MUST gather from a DIFFERENT source not yet used. "
+                            f"Unused sources: {', '.join(_remaining)}. Call ONE of them now.\n"
+                            if _source_count < 3 else
+                            "Minimum sources met. You may call update_objective to finish, or gather more.\n"
+                        )
+                    )
+
                     prompt = (
                         f"OBJECTIVE ID: {obj_id}\n"
                         f"TITLE: {obj.get('title', 'unnamed')}\n"
@@ -297,6 +323,7 @@ class Brain:
                         f"STATUS: {obj.get('status', 'pending')}\n"
                         f"CYCLE: {new_count}/{self._config.max_cycles_per_objective}\n\n"
                         f"YOUR PREVIOUS ACTIONS ON THIS:\n{past_summary}\n\n"
+                        f"{_source_rail}"
                         f"DECIDE: Have you gathered enough data?\n"
                         f"- If NO: call ONE new tool to gather missing data.\n"
                         f"- If YES: call update_objective with status='done' "
@@ -315,9 +342,13 @@ class Brain:
                         "Do not narrate. Tool calls only."
                     )
 
-                result = await self.process_message(
-                    prompt, user_id="morgoth_autonomous"
-                )
+                self._current_objective_id = obj_id if objectives else None
+                try:
+                    result = await self.process_message(
+                        prompt, user_id="morgoth_autonomous"
+                    )
+                finally:
+                    self._current_objective_id = None
 
                 if objectives:
                     obj = objectives[0]
@@ -444,6 +475,13 @@ class Brain:
                         tool=tool_call.function.name,
                         duration_ms=_dur,
                     )
+                    if _ok and _name in DATA_SOURCE_TOOLS and self._current_objective_id:
+                        try:
+                            await self._persistent_memory.add_source_used(
+                                self._current_objective_id, _name
+                            )
+                        except Exception as _src_exc:
+                            logger.warning("Could not record source {}: {}", _name, _src_exc)
                 except Exception as exc:
                     _dur = int((time.monotonic() - _t0) * 1000)
                     logger.warning("Tool '{}' failed during chat: {}", tool_call.function.name, exc)

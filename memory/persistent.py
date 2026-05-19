@@ -127,6 +127,12 @@ class PersistentMemory:
                 )
             except Exception as exc:
                 logger.warning("Could not add cycle_count column (objectives table may not exist yet): {}", exc)
+            try:
+                await connection.execute(
+                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS sources_used JSONB DEFAULT '[]'::jsonb;"
+                )
+            except Exception as exc:
+                logger.warning("Could not add sources_used column (objectives table may not exist yet): {}", exc)
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 
@@ -357,6 +363,39 @@ class PersistentMemory:
                 _uuid.UUID(str(objective_id)),
             )
         return row["cycle_count"] if row else 0
+
+    async def get_sources_used(self, objective_id: str) -> list[str]:
+        """Return the list of distinct data-source tool names used for an objective."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT sources_used FROM objectives WHERE objective_id = $1",
+                objective_id,
+            )
+        if not row or row["sources_used"] is None:
+            return []
+        val = row["sources_used"]
+        return list(val) if isinstance(val, list) else json.loads(val)
+
+    async def add_source_used(self, objective_id: str, source: str) -> list[str]:
+        """Append a data-source tool name to sources_used (no duplicates). Returns updated list."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE objectives "
+                "SET sources_used = ("
+                "  SELECT to_jsonb(array(SELECT DISTINCT "
+                "    jsonb_array_elements_text("
+                "      coalesce(sources_used,'[]'::jsonb) || "
+                "      to_jsonb($2::text)"
+                "  )))"
+                ") "
+                "WHERE objective_id = $1 RETURNING sources_used",
+                objective_id,
+                source,
+            )
+        if not row or row["sources_used"] is None:
+            return []
+        val = row["sources_used"]
+        return list(val) if isinstance(val, list) else json.loads(val)
 
     async def create_objective(
         self,
