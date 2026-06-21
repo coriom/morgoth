@@ -84,7 +84,7 @@ class AppConfig(BaseModel):
     log_retention_days: int = Field(alias="LOG_RETENTION_DAYS")
     log_level_thought: bool = Field(alias="LOG_LEVEL_THOUGHT")
     autonomous_cycle_minutes: int = Field(default=10, alias="AUTONOMOUS_CYCLE_MINUTES")
-    max_cycles_per_objective: int = Field(default=3, alias="MAX_CYCLES_PER_OBJECTIVE")
+    max_cycles_per_objective: int = Field(default=5, alias="MAX_CYCLES_PER_OBJECTIVE")
     root_dir: Path = ROOT_DIR
     data_dir: Path = ROOT_DIR / "data"
     logs_dir: Path = ROOT_DIR / "data" / "logs"
@@ -185,7 +185,7 @@ async def load_config() -> AppConfig:
         "LOG_RETENTION_DAYS": os.getenv("LOG_RETENTION_DAYS"),
         "LOG_LEVEL_THOUGHT": os.getenv("LOG_LEVEL_THOUGHT"),
         "AUTONOMOUS_CYCLE_MINUTES": os.getenv("AUTONOMOUS_CYCLE_MINUTES", "10"),
-        "MAX_CYCLES_PER_OBJECTIVE": os.getenv("MAX_CYCLES_PER_OBJECTIVE", "3"),
+        "MAX_CYCLES_PER_OBJECTIVE": os.getenv("MAX_CYCLES_PER_OBJECTIVE", "5"),
         "permissions": permissions,
     }
 

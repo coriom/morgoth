@@ -45,6 +45,8 @@ DATA_SOURCE_TOOLS: frozenset[str] = frozenset({
     "web_search",
 })
 
+MIN_DISTINCT_SOURCES: int = 3
+
 CHAT_TOOL_NAMES = [
     "web_search",
     "get_news",
@@ -148,6 +150,16 @@ class Brain:
 
         if self._ready:
             return {"status": "READY"}
+
+        if MIN_DISTINCT_SOURCES >= self._config.max_cycles_per_objective:
+            logger.warning(
+                "Multi-source rail unsatisfiable: MIN_DISTINCT_SOURCES={} >= "
+                "MAX_CYCLES_PER_OBJECTIVE={}. The model has zero slack cycles "
+                "to call update_objective after meeting the source minimum; "
+                "MAX_CYCLES will force-complete every objective.",
+                MIN_DISTINCT_SOURCES,
+                self._config.max_cycles_per_objective,
+            )
 
         await self._persistent_memory.initialize()
         await self._episodic_memory.initialize()
@@ -335,11 +347,11 @@ class Brain:
                     _source_count = len(set(sources_used))
                     _source_rail = (
                         f"DATA SOURCES USED: {', '.join(sources_used) or 'none'} "
-                        f"({_source_count}/3 minimum).\n"
+                        f"({_source_count}/{MIN_DISTINCT_SOURCES} minimum).\n"
                         + (
                             f"You MUST gather from a DIFFERENT source not yet used. "
                             f"Unused sources: {', '.join(_remaining)}. Call ONE of them now.\n"
-                            if _source_count < 3 else
+                            if _source_count < MIN_DISTINCT_SOURCES else
                             "Minimum sources met. You may call update_objective to finish, or gather more.\n"
                         )
                     )
