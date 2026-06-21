@@ -442,6 +442,35 @@ class Brain:
 
             await asyncio.sleep(0.1)
 
+    async def _chat_with_transient_retry(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        """Call Ollama once, retrying a single time on transient infra errors.
+
+        Why: a per-cycle Ollama timeout (httpx.ReadTimeout etc.) propagates out
+        of the cycle and burns a MAX_CYCLES slot because increment_cycle_count
+        runs before the work. A bounded single retry inside the same cycle
+        absorbs transient infra blips without changing budget semantics.
+        Only httpx.TimeoutException and httpx.NetworkError are retried;
+        HTTPStatusError is left to existing callers (e.g. the 400 fallback).
+        Non-httpx errors propagate so genuine bugs are not masked.
+        """
+        try:
+            return await self._llm_client.chat(messages, tools=tools)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            logger.warning(
+                "Ollama chat hit transient {}; retrying once",
+                type(exc).__name__,
+            )
+            self._feed_append(
+                "ERROR",
+                f"transient Ollama error ({type(exc).__name__}); retrying once",
+            )
+            return await self._llm_client.chat(messages, tools=tools)
+
     async def process_message(self, content: str, user_id: str = "default") -> BrainResponse:
         """Process a user chat message and return the assistant response."""
 
@@ -460,11 +489,14 @@ class Brain:
         messages.append(ChatMessage(role="user", content=content))
         tool_schemas = self._tool_router.get_schemas(CHAT_TOOL_NAMES)
         try:
-            response = await self._llm_client.chat(messages, tools=tool_schemas)
+            response = await self._chat_with_transient_retry(messages, tools=tool_schemas)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 400 or not tool_schemas:
                 raise
             logger.warning("Ollama rejected tool-enabled chat payload; retrying without tools")
+            # NOTE: 400-fallback chat not wrapped by _chat_with_transient_retry;
+            # a ReadTimeout here burns the cycle slot. Low-probability (needs a
+            # 400 then a timeout same cycle). Revisit if Ollama timeouts get frequent.
             response = await self._llm_client.chat(messages)
         tool_results: list[dict[str, Any]] = []
         _tool_round = 0
@@ -496,7 +528,7 @@ class Brain:
                         )
                     )
                     try:
-                        response = await self._llm_client.chat(
+                        response = await self._chat_with_transient_retry(
                             messages, tools=tool_schemas
                         )
                     except httpx.HTTPStatusError as exc:
@@ -580,7 +612,7 @@ class Brain:
                     )
                 )
             try:
-                response = await self._llm_client.chat(messages, tools=tool_schemas)
+                response = await self._chat_with_transient_retry(messages, tools=tool_schemas)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 400 or not tool_schemas:
                     raise
