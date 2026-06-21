@@ -59,6 +59,34 @@ CHAT_TOOL_NAMES = [
 ]
 
 
+def _looks_like_unemitted_tool_intent(text: str | None) -> bool:
+    """Return True when terminal-turn text announces a tool action without emitting a tool_call.
+
+    Narrow detector: triggers when text either (a) explicitly references update_objective,
+    or (b) uses an intent phrase ("I will call", "I'll use", "calling ", ...) combined
+    with the name of a registered chat tool. Pure analytical answers with no tool-related
+    vocabulary do not match.
+    """
+
+    if not text:
+        return False
+    lower = text.lower()
+    if "update_objective" in lower:
+        return True
+    call_phrases = (
+        "i will call",
+        "i'll call",
+        "i will now call",
+        "let me call",
+        "i will use",
+        "i'll use",
+        "calling ",
+    )
+    if not any(phrase in lower for phrase in call_phrases):
+        return False
+    return any(name in lower for name in CHAT_TOOL_NAMES)
+
+
 class LogEntry(BaseModel):
     """Log entry contract for disk, DB, and UI streaming."""
 
@@ -428,8 +456,46 @@ class Brain:
             response = await self._llm_client.chat(messages)
         tool_results: list[dict[str, Any]] = []
         _tool_round = 0
+        _corrective_attempted = False
 
-        while response.message.tool_calls and _tool_round < 5:
+        while _tool_round < 5:
+            if not response.message.tool_calls:
+                if (
+                    not _corrective_attempted
+                    and self._current_objective_id
+                    and _looks_like_unemitted_tool_intent(response.message.content)
+                ):
+                    _corrective_attempted = True
+                    _tool_round += 1
+                    messages.append(
+                        ChatMessage(
+                            role="assistant",
+                            content=response.message.content,
+                        )
+                    )
+                    messages.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "You described an action but did not emit a tool call. "
+                                "Emit the actual tool_call now with all required "
+                                "arguments, or nothing. Do not narrate."
+                            ),
+                        )
+                    )
+                    try:
+                        response = await self._llm_client.chat(
+                            messages, tools=tool_schemas
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 400 or not tool_schemas:
+                            raise
+                        logger.warning(
+                            "Ollama rejected tool-enabled corrective retry; continuing without tools"
+                        )
+                        response = await self._llm_client.chat(messages)
+                    continue
+                break
             _tool_round += 1
             messages.append(
                 ChatMessage(
