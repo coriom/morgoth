@@ -290,23 +290,42 @@ class Brain:
                             past_matches = await self._episodic_memory.query(
                                 "conversations",
                                 f"objective {obj.get('title', '')}",
-                                limit=5,
+                                limit=10,
+                                max_distance=2.0,
                                 metadata_filter={"objective_id": obj_id},
                             )
+                            findings = [m.content for m in past_matches if m.content]
                             evidence_lines = "\n".join(
                                 f"- {m.content[:200]}" for m in past_matches[:3]
                             )
                         except Exception:
+                            findings = []
                             evidence_lines = ""
                         evidence = (
                             f"Auto-completed after {new_count} cycles. Findings:\n"
                             + (evidence_lines or "No prior findings captured.")
+                        )
+                        try:
+                            sources_used_done = await self._persistent_memory.get_sources_used(obj_id)
+                        except Exception:
+                            sources_used_done = []
+                        synthesis_text = await self._synthesize_objective(
+                            obj, sources_used_done, findings
                         )
                         await self._persistent_memory.update_objective(
                             objective_id=obj_id,
                             status="done",
                             evidence={"summary": evidence, "auto_completed": True},
                         )
+                        if synthesis_text is not None:
+                            await self._persistent_memory.update_objective(
+                                objective_id=obj_id,
+                                evidence={
+                                    "type": "synthesis",
+                                    "content": synthesis_text,
+                                    "sources": sorted(set(sources_used_done)),
+                                },
+                            )
                         action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
                         logger.info(
                             "Objective {} auto-completed after {} cycles",
@@ -441,6 +460,66 @@ class Brain:
                 await self.dispatch_task(task)
 
             await asyncio.sleep(0.1)
+
+    async def _synthesize_objective(
+        self,
+        obj: dict[str, Any],
+        sources_used: list[str],
+        findings: list[str],
+    ) -> str | None:
+        """Produce a cross-source analysis at objective end. Returns None to skip.
+
+        Distinct from a per-source summary: the prompt explicitly forbids
+        summarizing each source separately and demands agreements, contradictions,
+        and correlations BETWEEN sources. Inherits transient-error resilience by
+        going through _chat_with_transient_retry. On any failure the function
+        returns a short fallback string so completion still proceeds.
+        """
+        distinct = sorted(set(sources_used or []))
+        if len(distinct) < 2:
+            logger.info(
+                "Synthesis skipped for objective {}: only {} distinct source(s)",
+                obj.get("objective_id"),
+                len(distinct),
+            )
+            self._feed_append(
+                "INFO",
+                f"synthesis skipped: only {len(distinct)} distinct source(s)",
+            )
+            return None
+
+        findings_block = (
+            "\n".join(f"- {(f or '').strip()[:300]}" for f in findings if f)
+            or "(no findings captured)"
+        )
+        sources_block = ", ".join(distinct)
+        prompt = (
+            f"OBJECTIVE: {obj.get('title', 'unnamed')}\n"
+            f"DETAILS: {obj.get('description', '')}\n\n"
+            f"DISTINCT SOURCES CONSULTED: {sources_block}\n\n"
+            f"FINDINGS GATHERED ACROSS CYCLES:\n{findings_block}\n\n"
+            "Produce a cross-source analysis. Identify agreements, "
+            "contradictions, and correlations BETWEEN these sources. Do not "
+            "summarize each source separately. State what the combination "
+            "reveals that no single source shows. If sources conflict, name "
+            "the conflict."
+        )
+        messages = [
+            ChatMessage(role="system", content=build_system_prompt()),
+            ChatMessage(role="user", content=prompt),
+        ]
+        try:
+            response = await self._chat_with_transient_retry(messages)
+            text = (response.message.content or "").strip()
+            return text or "(synthesis produced no content)"
+        except Exception as exc:
+            logger.warning(
+                "Synthesis chat failed for objective {}: {}",
+                obj.get("objective_id"),
+                exc,
+            )
+            self._feed_append("ERROR", f"synthesis failed: {type(exc).__name__}: {exc}")
+            return f"(synthesis failed: {type(exc).__name__})"
 
     async def _chat_with_transient_retry(
         self,
