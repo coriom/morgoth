@@ -424,7 +424,7 @@ class Brain:
                     obj_id = str(obj["objective_id"])
                     await self._episodic_memory.add_text(
                         "conversations",
-                        result.message[:500] if result.message else "(no output)",
+                        self._format_cycle_finding(result)[:1500],
                         category="objective_action",
                         agent_id="morgoth_autonomous",
                         user_id="morgoth_autonomous",
@@ -470,6 +470,35 @@ class Brain:
                 await self.dispatch_task(task)
 
             await asyncio.sleep(0.1)
+
+    def _format_cycle_finding(self, result: BrainResponse) -> str:
+        """Combine model narrative and tool-result data into a stored finding.
+
+        The autonomous-objective prompt instructs the model to emit tool calls
+        only and "No explanation", so result.message is routinely empty after a
+        successful tool call. Persisting only result.message therefore loses the
+        actual fetched payload (price, news, search snippets) and downstream
+        synthesis sees "(no output)". Including a compact tool-result digest
+        keeps the data the cycle just fetched in the finding.
+        """
+        narrative = (result.message or "").strip()
+        tool_lines: list[str] = []
+        for tr in result.tool_results or []:
+            name = tr.get("tool")
+            inner = tr.get("result") or {}
+            if inner.get("success"):
+                payload_str = json.dumps(inner.get("result"), default=str)[:300]
+                tool_lines.append(f"{name}: {payload_str}")
+            else:
+                tool_lines.append(f"{name} FAILED: {inner.get('error') or 'unknown'}")
+        parts: list[str] = []
+        # tool results first so they survive downstream 300-char truncation in
+        # the synthesis prompt even when narrative also exists
+        if tool_lines:
+            parts.append("TOOL RESULTS:\n" + "\n".join(f"- {ln}" for ln in tool_lines))
+        if narrative:
+            parts.append(narrative)
+        return "\n\n".join(parts) or "(no output)"
 
     async def _synthesize_objective(
         self,
