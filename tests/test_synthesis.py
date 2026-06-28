@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.brain import Brain
 from core.llm_client import ChatMessage, ChatResponse
+from core.objectives import ObjectiveEvidence
 from memory.episodic import EpisodicMetadata, QueryMatch
 
 
@@ -222,3 +223,35 @@ async def test_synthesis_inherits_transient_retry() -> None:
         "synthesis must inherit _chat_with_transient_retry: first timeout, then success"
     )
     assert result == "Synthesis OK after retry"
+
+
+def test_objective_evidence_validates_both_shapes() -> None:
+    """ObjectiveEvidence must accept both the summary shape and the synthesis shape.
+
+    Regression guard for the /api/objectives 500: synthesis entries
+    lack a `summary` field, so requiring it would break round-trip
+    deserialization of any objective that has been auto-completed
+    with synthesis attached.
+    """
+
+    raw_evidence = [
+        {"summary": "Auto-completed after 5 cycles. Findings:\n- (no output)",
+         "auto_completed": True},
+        {"type": "synthesis",
+         "content": "Cross-source: news confirms the price action.",
+         "sources": ["get_crypto_price", "get_news", "web_search"]},
+    ]
+
+    items = [ObjectiveEvidence.model_validate(item) for item in raw_evidence]
+
+    assert len(items) == 2
+    # Summary entry: summary preserved, extra key auto_completed kept via extra='allow'
+    summary_dumped = items[0].model_dump(mode="json")
+    assert summary_dumped["summary"].startswith("Auto-completed after 5 cycles")
+    assert summary_dumped["auto_completed"] is True
+    # Synthesis entry: no summary required, extras kept
+    synth_dumped = items[1].model_dump(mode="json")
+    assert synth_dumped["summary"] is None
+    assert synth_dumped["type"] == "synthesis"
+    assert synth_dumped["content"].startswith("Cross-source:")
+    assert synth_dumped["sources"] == ["get_crypto_price", "get_news", "web_search"]

@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import AppConfig
 from core.llm_client import ChatMessage, OllamaLLMClient
@@ -36,11 +36,23 @@ class ObjectiveStatus(str, Enum):
 
 
 class ObjectiveEvidence(BaseModel):
-    """Evidence item that triggered an objective."""
+    """Evidence item attached to an objective.
+
+    Two shapes are accepted, both stored as JSONB entries:
+    - summary shape (suggest_and_create_objective, auto-completion):
+        {"summary": str, "auto_completed": bool, ...}
+    - synthesis shape (Brain._synthesize_objective):
+        {"type": "synthesis", "content": str, "sources": list[str]}
+    summary is optional so the synthesis shape validates; extra='allow'
+    preserves non-declared keys so both shapes round-trip through the API
+    without data loss.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     # trigger is optional because auto-completion evidence (written by brain.py) omits it
     trigger: str = ""
-    summary: str
+    summary: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
