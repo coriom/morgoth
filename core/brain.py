@@ -536,11 +536,18 @@ class Brain:
             f"DETAILS: {obj.get('description', '')}\n\n"
             f"DISTINCT SOURCES CONSULTED: {sources_block}\n\n"
             f"FINDINGS GATHERED ACROSS CYCLES:\n{findings_block}\n\n"
-            "Produce a cross-source analysis. Identify agreements, "
+            "Write the cross-source analysis ONLY. Identify agreements, "
             "contradictions, and correlations BETWEEN these sources. Do not "
             "summarize each source separately. State what the combination "
             "reveals that no single source shows. If sources conflict, name "
-            "the conflict."
+            "the conflict.\n\n"
+            "OUTPUT RULES:\n"
+            "- No identity preamble or self-reference (do not start with "
+            "'I am Morgoth', 'I will', 'As an AI', etc.).\n"
+            "- No tool-call narration. This is a written analysis, not a "
+            "tool call: do NOT emit 'UPDATE_OBJECTIVE', status lines, or "
+            "any 'I will now call X' phrasing.\n"
+            "- Begin directly with the analysis."
         )
         messages = [
             ChatMessage(role="system", content=build_system_prompt()),
