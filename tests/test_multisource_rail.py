@@ -139,13 +139,17 @@ async def test_get_sources_used_parses_json_string_column(app_config) -> None:
 
 
 async def test_data_source_tools_membership() -> None:
-    """DATA_SOURCE_TOOLS must contain the five external data sources and exclude internal tools."""
+    """DATA_SOURCE_TOOLS must contain the external data sources and exclude internal tools.
+
+    fred_series_observations is intentionally NOT included: without a FRED_API_KEY
+    in .env the tool always fails, so counting it as a source-rail option only
+    wastes cycle slots. Re-add it if/when a key is provisioned.
+    """
 
     assert DATA_SOURCE_TOOLS == frozenset({
         "get_crypto_price",
         "get_news",
         "reddit_search",
-        "fred_series_observations",
         "web_search",
     })
     for excluded in (
@@ -154,7 +158,8 @@ async def test_data_source_tools_membership() -> None:
         "technical_analysis",
         "create_objective",
         "update_objective",
+        "fred_series_observations",
     ):
         assert excluded not in DATA_SOURCE_TOOLS, (
-            f"{excluded!r} is an internal tool and must not count toward the source rail"
+            f"{excluded!r} must not count toward the source rail"
         )

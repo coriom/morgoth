@@ -41,7 +41,6 @@ DATA_SOURCE_TOOLS: frozenset[str] = frozenset({
     "get_crypto_price",
     "get_news",
     "reddit_search",
-    "fred_series_observations",
     "web_search",
 })
 
