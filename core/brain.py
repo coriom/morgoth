@@ -318,14 +318,24 @@ class Brain:
                             evidence={"summary": evidence, "auto_completed": True},
                         )
                         if synthesis_text is not None:
-                            await self._persistent_memory.update_objective(
-                                objective_id=obj_id,
-                                evidence={
-                                    "type": "synthesis",
-                                    "content": synthesis_text,
-                                    "sources": sorted(set(sources_used_done)),
-                                },
-                            )
+                            try:
+                                await self._persistent_memory.update_objective(
+                                    objective_id=obj_id,
+                                    evidence={
+                                        "type": "synthesis",
+                                        "content": synthesis_text,
+                                        "sources": sorted(set(sources_used_done)),
+                                    },
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Synthesis storage failed, objective already done: {}",
+                                    exc,
+                                )
+                                self._feed_append(
+                                    "ERROR",
+                                    f"synthesis storage failed: {type(exc).__name__}",
+                                )
                         action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
                         logger.info(
                             "Objective {} auto-completed after {} cycles",
