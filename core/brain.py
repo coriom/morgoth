@@ -631,7 +631,13 @@ class Brain:
             '  "evidence" (array): [{"source": "<tool name>", "detail": "<excerpt>"}]\n\n'
             "RULES:\n"
             "- subject must be a noun phrase (the thing the claim is about).\n"
-            "- claim must be directional (a trend or state), NOT a vague observation.\n"
+            "- claim MUST be a directional trend or state that could be agreed "
+            "with or contradicted (e.g. 'declining', 'bullish', 'increasing'). "
+            "If you cannot state a directional claim, do NOT emit that thesis. "
+            "Never emit claims like 'unclear', 'mixed', 'unknown', 'complex' — "
+            "these are not testable; omit them.\n"
+            "- Every thesis MUST have at least one evidence item drawn from the "
+            "synthesis. If you cannot cite evidence for a claim, do NOT emit it.\n"
             "- evidence must come from the synthesis text; do not invent.\n"
             "- If the synthesis contains no testable directional claim, return [].\n"
             "Output ONLY the JSON array. No prose, no preamble, no code fences."
@@ -685,6 +691,18 @@ class Brain:
             return []
         if not isinstance(data, list):
             return []
+        # Deterministic backstop to the prompt: the 8B sometimes emits
+        # non-directional pseudo-theses or claims without evidence despite
+        # the RULES. Both make a thesis uncomparable for the contradiction
+        # detector, so drop them at parse time.
+        non_directional_stoplist = {
+            "unclear",
+            "mixed",
+            "unknown",
+            "complex",
+            "uncertain",
+            "n/a",
+        }
         valid: list[dict[str, Any]] = []
         for item in data:
             if not isinstance(item, dict):
@@ -704,6 +722,22 @@ class Brain:
                 else "medium"
             )
             evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+            # Drop non-directional pseudo-theses (claim is a hedge word)
+            if claim.strip().lower() in non_directional_stoplist:
+                logger.debug(
+                    "Dropping non-directional thesis: subject={!r} claim={!r}",
+                    subject,
+                    claim,
+                )
+                continue
+            # Drop theses with no evidence — they cannot be contradiction-checked
+            if not evidence:
+                logger.debug(
+                    "Dropping thesis with empty evidence: subject={!r} claim={!r}",
+                    subject,
+                    claim,
+                )
+                continue
             valid.append(
                 {
                     "subject": subject.strip(),

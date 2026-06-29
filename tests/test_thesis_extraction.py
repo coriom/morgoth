@@ -213,7 +213,12 @@ def test_parse_thesis_json_well_formed_array() -> None:
 def test_parse_thesis_json_strips_markdown_fences() -> None:
     """A JSON array wrapped in ```json fences must still parse."""
 
-    raw = '```json\n[{"subject": "X", "claim": "rising", "confidence": "high", "evidence": []}]\n```'
+    raw = (
+        '```json\n'
+        '[{"subject": "X", "claim": "rising", "confidence": "high", '
+        '"evidence": [{"source": "get_crypto_price", "detail": "+2%"}]}]\n'
+        '```'
+    )
 
     result = Brain._parse_thesis_json(raw)
 
@@ -244,15 +249,91 @@ def test_parse_thesis_json_malformed_json_returns_empty() -> None:
     assert Brain._parse_thesis_json(raw) == []
 
 
+def test_parse_thesis_json_drops_non_directional_stoplist_claims() -> None:
+    """Hedge-word claims ('unclear', 'mixed', 'unknown', 'complex', 'uncertain', 'n/a')
+    are dropped — they cannot be contradiction-checked even though the JSON is well-formed.
+    Case-insensitive.
+    """
+
+    raw = json.dumps([
+        {"subject": "Reasons behind BTC price drop", "claim": "unclear",
+         "evidence": [{"source": "get_news", "detail": "no direct mention"}]},
+        {"subject": "Market sentiment", "claim": "Mixed",
+         "evidence": [{"source": "web_search", "detail": "both bullish and bearish"}]},
+        {"subject": "Future direction", "claim": "UNKNOWN",
+         "evidence": [{"source": "get_news", "detail": "no signal"}]},
+        {"subject": "Dynamics", "claim": "complex",
+         "evidence": [{"source": "web_search", "detail": "many factors"}]},
+        {"subject": "Outlook", "claim": "uncertain",
+         "evidence": [{"source": "get_news", "detail": "no consensus"}]},
+        {"subject": "Status", "claim": "n/a",
+         "evidence": [{"source": "x", "detail": "y"}]},
+        # Survivor: directional + evidence
+        {"subject": "BTC price", "claim": "declining",
+         "evidence": [{"source": "get_crypto_price", "detail": "-1.6%"}]},
+    ])
+
+    result = Brain._parse_thesis_json(raw)
+
+    assert len(result) == 1
+    assert result[0]["subject"] == "BTC price"
+    assert result[0]["claim"] == "declining"
+
+
+def test_parse_thesis_json_drops_theses_with_empty_evidence() -> None:
+    """A thesis with no evidence is dropped — the prompt requires sourcing, the
+    parse filter enforces it deterministically as a backstop.
+    """
+
+    raw = json.dumps([
+        {"subject": "BTC fees", "claim": "increasing",
+         "evidence": []},  # empty evidence -> dropped
+        {"subject": "BTC volume", "claim": "declining"},  # no evidence key -> dropped
+        {"subject": "BTC price", "claim": "declining",
+         "evidence": [{"source": "get_crypto_price", "detail": "-1.6%"}]},
+    ])
+
+    result = Brain._parse_thesis_json(raw)
+
+    assert len(result) == 1
+    assert result[0]["subject"] == "BTC price"
+
+
+def test_parse_thesis_json_passes_through_directional_with_evidence() -> None:
+    """A thesis whose claim is directional AND has at least one evidence item
+    passes through the hardening filters unchanged.
+    """
+
+    raw = json.dumps([
+        {"subject": "BTC transaction volume", "claim": "declining",
+         "confidence": "high",
+         "evidence": [{"source": "get_crypto_price", "detail": "down 24h"}]},
+    ])
+
+    result = Brain._parse_thesis_json(raw)
+
+    assert len(result) == 1
+    t = result[0]
+    assert t["subject"] == "BTC transaction volume"
+    assert t["claim"] == "declining"
+    assert t["confidence"] == "high"
+    assert t["evidence"] == [{"source": "get_crypto_price", "detail": "down 24h"}]
+
+
 def test_parse_thesis_json_drops_items_missing_required_fields() -> None:
     """Items without subject+claim are dropped; valid ones survive."""
 
     raw = json.dumps([
-        {"subject": "Valid", "claim": "rising"},
-        {"subject": "", "claim": "still has empty subject"},
-        {"claim": "missing subject"},
-        {"subject": "missing claim"},
-        {"subject": "Other valid", "claim": "falling", "confidence": "weird-value"},
+        {"subject": "Valid", "claim": "rising",
+         "evidence": [{"source": "get_crypto_price", "detail": "+2%"}]},
+        {"subject": "", "claim": "still has empty subject",
+         "evidence": [{"source": "x", "detail": "y"}]},
+        {"claim": "missing subject",
+         "evidence": [{"source": "x", "detail": "y"}]},
+        {"subject": "missing claim",
+         "evidence": [{"source": "x", "detail": "y"}]},
+        {"subject": "Other valid", "claim": "falling", "confidence": "weird-value",
+         "evidence": [{"source": "get_news", "detail": "bearish"}]},
     ])
 
     result = Brain._parse_thesis_json(raw)
