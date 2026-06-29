@@ -133,6 +133,26 @@ class PersistentMemory:
                 )
             except Exception as exc:
                 logger.warning("Could not add sources_used column (objectives table may not exist yet): {}", exc)
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS theses (
+                        thesis_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        subject TEXT NOT NULL,
+                        claim TEXT NOT NULL,
+                        confidence TEXT DEFAULT 'medium',
+                        evidence JSONB DEFAULT '[]'::jsonb,
+                        status TEXT DEFAULT 'active',
+                        objective_id TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS theses_subject_idx ON theses (subject);"
+                )
+            except Exception as exc:
+                logger.warning("Could not ensure theses table (non-fatal): {}", exc)
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 
@@ -396,6 +416,54 @@ class PersistentMemory:
             return []
         val = row["sources_used"]
         return list(val) if isinstance(val, list) else json.loads(val)
+
+    async def add_thesis(
+        self,
+        subject: str,
+        claim: str,
+        confidence: str = "medium",
+        evidence: list[dict[str, Any]] | None = None,
+        objective_id: str | None = None,
+    ) -> str:
+        """Insert a thesis row and return its thesis_id as a string."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO theses (subject, claim, confidence, evidence, objective_id) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5) RETURNING thesis_id",
+                subject,
+                claim,
+                confidence,
+                json.dumps(evidence or []),
+                objective_id,
+            )
+        return str(row["thesis_id"]) if row else ""
+
+    async def get_theses(
+        self,
+        status: str | None = None,
+        subject: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return theses optionally filtered by status and/or subject (newest first)."""
+        pool = self._require_pool()
+        clauses: list[str] = []
+        params: list[Any] = []
+        idx = 1
+        if status is not None:
+            clauses.append(f"status = ${idx}")
+            params.append(status)
+            idx += 1
+        if subject is not None:
+            clauses.append(f"subject = ${idx}")
+            params.append(subject)
+            idx += 1
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        query = f"SELECT * FROM theses {where} ORDER BY created_at DESC LIMIT ${idx}"
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
 
     async def create_objective(
         self,

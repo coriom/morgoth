@@ -335,6 +335,42 @@ class Brain:
                                     "ERROR",
                                     f"synthesis storage failed: {type(exc).__name__}",
                                 )
+                        # Thesis extraction: structured beliefs derived from the
+                        # synthesis, persisted for future contradiction detection.
+                        # Skipped when there is no synthesis (None/empty). The whole
+                        # block is non-blocking — objective is already done above.
+                        if synthesis_text:
+                            try:
+                                theses = await self._extract_theses(
+                                    obj, synthesis_text, sources_used_done
+                                )
+                                for t in theses:
+                                    await self._persistent_memory.add_thesis(
+                                        subject=t["subject"],
+                                        claim=t["claim"],
+                                        confidence=t.get("confidence", "medium"),
+                                        evidence=t.get("evidence", []),
+                                        objective_id=obj_id,
+                                    )
+                                if theses:
+                                    self._feed_append(
+                                        "OK",
+                                        f"extracted {len(theses)} thesis/theses",
+                                    )
+                                else:
+                                    self._feed_append(
+                                        "INFO",
+                                        "no testable theses extracted",
+                                    )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Thesis extraction failed, objective already done: {}",
+                                    exc,
+                                )
+                                self._feed_append(
+                                    "ERROR",
+                                    f"thesis extraction failed: {type(exc).__name__}",
+                                )
                         action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
                         logger.info(
                             "Objective {} auto-completed after {} cycles",
@@ -565,6 +601,118 @@ class Brain:
             )
             self._feed_append("ERROR", f"synthesis failed: {type(exc).__name__}: {exc}")
             return f"(synthesis failed: {type(exc).__name__})"
+
+    async def _extract_theses(
+        self,
+        obj: dict[str, Any],
+        synthesis_text: str,
+        sources: list[str],
+    ) -> list[dict[str, Any]]:
+        """Extract testable directional theses from a synthesis. Returns possibly-empty list.
+
+        One dedicated Ollama call via _chat_with_transient_retry (no tools) so it
+        inherits the transient-retry resilience. The prompt instructs the model to
+        emit a JSON array of {subject, claim, confidence, evidence}. Defensive
+        parsing: any failure (chat error, malformed JSON, prose despite instructions)
+        logs a warning and returns []. An empty list is a VALID result — a synthesis
+        with no testable directional claim must not be coerced into inventing one.
+        """
+        if not synthesis_text or not synthesis_text.strip():
+            return []
+        prompt = (
+            f"OBJECTIVE: {obj.get('title', 'unnamed')}\n"
+            f"DISTINCT SOURCES: {', '.join(sources)}\n\n"
+            f"SYNTHESIS:\n{synthesis_text}\n\n"
+            "Extract testable directional beliefs from the synthesis as a JSON "
+            "array. Each element MUST have:\n"
+            '  "subject" (str): a normalized topic, e.g. "BTC short-term price"\n'
+            '  "claim" (str): directional, e.g. "bearish" or "declining"; not vague\n'
+            '  "confidence" (str): "low" | "medium" | "high"\n'
+            '  "evidence" (array): [{"source": "<tool name>", "detail": "<excerpt>"}]\n\n'
+            "RULES:\n"
+            "- subject must be a noun phrase (the thing the claim is about).\n"
+            "- claim must be directional (a trend or state), NOT a vague observation.\n"
+            "- evidence must come from the synthesis text; do not invent.\n"
+            "- If the synthesis contains no testable directional claim, return [].\n"
+            "Output ONLY the JSON array. No prose, no preamble, no code fences."
+        )
+        messages = [
+            ChatMessage(role="system", content=build_system_prompt()),
+            ChatMessage(role="user", content=prompt),
+        ]
+        try:
+            response = await self._chat_with_transient_retry(messages)
+        except Exception as exc:
+            logger.warning(
+                "Thesis extraction chat failed for objective {}: {}",
+                obj.get("objective_id"),
+                exc,
+            )
+            return []
+        return self._parse_thesis_json((response.message.content or "").strip())
+
+    @staticmethod
+    def _parse_thesis_json(text: str) -> list[dict[str, Any]]:
+        """Defensively parse a model-emitted thesis JSON array; return [] on any failure."""
+        if not text:
+            return []
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            lines = stripped.split("\n")
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            stripped = "\n".join(lines).strip()
+        # Slice out the first JSON array in case prose leaked in around it
+        start = stripped.find("[")
+        end = stripped.rfind("]")
+        if start == -1 or end == -1 or end < start:
+            logger.warning(
+                "Thesis JSON parse: no array delimiters found in: {!r}",
+                text[:200],
+            )
+            return []
+        candidate = stripped[start : end + 1]
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "Thesis JSON parse error: {}; raw: {!r}",
+                exc,
+                text[:200],
+            )
+            return []
+        if not isinstance(data, list):
+            return []
+        valid: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            subject = item.get("subject")
+            claim = item.get("claim")
+            if not (
+                isinstance(subject, str)
+                and subject.strip()
+                and isinstance(claim, str)
+                and claim.strip()
+            ):
+                continue
+            confidence = (
+                item.get("confidence")
+                if item.get("confidence") in ("low", "medium", "high")
+                else "medium"
+            )
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+            valid.append(
+                {
+                    "subject": subject.strip(),
+                    "claim": claim.strip(),
+                    "confidence": confidence,
+                    "evidence": evidence,
+                }
+            )
+        return valid
 
     async def _chat_with_transient_retry(
         self,

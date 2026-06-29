@@ -143,7 +143,11 @@ async def test_synthesis_entry_added_on_forced_completion() -> None:
     assert len(synth) == 1, "exactly one synthesis evidence entry expected"
     assert "Cross-source:" in synth[0]["evidence"]["content"]
     assert synth[0]["evidence"]["sources"] == ["get_crypto_price", "get_news", "web_search"]
-    assert llm_client.chat.call_count == 1, "synthesis runs once per objective, not per cycle"
+    # Two LLM calls per forced completion: 1 synthesis + 1 thesis extraction.
+    # Both run once per objective (never per cycle).
+    assert llm_client.chat.call_count == 2, (
+        "expected 2 LLM calls on forced completion: synthesis + thesis extraction"
+    )
 
 
 @pytest.mark.asyncio
