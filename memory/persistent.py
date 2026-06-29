@@ -153,6 +153,20 @@ class PersistentMemory:
                 )
             except Exception as exc:
                 logger.warning("Could not ensure theses table (non-fatal): {}", exc)
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contradictions (
+                        contradiction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        subject_group TEXT,
+                        thesis_id_a UUID NOT NULL,
+                        thesis_id_b UUID NOT NULL,
+                        detected_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    """
+                )
+            except Exception as exc:
+                logger.warning("Could not ensure contradictions table (non-fatal): {}", exc)
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 
@@ -464,6 +478,37 @@ class PersistentMemory:
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
         return [dict(row) for row in rows]
+
+    async def update_thesis_status(self, thesis_id: str, status: str) -> bool:
+        """Set a thesis status (e.g. 'active' -> 'contradicted'). Returns True if updated."""
+        pool = self._require_pool()
+        import uuid as _uuid
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE theses SET status = $1 WHERE thesis_id = $2 RETURNING thesis_id",
+                status,
+                _uuid.UUID(str(thesis_id)),
+            )
+        return row is not None
+
+    async def record_contradiction(
+        self,
+        thesis_id_a: str,
+        thesis_id_b: str,
+        subject_group: str | None = None,
+    ) -> str:
+        """Insert a contradiction row linking two theses. Returns the new id."""
+        pool = self._require_pool()
+        import uuid as _uuid
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO contradictions (subject_group, thesis_id_a, thesis_id_b) "
+                "VALUES ($1, $2, $3) RETURNING contradiction_id",
+                subject_group,
+                _uuid.UUID(str(thesis_id_a)),
+                _uuid.UUID(str(thesis_id_b)),
+            )
+        return str(row["contradiction_id"]) if row else ""
 
     async def create_objective(
         self,

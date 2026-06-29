@@ -17,6 +17,10 @@ from pydantic import BaseModel, Field
 from agents.agent_manager import AgentManager
 from api.ws.handler import OutboundWebSocketMessage, WebSocketManager
 from core.config import AppConfig
+from core.contradictions import (
+    claims_oppose,
+    group_theses_by_subject,
+)
 from core.llm_client import ChatMessage, OllamaLLMClient
 from core.scheduler import Scheduler, Task, TaskPriority, TaskType
 from core.tool_router import ToolRouter
@@ -371,6 +375,25 @@ class Brain:
                                     "ERROR",
                                     f"thesis extraction failed: {type(exc).__name__}",
                                 )
+                        # Contradiction detection: scan the active thesis set
+                        # for newly-introduced opposed claims. Non-blocking — a
+                        # detector failure must NOT prevent objective completion.
+                        try:
+                            contradictions = await self.detect_contradictions()
+                            if contradictions:
+                                self._feed_append(
+                                    "WARN",
+                                    f"detected {len(contradictions)} contradiction(s)",
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "Contradiction detection failed, objective already done: {}",
+                                exc,
+                            )
+                            self._feed_append(
+                                "ERROR",
+                                f"contradiction detection failed: {type(exc).__name__}",
+                            )
                         action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
                         logger.info(
                             "Objective {} auto-completed after {} cycles",
@@ -747,6 +770,79 @@ class Brain:
                 }
             )
         return valid
+
+    async def detect_contradictions(self) -> list[dict[str, Any]]:
+        """Scan active theses; mark every opposed pair contradicted and record it.
+
+        - Loads active theses from the theses table.
+        - Groups them by semantic subject similarity (Chroma default embedding).
+        - Within each group, every pair whose claims map to opposite directional
+          poles is recorded in the contradictions table; both theses are flipped
+          to status='contradicted'.
+
+        Non-blocking: any failure (DB error, embedding failure, missing row)
+        is logged and the function returns the partial list — the cycle's
+        forced-completion path must reach its INTENTIONAL continue regardless.
+        """
+        try:
+            active = await self._persistent_memory.get_theses(status="active", limit=500)
+        except Exception as exc:
+            logger.warning("detect_contradictions: failed to load theses: {}", exc)
+            self._feed_append("ERROR", f"contradiction load failed: {type(exc).__name__}")
+            return []
+        if len(active) < 2:
+            return []
+        try:
+            groups = group_theses_by_subject(active)
+        except Exception as exc:
+            logger.warning("detect_contradictions: subject grouping failed: {}", exc)
+            self._feed_append("ERROR", f"contradiction grouping failed: {type(exc).__name__}")
+            return []
+        found: list[dict[str, Any]] = []
+        # IDs already marked contradicted in THIS pass; avoid re-flipping.
+        flipped: set[str] = set()
+        for group in groups:
+            if len(group) < 2:
+                continue
+            for i in range(len(group)):
+                for j in range(i + 1, len(group)):
+                    ta, tb = group[i], group[j]
+                    if not claims_oppose(ta.get("claim", ""), tb.get("claim", "")):
+                        continue
+                    pair_subject = ta.get("subject")
+                    id_a = str(ta.get("thesis_id"))
+                    id_b = str(tb.get("thesis_id"))
+                    try:
+                        await self._persistent_memory.record_contradiction(
+                            thesis_id_a=id_a,
+                            thesis_id_b=id_b,
+                            subject_group=pair_subject,
+                        )
+                        if id_a not in flipped:
+                            await self._persistent_memory.update_thesis_status(id_a, "contradicted")
+                            flipped.add(id_a)
+                        if id_b not in flipped:
+                            await self._persistent_memory.update_thesis_status(id_b, "contradicted")
+                            flipped.add(id_b)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to persist contradiction ({}, {}): {}",
+                            id_a, id_b, exc,
+                        )
+                        continue
+                    found.append({
+                        "thesis_id_a": id_a,
+                        "thesis_id_b": id_b,
+                        "subject_group": pair_subject,
+                        "claim_a": ta.get("claim"),
+                        "claim_b": tb.get("claim"),
+                    })
+                    self._feed_append(
+                        "WARN",
+                        f"contradiction: '{ta.get('claim')}' vs '{tb.get('claim')}' "
+                        f"on {(pair_subject or '')[:80]}",
+                    )
+        return found
 
     async def _chat_with_transient_retry(
         self,
