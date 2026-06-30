@@ -148,6 +148,7 @@ async def test_data_source_tools_membership() -> None:
 
     assert DATA_SOURCE_TOOLS == frozenset({
         "get_crypto_price",
+        "get_bitcoin_onchain",
         "get_news",
         "reddit_search",
         "web_search",

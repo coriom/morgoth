@@ -43,6 +43,7 @@ When working on an objective, ALWAYS finish by calling update_objective. Never l
 
 DATA_SOURCE_TOOLS: frozenset[str] = frozenset({
     "get_crypto_price",
+    "get_bitcoin_onchain",
     "get_news",
     "reddit_search",
     "web_search",
@@ -54,6 +55,7 @@ CHAT_TOOL_NAMES = [
     "web_search",
     "get_news",
     "get_crypto_price",
+    "get_bitcoin_onchain",
     "fred_series_observations",
     "reddit_search",
     "technical_analysis",
