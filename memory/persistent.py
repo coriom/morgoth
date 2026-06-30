@@ -469,7 +469,9 @@ class PersistentMemory:
             params.append(status)
             idx += 1
         if subject is not None:
-            clauses.append(f"subject = ${idx}")
+            # Substring + case-insensitive so /api/theses?subject=BTC matches
+            # "BTC short-term price" as well as "Bitcoin BTC volume".
+            clauses.append(f"subject ILIKE '%' || ${idx} || '%'")
             params.append(subject)
             idx += 1
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -477,6 +479,36 @@ class PersistentMemory:
         query = f"SELECT * FROM theses {where} ORDER BY created_at DESC LIMIT ${idx}"
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+
+    async def get_contradictions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return contradictions with their two theses pre-joined (newest first).
+
+        LEFT JOIN so a contradiction whose thesis row was deleted yields nulls
+        on that side instead of disappearing from the result set — surfaces
+        partial state to the API rather than hiding it.
+        """
+        pool = self._require_pool()
+        query = (
+            "SELECT "
+            "  c.contradiction_id, c.subject_group, c.detected_at, "
+            "  c.thesis_id_a, "
+            "  ta.subject AS subject_a, ta.claim AS claim_a, "
+            "  ta.confidence AS confidence_a, ta.status AS status_a, "
+            "  ta.evidence AS evidence_a, ta.objective_id AS objective_id_a, "
+            "  ta.created_at AS created_at_a, "
+            "  c.thesis_id_b, "
+            "  tb.subject AS subject_b, tb.claim AS claim_b, "
+            "  tb.confidence AS confidence_b, tb.status AS status_b, "
+            "  tb.evidence AS evidence_b, tb.objective_id AS objective_id_b, "
+            "  tb.created_at AS created_at_b "
+            "FROM contradictions c "
+            "LEFT JOIN theses ta ON ta.thesis_id = c.thesis_id_a "
+            "LEFT JOIN theses tb ON tb.thesis_id = c.thesis_id_b "
+            "ORDER BY c.detected_at DESC LIMIT $1"
+        )
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, limit)
         return [dict(row) for row in rows]
 
     async def update_thesis_status(self, thesis_id: str, status: str) -> bool:

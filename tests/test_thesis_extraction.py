@@ -165,7 +165,7 @@ async def test_get_theses_filters_by_subject_and_status(app_config) -> None:
     sql, *params = conn.fetch.call_args[0]
     assert "FROM theses" in sql
     assert "ORDER BY created_at DESC" in sql
-    assert "status = $1" in sql and "subject = $2" in sql
+    assert "status = $1" in sql and "subject ILIKE '%' || $2 || '%'" in sql
     assert params == ["active", "BTC short-term price", 10]
 
 

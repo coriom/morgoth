@@ -9,7 +9,17 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.agent_manager import AgentManager
-from api.routes import admin, agents, brain, chat, consciousness, evolution, market, objectives
+from api.routes import (
+    admin,
+    agents,
+    brain,
+    chat,
+    consciousness,
+    evolution,
+    knowledge,
+    market,
+    objectives,
+)
 from api.ws.handler import InboundWebSocketMessage, WebSocketManager
 from core.brain import Brain
 from core.config import AppConfig, load_config
@@ -124,6 +134,7 @@ app.include_router(consciousness.router)
 app.include_router(objectives.router)
 app.include_router(evolution.router)
 app.include_router(admin.router)
+app.include_router(knowledge.router)
 
 
 @app.websocket("/ws/chat")
