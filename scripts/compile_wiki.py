@@ -39,16 +39,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 from core.config import load_config  # noqa: E402
-from core.contradictions import (  # noqa: E402
-    SUBJECT_SIMILARITY_THRESHOLD,
-    group_theses_by_subject,
-)
+from core.contradictions import group_theses_by_subject  # noqa: E402
 from core.llm_client import ChatMessage, OllamaLLMClient  # noqa: E402
 from memory.persistent import PersistentMemory  # noqa: E402
 
 
 VAULT_DIR = Path.home() / "Morgoth" / "vault"
 ENTITIES_DIR = VAULT_DIR / "entities"
+
+# The wiki has its own subject-similarity threshold, intentionally LOWER than
+# core.contradictions.SUBJECT_SIMILARITY_THRESHOLD (0.75). Rationale: in the
+# wiki, over-merging two close concepts onto one page is benign (you still see
+# both claims, just under one header). In the detector, a false contradiction
+# would be costly — its threshold must stay high to avoid flagging unrelated
+# subjects as opposing. The wiki therefore fuses more generously.
+# Env override: WIKI_SIMILARITY_THRESHOLD (used for calibration sweeps).
+import os as _os  # noqa: E402
+WIKI_SUBJECT_SIMILARITY_THRESHOLD: float = float(
+    _os.environ.get("WIKI_SIMILARITY_THRESHOLD", "0.6")
+)
 
 
 def _canonical_subject(subjects: list[str]) -> str:
@@ -327,12 +336,12 @@ async def main() -> None:
         theses = await pm.get_theses(limit=1000)
         contradictions = await pm.get_contradictions(limit=500)
 
-        # 2. Group by SEMANTIC subject similarity (embeddings) — the same
-        # mechanism the contradiction detector uses, so the wiki's notion of
-        # "same subject" matches what the detector clusters. Threshold is
-        # the shared constant SUBJECT_SIMILARITY_THRESHOLD (default 0.75).
+        # 2. Group by SEMANTIC subject similarity (embeddings). The wiki uses
+        # its own threshold (WIKI_SUBJECT_SIMILARITY_THRESHOLD), lower than the
+        # detector's: over-merging two close concepts onto one page is benign,
+        # while the detector must avoid flagging unrelated subjects as opposing.
         semantic_groups = group_theses_by_subject(
-            theses, threshold=SUBJECT_SIMILARITY_THRESHOLD
+            theses, threshold=WIKI_SUBJECT_SIMILARITY_THRESHOLD
         )
         # Build canonical-subject pages and the surface→canonical map used
         # later when resolving contradiction links.
