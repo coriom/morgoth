@@ -655,16 +655,29 @@ class Brain:
             '  "confidence" (str): "low" | "medium" | "high"\n'
             '  "evidence" (array): [{"source": "<tool name>", "detail": "<excerpt>"}]\n\n'
             "RULES:\n"
-            "- subject must be a noun phrase (the thing the claim is about).\n"
-            "- claim MUST be a directional trend or state that could be agreed "
-            "with or contradicted (e.g. 'declining', 'bullish', 'increasing'). "
-            "If you cannot state a directional claim, do NOT emit that thesis. "
-            "Never emit claims like 'unclear', 'mixed', 'unknown', 'complex' — "
-            "these are not testable; omit them.\n"
-            "- Every thesis MUST have at least one evidence item drawn from the "
-            "synthesis. If you cannot cite evidence for a claim, do NOT emit it.\n"
+            "- subject must be a SHORT normalized noun phrase — a topic "
+            "(e.g. 'BTC short-term price', 'Ethereum hash rate'). NOT a full "
+            "sentence, NOT a news headline, NOT a phrase naming a specific "
+            "person or event. If the underlying topic cannot be reduced to "
+            "a short noun phrase, do NOT emit a thesis about it.\n"
+            "- claim MUST be a single directional trend or state that could "
+            "be agreed with or contradicted (e.g. 'declining', 'bullish', "
+            "'increasing', 'stable'). If you cannot state a directional "
+            "claim, do NOT emit that thesis. Never emit claims like "
+            "'unclear', 'mixed', 'unknown', 'complex', 'unrelated', "
+            "'no correlation', 'inaccurate' — these are not testable; "
+            "omit them.\n"
+            "- Every thesis MUST have at least one evidence item drawn from "
+            "the synthesis. If you cannot cite evidence for a claim, do NOT "
+            "emit it.\n"
             "- evidence must come from the synthesis text; do not invent.\n"
-            "- If the synthesis contains no testable directional claim, return [].\n"
+            "- If the synthesis contains no testable directional claim, "
+            "return [].\n"
+            "EXAMPLES OF WHAT TO REJECT (do NOT emit):\n"
+            "  · subject='Market volatility caused by Justice X's dissent' "
+            "(fragment sentence, not a topic)\n"
+            "  · claim='unclear or unrelated to BTC itself' (hedge)\n"
+            "  · claim='no correlation' (non-directional)\n"
             "Output ONLY the JSON array. No prose, no preamble, no code fences."
         )
         messages = [
@@ -720,12 +733,17 @@ class Brain:
         # non-directional pseudo-theses or claims without evidence despite
         # the RULES. Both make a thesis uncomparable for the contradiction
         # detector, so drop them at parse time.
+        # Substring match (not exact) so phrases like "unclear or unrelated
+        # to BTC itself" are caught. Safety: none of these tokens appears as
+        # a substring of any directional word in DIRECTION_LEXICON
+        # (declining/decreasing/falling/bearish/increasing/rising/bullish/...).
         non_directional_stoplist = {
             "unclear",
             "mixed",
             "unknown",
             "complex",
             "uncertain",
+            "unrelated",
             "n/a",
         }
         valid: list[dict[str, Any]] = []
@@ -747,8 +765,9 @@ class Brain:
                 else "medium"
             )
             evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
-            # Drop non-directional pseudo-theses (claim is a hedge word)
-            if claim.strip().lower() in non_directional_stoplist:
+            # Drop non-directional pseudo-theses (claim contains a hedge word)
+            claim_lower = claim.strip().lower()
+            if any(word in claim_lower for word in non_directional_stoplist):
                 logger.debug(
                     "Dropping non-directional thesis: subject={!r} claim={!r}",
                     subject,

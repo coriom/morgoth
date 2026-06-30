@@ -249,6 +249,38 @@ def test_parse_thesis_json_malformed_json_returns_empty() -> None:
     assert Brain._parse_thesis_json(raw) == []
 
 
+def test_parse_thesis_json_substring_stoplist_catches_phrase_hedges() -> None:
+    """The non-directional filter is now SUBSTRING-based so phrases like
+    'unclear or unrelated to BTC itself' are dropped — previously they slipped
+    past the exact-match check.
+    """
+
+    raw = json.dumps([
+        {"subject": "Reasons behind BTC price drop",
+         "claim": "unclear or unrelated to BTC itself",
+         "evidence": [{"source": "get_news", "detail": "no direct mention"}]},
+        {"subject": "Market state",
+         "claim": "very complex picture today",
+         "evidence": [{"source": "web_search", "detail": "many factors"}]},
+        {"subject": "Future direction",
+         "claim": "mostly mixed signals",
+         "evidence": [{"source": "get_news", "detail": "split"}]},
+        # Survivor: directional + evidence, no stoplist word as substring
+        {"subject": "BTC price", "claim": "declining",
+         "evidence": [{"source": "get_crypto_price", "detail": "-1.6%"}]},
+        # Survivor: 'increasing' must NOT be falsely caught by any stoplist
+        # token as a substring (safety invariant for the substring upgrade).
+        {"subject": "BTC fees", "claim": "increasing",
+         "evidence": [{"source": "get_crypto_price", "detail": "+10 sat/vB"}]},
+    ])
+
+    result = Brain._parse_thesis_json(raw)
+
+    assert len(result) == 2
+    subjects = {r["subject"] for r in result}
+    assert subjects == {"BTC price", "BTC fees"}
+
+
 def test_parse_thesis_json_drops_non_directional_stoplist_claims() -> None:
     """Hedge-word claims ('unclear', 'mixed', 'unknown', 'complex', 'uncertain', 'n/a')
     are dropped — they cannot be contradiction-checked even though the JSON is well-formed.
