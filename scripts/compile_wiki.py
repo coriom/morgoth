@@ -25,7 +25,6 @@ import asyncio
 import json
 import re
 import sys
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,12 +39,41 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 from core.config import load_config  # noqa: E402
+from core.contradictions import (  # noqa: E402
+    SUBJECT_SIMILARITY_THRESHOLD,
+    group_theses_by_subject,
+)
 from core.llm_client import ChatMessage, OllamaLLMClient  # noqa: E402
 from memory.persistent import PersistentMemory  # noqa: E402
 
 
 VAULT_DIR = Path.home() / "Morgoth" / "vault"
 ENTITIES_DIR = VAULT_DIR / "entities"
+
+
+def _canonical_subject(subjects: list[str]) -> str:
+    """Pick the canonical display subject for a semantic group.
+
+    Rule: most frequent subject string wins; ties broken by the longest
+    (= more descriptive variant). This favors what the model actually
+    produced repeatedly and falls back to the most expressive label
+    when every variant appears once.
+    """
+    cleaned = [(s or "").strip() for s in subjects if s and s.strip()]
+    if not cleaned:
+        return "untitled"
+    freq: dict[str, int] = {}
+    for s in cleaned:
+        freq[s] = freq.get(s, 0) + 1
+    # Sort by (-frequency, -length, original-index) for deterministic pick.
+    first_seen: dict[str, int] = {}
+    for idx, s in enumerate(cleaned):
+        first_seen.setdefault(s, idx)
+    best = sorted(
+        freq.keys(),
+        key=lambda s: (-freq[s], -len(s), first_seen[s]),
+    )[0]
+    return best
 
 
 def slugify(value: str) -> str:
@@ -152,9 +180,20 @@ async def _llm_summary(
         )
         for t in theses
     )
+    # If the semantic group spans multiple surface forms, list them so the
+    # model produces ONE coherent summary rather than separate per-variant ones.
+    variants = sorted({(t.get("subject") or "").strip() for t in theses if t.get("subject")})
+    variant_note = ""
+    if len(variants) > 1:
+        variant_note = (
+            "These theses describe the same subject under variant phrasings:\n"
+            + "\n".join(f"  · {v}" for v in variants)
+            + "\nTreat them as one subject and write a single coherent summary.\n\n"
+        )
     prompt = (
         f"SUBJECT: {subject}\n\n"
-        f"THESES MORGOTH HAS ACCUMULATED ON THIS SUBJECT:\n{bullets}\n\n"
+        + variant_note
+        + f"THESES MORGOTH HAS ACCUMULATED ON THIS SUBJECT:\n{bullets}\n\n"
         "Write a SHORT prose summary (2-4 sentences) of what is known about "
         "this subject based ONLY on the theses above. Do not invent claims. "
         "If theses disagree (e.g. one 'contradicted'), name the disagreement.\n\n"
@@ -180,9 +219,28 @@ async def _llm_summary(
     return (response.message.content or "").strip() or "(summary unavailable)"
 
 
-def _contradictions_page(contradictions: list[dict[str, Any]]) -> str:
+def _contradictions_page(
+    contradictions: list[dict[str, Any]],
+    subject_to_canonical: dict[str, str] | None = None,
+) -> str:
+    """Render contradictions.md. Resolves each side to its canonical entity page.
+
+    If both sides resolve to the SAME canonical page (the two opposed theses
+    share a semantic subject), the contradiction is still listed with both
+    links pointing to that single page — the contradiction exists within one
+    entity, not between two.
+    """
     if not contradictions:
         return "# Contradictions\n\n_No contradictions detected._\n"
+    canon = subject_to_canonical or {}
+
+    def _resolve(subject: str | None) -> tuple[str | None, str | None]:
+        """Return (canonical_subject, slug) or (None, None) if subject is missing."""
+        if not subject:
+            return None, None
+        canonical = canon.get(subject.strip(), subject.strip())
+        return canonical, slugify(canonical)
+
     parts: list[str] = [
         "# Contradictions",
         "",
@@ -196,13 +254,23 @@ def _contradictions_page(contradictions: list[dict[str, Any]]) -> str:
         sb = c.get("subject_b")
         ca = c.get("claim_a") or "—"
         cb = c.get("claim_b") or "—"
-        link_a = f"[[entities/{slugify(sa)}|{sa}]]" if sa else "_(thesis removed)_"
-        link_b = f"[[entities/{slugify(sb)}|{sb}]]" if sb else "_(thesis removed)_"
+        canon_a, slug_a = _resolve(sa)
+        canon_b, slug_b = _resolve(sb)
+        link_a = (
+            f"[[entities/{slug_a}|{canon_a}]]" if canon_a else "_(thesis removed)_"
+        )
+        link_b = (
+            f"[[entities/{slug_b}|{canon_b}]]" if canon_b else "_(thesis removed)_"
+        )
         parts.append(f"## {group_subj}")
         parts.append("")
         parts.append(f"- detected: `{detected}`")
-        parts.append(f"- {link_a} — claims **{ca}**")
-        parts.append(f"- {link_b} — claims **{cb}**")
+        if canon_a and canon_b and canon_a == canon_b:
+            parts.append(f"- both theses resolve to {link_a}:")
+            parts.append(f"  - one side claims **{ca}**, the other claims **{cb}**")
+        else:
+            parts.append(f"- {link_a} — claims **{ca}**")
+            parts.append(f"- {link_b} — claims **{cb}**")
         parts.append("")
     return "\n".join(parts)
 
@@ -259,12 +327,29 @@ async def main() -> None:
         theses = await pm.get_theses(limit=1000)
         contradictions = await pm.get_contradictions(limit=500)
 
-        # 2. Group by subject (exact string; the vault is a human view, minor
-        # surface variants becoming separate pages is acceptable per the spec).
-        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for t in theses:
-            subject = (t.get("subject") or "untitled").strip() or "untitled"
-            groups[subject].append(t)
+        # 2. Group by SEMANTIC subject similarity (embeddings) — the same
+        # mechanism the contradiction detector uses, so the wiki's notion of
+        # "same subject" matches what the detector clusters. Threshold is
+        # the shared constant SUBJECT_SIMILARITY_THRESHOLD (default 0.75).
+        semantic_groups = group_theses_by_subject(
+            theses, threshold=SUBJECT_SIMILARITY_THRESHOLD
+        )
+        # Build canonical-subject pages and the surface→canonical map used
+        # later when resolving contradiction links.
+        groups: dict[str, list[dict[str, Any]]] = {}
+        subject_to_canonical: dict[str, str] = {}
+        for group in semantic_groups:
+            canonical = _canonical_subject([t.get("subject", "") for t in group])
+            # In the rare case two semantic groups land on the same canonical
+            # string (e.g. both have a one-off identical subject), merge them.
+            if canonical in groups:
+                groups[canonical].extend(group)
+            else:
+                groups[canonical] = list(group)
+            for t in group:
+                subj = (t.get("subject") or "").strip()
+                if subj:
+                    subject_to_canonical[subj] = canonical
 
         # 3. Prepare vault layout. Clear entities/ for idempotent rewrite.
         VAULT_DIR.mkdir(parents=True, exist_ok=True)
@@ -295,9 +380,10 @@ async def main() -> None:
             encoding="utf-8",
         )
 
-        # 6. contradictions.md
+        # 6. contradictions.md — resolves each side through the canonical map
         (VAULT_DIR / "contradictions.md").write_text(
-            _contradictions_page(contradictions), encoding="utf-8"
+            _contradictions_page(contradictions, subject_to_canonical),
+            encoding="utf-8",
         )
 
         # 7. log.md
