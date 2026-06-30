@@ -325,100 +325,117 @@ def _clear_entities_dir() -> None:
     ENTITIES_DIR.mkdir(parents=True, exist_ok=True)
 
 
+async def compile_wiki(
+    pm: PersistentMemory,
+    llm: OllamaLLMClient,
+) -> dict[str, Any]:
+    """Compile the vault. Caller owns pm/llm lifecycle.
+
+    Returns a counts dict so the CLI can print it AND the HTTP endpoint can
+    return it as JSON. Read-only against the DB; writes only under VAULT_DIR.
+    """
+    # 1. Read knowledge — read-only, no writes against DB.
+    theses = await pm.get_theses(limit=1000)
+    contradictions = await pm.get_contradictions(limit=500)
+
+    # 2. Group by SEMANTIC subject similarity (embeddings). The wiki uses
+    # its own threshold (WIKI_SUBJECT_SIMILARITY_THRESHOLD), lower than the
+    # detector's: over-merging two close concepts onto one page is benign,
+    # while the detector must avoid flagging unrelated subjects as opposing.
+    semantic_groups = group_theses_by_subject(
+        theses, threshold=WIKI_SUBJECT_SIMILARITY_THRESHOLD
+    )
+    # Build canonical-subject pages and the surface→canonical map used
+    # later when resolving contradiction links.
+    groups: dict[str, list[dict[str, Any]]] = {}
+    subject_to_canonical: dict[str, str] = {}
+    for group in semantic_groups:
+        canonical = _canonical_subject([t.get("subject", "") for t in group])
+        # In the rare case two semantic groups land on the same canonical
+        # string (e.g. both have a one-off identical subject), merge them.
+        if canonical in groups:
+            groups[canonical].extend(group)
+        else:
+            groups[canonical] = list(group)
+        for t in group:
+            subj = (t.get("subject") or "").strip()
+            if subj:
+                subject_to_canonical[subj] = canonical
+
+    # 3. Prepare vault layout. Clear entities/ for idempotent rewrite.
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    _clear_entities_dir()
+
+    # 4. Generate entity pages. Contradicted subjects first (sticky to top
+    # of index too), then alphabetical for stable diffs.
+    sorted_subjects = sorted(
+        groups.keys(),
+        key=lambda s: (
+            not any(t.get("status") == "contradicted" for t in groups[s]),
+            s.lower(),
+        ),
+    )
+    entity_index: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for subject in sorted_subjects:
+        ts = groups[subject]
+        slug = slugify(subject)
+        summary = await _llm_summary(llm, subject, ts)
+        (ENTITIES_DIR / f"{slug}.md").write_text(
+            _entity_page(subject, ts, summary), encoding="utf-8"
+        )
+        entity_index.append((subject, slug, ts))
+
+    # 5. _index.md
+    (VAULT_DIR / "_index.md").write_text(
+        _index_page(entity_index, len(theses), len(contradictions)),
+        encoding="utf-8",
+    )
+
+    # 6. contradictions.md — resolves each side through the canonical map
+    (VAULT_DIR / "contradictions.md").write_text(
+        _contradictions_page(contradictions, subject_to_canonical),
+        encoding="utf-8",
+    )
+
+    # 7. log.md
+    now = datetime.now(timezone.utc).isoformat()
+    log_md = "\n".join(
+        [
+            "# Compilation log",
+            "",
+            f"- last run: `{now}`",
+            f"- theses: {len(theses)}",
+            f"- entities: {len(entity_index)}",
+            f"- contradictions: {len(contradictions)}",
+            "",
+        ]
+    )
+    (VAULT_DIR / "log.md").write_text(log_md, encoding="utf-8")
+
+    return {
+        "theses_read": len(theses),
+        "entities_written": len(entity_index),
+        "contradictions": len(contradictions),
+        "vault_path": str(VAULT_DIR),
+    }
+
+
 async def main() -> None:
+    """CLI entrypoint: build deps, run compile_wiki, print summary."""
     config = await load_config()
     pm = PersistentMemory(config)
     await pm.initialize()
     llm = OllamaLLMClient(config)
-
     try:
-        # 1. Read knowledge — read-only, no writes against DB.
-        theses = await pm.get_theses(limit=1000)
-        contradictions = await pm.get_contradictions(limit=500)
-
-        # 2. Group by SEMANTIC subject similarity (embeddings). The wiki uses
-        # its own threshold (WIKI_SUBJECT_SIMILARITY_THRESHOLD), lower than the
-        # detector's: over-merging two close concepts onto one page is benign,
-        # while the detector must avoid flagging unrelated subjects as opposing.
-        semantic_groups = group_theses_by_subject(
-            theses, threshold=WIKI_SUBJECT_SIMILARITY_THRESHOLD
-        )
-        # Build canonical-subject pages and the surface→canonical map used
-        # later when resolving contradiction links.
-        groups: dict[str, list[dict[str, Any]]] = {}
-        subject_to_canonical: dict[str, str] = {}
-        for group in semantic_groups:
-            canonical = _canonical_subject([t.get("subject", "") for t in group])
-            # In the rare case two semantic groups land on the same canonical
-            # string (e.g. both have a one-off identical subject), merge them.
-            if canonical in groups:
-                groups[canonical].extend(group)
-            else:
-                groups[canonical] = list(group)
-            for t in group:
-                subj = (t.get("subject") or "").strip()
-                if subj:
-                    subject_to_canonical[subj] = canonical
-
-        # 3. Prepare vault layout. Clear entities/ for idempotent rewrite.
-        VAULT_DIR.mkdir(parents=True, exist_ok=True)
-        _clear_entities_dir()
-
-        # 4. Generate entity pages. Contradicted subjects first (sticky to top
-        # of index too), then alphabetical for stable diffs.
-        sorted_subjects = sorted(
-            groups.keys(),
-            key=lambda s: (
-                not any(t.get("status") == "contradicted" for t in groups[s]),
-                s.lower(),
-            ),
-        )
-        entity_index: list[tuple[str, str, list[dict[str, Any]]]] = []
-        for subject in sorted_subjects:
-            ts = groups[subject]
-            slug = slugify(subject)
-            summary = await _llm_summary(llm, subject, ts)
-            (ENTITIES_DIR / f"{slug}.md").write_text(
-                _entity_page(subject, ts, summary), encoding="utf-8"
-            )
-            entity_index.append((subject, slug, ts))
-
-        # 5. _index.md
-        (VAULT_DIR / "_index.md").write_text(
-            _index_page(entity_index, len(theses), len(contradictions)),
-            encoding="utf-8",
-        )
-
-        # 6. contradictions.md — resolves each side through the canonical map
-        (VAULT_DIR / "contradictions.md").write_text(
-            _contradictions_page(contradictions, subject_to_canonical),
-            encoding="utf-8",
-        )
-
-        # 7. log.md
-        now = datetime.now(timezone.utc).isoformat()
-        log_md = "\n".join(
-            [
-                "# Compilation log",
-                "",
-                f"- last run: `{now}`",
-                f"- theses: {len(theses)}",
-                f"- entities: {len(entity_index)}",
-                f"- contradictions: {len(contradictions)}",
-                "",
-            ]
-        )
-        (VAULT_DIR / "log.md").write_text(log_md, encoding="utf-8")
-
-        # 8. stdout summary
-        print("== Wiki compile complete ==")
-        print(f"vault: {VAULT_DIR}")
-        print(f"theses read: {len(theses)}")
-        print(f"entities written: {len(entity_index)}")
-        print(f"contradictions: {len(contradictions)}")
+        counts = await compile_wiki(pm, llm)
     finally:
         await pm.close()
         await llm.close()
+    print("== Wiki compile complete ==")
+    print(f"vault: {counts['vault_path']}")
+    print(f"theses read: {counts['theses_read']}")
+    print(f"entities written: {counts['entities_written']}")
+    print(f"contradictions: {counts['contradictions']}")
 
 
 if __name__ == "__main__":

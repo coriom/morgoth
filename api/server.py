@@ -19,6 +19,7 @@ from api.routes import (
     knowledge,
     market,
     objectives,
+    wiki,
 )
 from api.ws.handler import InboundWebSocketMessage, WebSocketManager
 from core.brain import Brain
@@ -137,6 +138,7 @@ app.include_router(objectives.router)
 app.include_router(evolution.router)
 app.include_router(admin.router)
 app.include_router(knowledge.router)
+app.include_router(wiki.router)
 
 
 @app.websocket("/ws/chat")
