@@ -44,9 +44,13 @@ wait_until() {
 if pg_isready -h localhost -p 5432 -q; then
     log "postgres: already accepting connections"
 else
-    log "postgres: not up — 'systemctl start postgresql' (may need root)"
-    systemctl start postgresql 2>>"$LOG" || \
-        log "postgres: systemctl start returned non-zero (continuing to wait)"
+    log "postgres: not up — 'sudo -n /usr/bin/systemctl start postgresql'"
+    # -n: non-interactive. Succeeds silently via the NOPASSWD whitelist in
+    # /etc/sudoers.d/morgoth. If the whitelist is missing, -n fails fast
+    # (rather than hanging on a password prompt at boot) and we fall through
+    # to the wait loop, which will fail loudly.
+    sudo -n /usr/bin/systemctl start postgresql 2>>"$LOG" || \
+        log "postgres: sudo -n systemctl start returned non-zero (continuing to wait)"
     if wait_until 30 pg_isready -h localhost -p 5432 -q; then
         log "postgres: ready"
     else
@@ -59,9 +63,9 @@ fi
 if curl -fs -o /dev/null http://localhost:11434/api/tags; then
     log "ollama: already responding"
 else
-    log "ollama: not up — 'systemctl start ollama'"
-    systemctl start ollama 2>>"$LOG" || \
-        log "ollama: systemctl start returned non-zero (continuing to wait)"
+    log "ollama: not up — 'sudo -n /usr/bin/systemctl start ollama'"
+    sudo -n /usr/bin/systemctl start ollama 2>>"$LOG" || \
+        log "ollama: sudo -n systemctl start returned non-zero (continuing to wait)"
     if wait_until 30 curl -fs -o /dev/null http://localhost:11434/api/tags; then
         log "ollama: ready"
     else
