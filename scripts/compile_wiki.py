@@ -328,14 +328,21 @@ def _clear_entities_dir() -> None:
 async def compile_wiki(
     pm: PersistentMemory,
     llm: OllamaLLMClient,
+    exclude_stale: bool = False,
 ) -> dict[str, Any]:
     """Compile the vault. Caller owns pm/llm lifecycle.
 
     Returns a counts dict so the CLI can print it AND the HTTP endpoint can
     return it as JSON. Read-only against the DB; writes only under VAULT_DIR.
+
+    If ``exclude_stale`` is True, theses with status='stale' are dropped
+    before grouping. Default False preserves the existing behavior (stale
+    theses are rendered with a (stale) badge).
     """
     # 1. Read knowledge — read-only, no writes against DB.
     theses = await pm.get_theses(limit=1000)
+    if exclude_stale:
+        theses = [t for t in theses if t.get("status") != "stale"]
     contradictions = await pm.get_contradictions(limit=500)
 
     # 2. Group by SEMANTIC subject similarity (embeddings). The wiki uses
@@ -422,12 +429,22 @@ async def compile_wiki(
 
 async def main() -> None:
     """CLI entrypoint: build deps, run compile_wiki, print summary."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Compile Morgoth's wiki vault.")
+    parser.add_argument(
+        "--exclude-stale",
+        action="store_true",
+        help="Drop theses with status='stale' before grouping. Default: include them with a (stale) badge.",
+    )
+    args = parser.parse_args()
+
     config = await load_config()
     pm = PersistentMemory(config)
     await pm.initialize()
     llm = OllamaLLMClient(config)
     try:
-        counts = await compile_wiki(pm, llm)
+        counts = await compile_wiki(pm, llm, exclude_stale=args.exclude_stale)
     finally:
         await pm.close()
         await llm.close()

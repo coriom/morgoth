@@ -765,6 +765,18 @@ class Brain:
                 else "medium"
             )
             evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+            # Drop fragment-sentence subjects (headline copy escaping into
+            # the subject field). Word-count only, conservative cutoff.
+            # Legitimate observed subjects max at 6 words ("24-hour change
+            # rate of BTC price", "BTC short-term price change accuracy");
+            # the Sotomayor headline that motivated this filter was 12.
+            # >10 words is well outside the legit distribution.
+            if len(subject.strip().split()) > 10:
+                logger.debug(
+                    "Dropping fragment-subject thesis (>10 words): subject={!r}",
+                    subject,
+                )
+                continue
             # Drop non-directional pseudo-theses (claim contains a hedge word)
             claim_lower = claim.strip().lower()
             if any(word in claim_lower for word in non_directional_stoplist):

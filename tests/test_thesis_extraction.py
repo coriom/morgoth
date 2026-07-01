@@ -281,6 +281,39 @@ def test_parse_thesis_json_substring_stoplist_catches_phrase_hedges() -> None:
     assert subjects == {"BTC price", "BTC fees"}
 
 
+def test_parse_thesis_json_drops_fragment_subject_over_word_limit() -> None:
+    """Fragment-sentence subjects (>10 words, headline copy that escaped into
+    the subject field) are dropped at parse time. Legitimate multi-word
+    subjects observed in production max at ~6 words and must be preserved.
+    Cutoff is >10 (10-word subject is kept) — well above the legit ceiling.
+    """
+
+    raw = json.dumps([
+        # Dropped: 12-word fragment (the Sotomayor headline that motivated
+        # this filter).
+        {"subject": "Market volatility and uncertainty caused by Justice Sonia Sotomayor's dissenting opinion",
+         "claim": "increasing",
+         "evidence": [{"source": "get_news", "detail": "SCOTUS dissent"}]},
+        # Kept: 6-word legit subject (real observed shape).
+        {"subject": "24-hour change rate of BTC price",
+         "claim": "declining",
+         "evidence": [{"source": "get_crypto_price", "detail": "-1.6%"}]},
+        # Kept: exactly 10 words — cutoff is >10, not >=10.
+        {"subject": "one two three four five six seven eight nine ten",
+         "claim": "rising",
+         "evidence": [{"source": "web_search", "detail": "example"}]},
+    ])
+
+    result = Brain._parse_thesis_json(raw)
+
+    assert len(result) == 2
+    subjects = {r["subject"] for r in result}
+    assert "24-hour change rate of BTC price" in subjects
+    assert "one two three four five six seven eight nine ten" in subjects
+    # Explicit: the fragment IS dropped.
+    assert not any("Sotomayor" in r["subject"] for r in result)
+
+
 def test_parse_thesis_json_drops_non_directional_stoplist_claims() -> None:
     """Hedge-word claims ('unclear', 'mixed', 'unknown', 'complex', 'uncertain', 'n/a')
     are dropped — they cannot be contradiction-checked even though the JSON is well-formed.
