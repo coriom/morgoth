@@ -32,6 +32,7 @@ class GetNewsTool(BaseTool):
     """Fetch the latest news entries from RSS feeds."""
 
     name = "get_news"
+    is_data_source = True
     description = "Fetch news items from RSS feeds by topic."
     parameters = {
         "type": "object",

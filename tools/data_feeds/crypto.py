@@ -57,6 +57,7 @@ class GetCryptoPriceTool(BaseTool):
     """Fetch current crypto prices from CoinGecko."""
 
     name = "get_crypto_price"
+    is_data_source = True
     description = (
         "Fetch the current USD price and 24h metrics for a crypto asset. "
         "Accepts both ticker (btc, eth, sol) and full name (bitcoin, ethereum)."
@@ -187,6 +188,10 @@ class GetCryptoHistoryTool(BaseTool):
     """Fetch historical crypto price data from CoinGecko."""
 
     name = "get_crypto_history"
+    # Not a data source (bulk history, cached; the cycle uses get_crypto_price
+    # for source-of-truth). Not exposed to the chat schema either — the LLM
+    # can request via get_crypto_price and let the caller widen if needed.
+    is_chat_tool = False
     description = "Fetch historical USD prices for a crypto asset over the past N days."
     parameters = {
         "type": "object",

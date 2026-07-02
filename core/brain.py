@@ -41,21 +41,21 @@ seeking workable paths.
 Memory collections: conversations, research, decisions, market_patterns, code_archive.
 When working on an objective, ALWAYS finish by calling update_objective. Never leave an objective in pending status after gathering data."""
 
-DATA_SOURCE_TOOLS: frozenset[str] = frozenset({
-    "get_crypto_price",
-    "get_bitcoin_onchain",
-    "get_news",
+MIN_DISTINCT_SOURCES: int = 3
+
+# Non-data_feeds source-classified tools: they don't live under
+# tools/data_feeds/ so auto-discovery doesn't find them, but they ARE
+# valid sources in the multi-source rail. Kept as an explicit constant.
+_STATIC_DATA_SOURCES: frozenset[str] = frozenset({
     "reddit_search",
     "web_search",
 })
 
-MIN_DISTINCT_SOURCES: int = 3
-
-CHAT_TOOL_NAMES = [
+# Non-data_feeds chat-schema tools: the LLM sees these on every turn.
+# Same rationale as above — they aren't discovered because they don't
+# live under tools/data_feeds/.
+_STATIC_CHAT_TOOL_NAMES: tuple[str, ...] = (
     "web_search",
-    "get_news",
-    "get_crypto_price",
-    "get_bitcoin_onchain",
     "fred_series_observations",
     "reddit_search",
     "technical_analysis",
@@ -63,7 +63,30 @@ CHAT_TOOL_NAMES = [
     "recall",
     "create_objective",
     "update_objective",
-]
+)
+
+
+def _compute_tool_sets() -> tuple[frozenset[str], list[str]]:
+    """Merge STATIC_* with tools discovered under tools/data_feeds/.
+
+    Computed once at module import time. A new file under
+    tools/data_feeds/ that declares ``is_data_source = True`` joins the
+    source rail on the next process start; ``is_chat_tool = True``
+    (the BaseTool default) puts it in the chat schema.
+    """
+    from tools.discovery import discover_data_feed_tools
+
+    discovered = discover_data_feed_tools()
+    data_sources = _STATIC_DATA_SOURCES | frozenset(
+        cls.name for cls in discovered if cls.is_data_source
+    )
+    chat_names = list(_STATIC_CHAT_TOOL_NAMES) + [
+        cls.name for cls in discovered if cls.is_chat_tool
+    ]
+    return data_sources, chat_names
+
+
+DATA_SOURCE_TOOLS, CHAT_TOOL_NAMES = _compute_tool_sets()
 
 
 def _looks_like_unemitted_tool_intent(text: str | None) -> bool:

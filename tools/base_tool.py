@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -24,6 +24,13 @@ class BaseTool(ABC):
     name: str
     description: str
     parameters: dict[str, Any]
+
+    # Auto-discovery flags. Tools under tools/data_feeds/ are enumerated by
+    # tools.discovery.discover_data_feed_tools; these two class attributes let
+    # brain.py compute DATA_SOURCE_TOOLS and CHAT_TOOL_NAMES without touching
+    # the RED zone every time a green-zone tool is added.
+    is_data_source: ClassVar[bool] = False
+    is_chat_tool: ClassVar[bool] = True
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> dict[str, Any]:

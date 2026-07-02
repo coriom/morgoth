@@ -141,6 +141,22 @@ cmd_reject() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli reject "$@")
 }
 
+cmd_show() {
+    if [[ $# -lt 1 ]]; then
+        _err "usage: morgoth show <proposal_id>"
+        return 2
+    fi
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli show "$1")
+}
+
+cmd_apply() {
+    if [[ $# -lt 1 ]]; then
+        _err "usage: morgoth apply <proposal_id>"
+        return 2
+    fi
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli apply "$1")
+}
+
 # ---------- usage + dispatch ------------------------------------------------
 
 usage() {
@@ -157,8 +173,10 @@ Commands:
   logs [N]        tail the unit log (default 50 lines, follow mode)
   wiki            trigger POST /api/wiki/compile and print the counts
   proposals       list pending self-modify proposals (--recent for history)
-  approve ID      approve a pending_approval proposal (apply not implemented)
+  show ID         show one proposal in full (content, rationale, status)
+  approve ID      approve a pending_approval proposal
   reject ID       reject a proposal (--reason optional)
+  apply ID        apply an approved proposal (writes live tree; the door)
   help            print this message
 USAGE
 }
@@ -171,8 +189,10 @@ case "${1:-help}" in
     logs)      shift; cmd_logs "$@";;
     wiki)      shift; cmd_wiki "$@";;
     proposals) shift; cmd_proposals "$@";;
+    show)      shift; cmd_show "$@";;
     approve)   shift; cmd_approve "$@";;
     reject)    shift; cmd_reject "$@";;
+    apply)     shift; cmd_apply "$@";;
     help|-h|--help) usage;;
     *)
         _err "unknown command: $1"

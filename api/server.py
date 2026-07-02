@@ -19,6 +19,7 @@ from api.routes import (
     knowledge,
     market,
     objectives,
+    tools as tools_route,
     wiki,
 )
 from api.ws.handler import InboundWebSocketMessage, WebSocketManager
@@ -35,9 +36,7 @@ from tools.analysis.technical import TechnicalAnalysisTool
 from tools.connectors.fred import FredSeriesObservationsTool, FredSeriesSearchTool
 from tools.connectors.reddit import RedditSearchTool, RedditSubredditPostsTool
 from tools.code_executor import ExecutePythonTool
-from tools.data_feeds.crypto import GetCryptoHistoryTool, GetCryptoPriceTool
-from tools.data_feeds.news import GetNewsTool
-from tools.data_feeds.onchain import GetBitcoinOnchainTool
+from tools.discovery import discover_data_feed_tools, instantiate_tool
 from tools.file_manager import ReadFileTool, WriteFileTool
 from tools.memory_tools import RecallTool, RememberTool
 from tools.objectives_tool import CreateObjectiveTool, UpdateObjectiveTool
@@ -59,10 +58,11 @@ def build_tool_router(
     router.register(ExecutePythonTool(config))
     router.register(ReadFileTool(config))
     router.register(WriteFileTool(config))
-    router.register(GetCryptoPriceTool(config, persistent_memory))
-    router.register(GetCryptoHistoryTool(config))
-    router.register(GetBitcoinOnchainTool(config))
-    router.register(GetNewsTool(config))
+    # Auto-discovery: replaces the previous hand-registration of the four
+    # data_feeds tools. A new file under tools/data_feeds/ is picked up at
+    # process start; no red-zone edit required.
+    for cls in discover_data_feed_tools():
+        router.register(instantiate_tool(cls, config, persistent_memory))
     router.register(FredSeriesSearchTool(config))
     router.register(FredSeriesObservationsTool(config))
     router.register(RedditSearchTool(config))
@@ -139,6 +139,7 @@ app.include_router(evolution.router)
 app.include_router(admin.router)
 app.include_router(knowledge.router)
 app.include_router(wiki.router)
+app.include_router(tools_route.router)
 
 
 @app.websocket("/ws/chat")

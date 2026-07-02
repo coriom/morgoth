@@ -98,6 +98,27 @@ async def _cmd_approve(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_apply(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Apply an approved proposal via ``self_modify.apply.apply_proposal``.
+
+    Prints the final status. Detailed step-by-step logs go through loguru
+    to the systemd log; the DB row's status_reason carries the summary.
+    """
+    from self_modify import apply as apply_mod
+
+    row = await store.get(args.proposal_id)
+    if not row:
+        print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
+        return 1
+    print(f"applying proposal {args.proposal_id} …")
+    final = await apply_mod.apply_proposal(store, args.proposal_id)
+    after = await store.get(args.proposal_id)
+    print(f"final status: {final}")
+    if after:
+        print(f"reason:       {after.get('status_reason') or ''}")
+    return 0 if final == apply_mod.STATUS_APPLIED else 1
+
+
 async def _cmd_reject(store: P.ProposalStore, args: argparse.Namespace) -> int:
     row = await store.get(args.proposal_id)
     if not row:
@@ -136,6 +157,13 @@ async def _main(argv: list[str]) -> int:
     p_reject.add_argument("proposal_id")
     p_reject.add_argument("--reason", default=None)
     p_reject.set_defaults(_fn=_cmd_reject)
+
+    p_apply = subparsers.add_parser(
+        "apply",
+        help="apply an approved proposal (writes live tree; the door)",
+    )
+    p_apply.add_argument("proposal_id")
+    p_apply.set_defaults(_fn=_cmd_apply)
 
     args = parser.parse_args(argv)
 

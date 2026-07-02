@@ -23,6 +23,7 @@ class GetBitcoinOnchainTool(BaseTool):
     """Fetch a compact Bitcoin on-chain health digest from mempool.space."""
 
     name = "get_bitcoin_onchain"
+    is_data_source = True
     description = (
         "Fetch real Bitcoin on-chain metrics: current hash rate, mining "
         "difficulty + next adjustment, recommended fees (sat/vB), and "

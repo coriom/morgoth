@@ -37,6 +37,9 @@ STATUS_TESTS_FAILED = "tests_failed"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_APPROVED_PENDING_APPLY = "approved_pending_apply"
 STATUS_REJECTED = "rejected"
+# Apply-time statuses (step 2 — the door).
+STATUS_APPLIED = "applied"
+STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
 
 ALL_STATUSES: tuple[str, ...] = (
     STATUS_SUBMITTED,
@@ -45,6 +48,8 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_PENDING_APPROVAL,
     STATUS_APPROVED_PENDING_APPLY,
     STATUS_REJECTED,
+    STATUS_APPLIED,
+    STATUS_APPLY_FAILED_ROLLED_BACK,
 )
 
 
