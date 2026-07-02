@@ -141,18 +141,27 @@ async def test_get_sources_used_parses_json_string_column(app_config) -> None:
 async def test_data_source_tools_membership() -> None:
     """DATA_SOURCE_TOOLS must contain the external data sources and exclude internal tools.
 
-    fred_series_observations is intentionally NOT included: without a FRED_API_KEY
-    in .env the tool always fails, so counting it as a source-rail option only
-    wastes cycle slots. Re-add it if/when a key is provisioned.
+    SUPERSET assertion: the baseline five external sources must always be
+    present (silent shrinkage of the source rail is a regression), but
+    the auto-discovery pipeline is allowed to grow the set with new
+    is_data_source=True tools. Internal / non-source tools must remain
+    absent.
+
+    fred_series_observations is intentionally NOT included: without a
+    FRED_API_KEY in .env the tool always fails, so counting it as a
+    source-rail option only wastes cycle slots. Re-add it if/when a key
+    is provisioned.
     """
 
-    assert DATA_SOURCE_TOOLS == frozenset({
+    baseline = frozenset({
         "get_crypto_price",
         "get_bitcoin_onchain",
         "get_news",
         "reddit_search",
         "web_search",
     })
+    missing = baseline - DATA_SOURCE_TOOLS
+    assert not missing, f"DATA_SOURCE_TOOLS lost baseline sources: {missing!r}"
     for excluded in (
         "recall",
         "remember",
