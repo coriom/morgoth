@@ -38,23 +38,38 @@ _OLD_CHAT_TOOL_NAMES = {
 }
 
 
-def test_computed_data_source_tools_matches_baseline() -> None:
+def test_data_source_tools_contains_baseline() -> None:
+    """The baseline data-source tools must never disappear silently.
+
+    Assertion is SUPERSET, not equality: adding a new tool via the
+    self-modify pipeline (a legitimate expansion of the source rail) MUST
+    NOT break the test suite. What breaks the suite is any of the
+    baseline names going missing, which would silently shrink the rail.
+    """
     from core.brain import DATA_SOURCE_TOOLS
 
-    assert DATA_SOURCE_TOOLS == _OLD_DATA_SOURCE_TOOLS, (
-        f"DATA_SOURCE_TOOLS drift: got {DATA_SOURCE_TOOLS!r}, "
-        f"expected {_OLD_DATA_SOURCE_TOOLS!r}"
+    missing = _OLD_DATA_SOURCE_TOOLS - DATA_SOURCE_TOOLS
+    assert not missing, (
+        f"DATA_SOURCE_TOOLS lost baseline members: {missing!r}. "
+        f"Current: {DATA_SOURCE_TOOLS!r}"
     )
     # Type must remain frozenset.
     assert isinstance(DATA_SOURCE_TOOLS, frozenset)
 
 
-def test_computed_chat_tool_names_matches_baseline_as_set() -> None:
+def test_chat_tool_names_contains_baseline() -> None:
+    """The baseline chat tools must never disappear silently.
+
+    Same rationale as DATA_SOURCE_TOOLS: SUPERSET, not equality — allow
+    pipeline-driven growth, catch silent shrinkage.
+    """
     from core.brain import CHAT_TOOL_NAMES
 
-    assert set(CHAT_TOOL_NAMES) == _OLD_CHAT_TOOL_NAMES, (
-        f"CHAT_TOOL_NAMES drift: got {set(CHAT_TOOL_NAMES)!r}, "
-        f"expected {_OLD_CHAT_TOOL_NAMES!r}"
+    current = set(CHAT_TOOL_NAMES)
+    missing = _OLD_CHAT_TOOL_NAMES - current
+    assert not missing, (
+        f"CHAT_TOOL_NAMES lost baseline members: {missing!r}. "
+        f"Current: {current!r}"
     )
     # Type must remain list (brain.py iterates it with .get_schemas).
     assert isinstance(CHAT_TOOL_NAMES, list)
@@ -62,19 +77,24 @@ def test_computed_chat_tool_names_matches_baseline_as_set() -> None:
     assert len(CHAT_TOOL_NAMES) == len(set(CHAT_TOOL_NAMES))
 
 
-def test_discovery_finds_all_data_feeds_tools() -> None:
+def test_discovery_finds_the_four_baseline_data_feeds_tools() -> None:
+    """Discovery must at minimum find the 4 baseline data_feeds tools.
+
+    SUPERSET: pipeline-added tools legitimately grow this set.
+    """
     from tools.discovery import discover_data_feed_tools
 
     classes = discover_data_feed_tools()
     names = {cls.name for cls in classes}
-    # The four currently-shipped data_feeds tools.
-    assert names == {
+    baseline = {
         "get_crypto_price",
         "get_crypto_history",
         "get_bitcoin_onchain",
         "get_news",
     }
-    # Deterministic sort order.
+    missing = baseline - names
+    assert not missing, f"discovery lost baseline tools: {missing!r}"
+    # Deterministic sort order regardless of set size.
     assert [cls.name for cls in classes] == sorted(names)
 
 
