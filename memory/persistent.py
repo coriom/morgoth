@@ -167,6 +167,30 @@ class PersistentMemory:
                 )
             except Exception as exc:
                 logger.warning("Could not ensure contradictions table (non-fatal): {}", exc)
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS self_modify_proposals (
+                        proposal_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW(),
+                        target_path TEXT NOT NULL,
+                        change_type TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        rationale TEXT,
+                        status TEXT NOT NULL DEFAULT 'submitted',
+                        status_reason TEXT
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS self_modify_proposals_status_idx "
+                    "ON self_modify_proposals (status);"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure self_modify_proposals table (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 

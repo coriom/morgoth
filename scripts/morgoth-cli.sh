@@ -116,6 +116,31 @@ cmd_wiki() {
     echo "$body" | python3 -m json.tool
 }
 
+# Self-modify subcommands delegate to `python -m self_modify.cli`. Each
+# runs in the repo root using the venv Python so imports resolve.
+REPO_DIR="/home/corio/Morgoth/morgoth"
+VENV_PY="$REPO_DIR/.venv/bin/python"
+
+cmd_proposals() {
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli list "$@")
+}
+
+cmd_approve() {
+    if [[ $# -lt 1 ]]; then
+        _err "usage: morgoth approve <proposal_id>"
+        return 2
+    fi
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli approve "$1")
+}
+
+cmd_reject() {
+    if [[ $# -lt 1 ]]; then
+        _err "usage: morgoth reject <proposal_id> [--reason \"...\"]"
+        return 2
+    fi
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli reject "$@")
+}
+
 # ---------- usage + dispatch ------------------------------------------------
 
 usage() {
@@ -131,17 +156,23 @@ Commands:
   status          show service state + a compact brain/status summary
   logs [N]        tail the unit log (default 50 lines, follow mode)
   wiki            trigger POST /api/wiki/compile and print the counts
+  proposals       list pending self-modify proposals (--recent for history)
+  approve ID      approve a pending_approval proposal (apply not implemented)
+  reject ID       reject a proposal (--reason optional)
   help            print this message
 USAGE
 }
 
 case "${1:-help}" in
-    start)    shift; cmd_start "$@";;
-    stop)     shift; cmd_stop "$@";;
-    restart)  shift; cmd_restart "$@";;
-    status)   shift; cmd_status "$@";;
-    logs)     shift; cmd_logs "$@";;
-    wiki)     shift; cmd_wiki "$@";;
+    start)     shift; cmd_start "$@";;
+    stop)      shift; cmd_stop "$@";;
+    restart)   shift; cmd_restart "$@";;
+    status)    shift; cmd_status "$@";;
+    logs)      shift; cmd_logs "$@";;
+    wiki)      shift; cmd_wiki "$@";;
+    proposals) shift; cmd_proposals "$@";;
+    approve)   shift; cmd_approve "$@";;
+    reject)    shift; cmd_reject "$@";;
     help|-h|--help) usage;;
     *)
         _err "unknown command: $1"
