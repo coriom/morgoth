@@ -37,6 +37,8 @@ publish the wiki.
   Morgoth's attention and prevents infinite loops on a stuck query.
 - **Default deny.** The self-modify pipeline classifies unknown paths as
   RED. Zones must be widened deliberately, never inferred.
+- **May PROPOSE green-zone extensions** (new data-feed tools) through the
+  gated pipeline; NEVER applies them itself — application is a human act.
 
 ## Provenance
 

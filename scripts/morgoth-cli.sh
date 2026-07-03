@@ -157,6 +157,13 @@ cmd_apply() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli apply "$1")
 }
 
+cmd_reflect() {
+    # One-shot reflection cycle: Morgoth proposes a new green-zone tool.
+    # Gated by can_self_modify in MORGOTH_PERMS.json. Prints each step
+    # to stdout via the reflect module's own log; final result at exit.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.reflect)
+}
+
 cmd_focus() {
     # Three shapes:
     #   morgoth focus              → show
@@ -191,6 +198,7 @@ Commands:
   approve ID      approve a pending_approval proposal
   reject ID       reject a proposal (--reason optional)
   apply ID        apply an approved proposal (writes live tree; the door)
+  reflect         run one reflection cycle (Morgoth proposes a new tool)
   focus [TEXT|--clear]  set / show / clear the operator focus directive
                         (steers objective-generation topic choice only)
   help            print this message
@@ -209,6 +217,7 @@ case "${1:-help}" in
     approve)   shift; cmd_approve "$@";;
     reject)    shift; cmd_reject "$@";;
     apply)     shift; cmd_apply "$@";;
+    reflect)   shift; cmd_reflect "$@";;
     focus)     shift; cmd_focus "$@";;
     help|-h|--help) usage;;
     *)

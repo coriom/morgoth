@@ -70,16 +70,23 @@ class ProposalStore:
         change_type: str,
         content: str,
         rationale: str,
+        proposed_by: str = "human",
     ) -> str:
-        """Insert a new proposal in ``submitted`` state; return its id."""
+        """Insert a new proposal in ``submitted`` state; return its id.
+
+        ``proposed_by`` records provenance: ``'human'`` for operator-injected
+        rows, ``'morgoth'`` for reflection-born ones. The column is the
+        calibration axis for a future security-agent gate on Morgoth-born
+        proposals.
+        """
         proposal_id = str(_uuid.uuid4())
         pool = self._pm._require_pool()  # noqa: SLF001
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO self_modify_proposals
-                    (proposal_id, target_path, change_type, content, rationale, status)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                    (proposal_id, target_path, change_type, content, rationale, status, proposed_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """,
                 _uuid.UUID(proposal_id),
                 target_path,
@@ -87,8 +94,29 @@ class ProposalStore:
                 content,
                 rationale,
                 STATUS_SUBMITTED,
+                proposed_by,
             )
         return proposal_id
+
+    async def count_by_status_and_author(
+        self,
+        status: str,
+        proposed_by: str,
+    ) -> int:
+        """Count proposals matching (status, proposed_by).
+
+        Used by the reflect job's cap: refuses to submit another if
+        pending_approval + proposed_by='morgoth' >= 3.
+        """
+        pool = self._pm._require_pool()  # noqa: SLF001
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM self_modify_proposals "
+                "WHERE status = $1 AND proposed_by = $2",
+                status,
+                proposed_by,
+            )
+        return int(row["n"]) if row else 0
 
     async def get(self, proposal_id: str) -> dict[str, Any] | None:
         pool = self._pm._require_pool()  # noqa: SLF001

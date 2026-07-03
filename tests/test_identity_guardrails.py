@@ -98,15 +98,60 @@ def test_max_cycles_forced_completion_still_referenced_in_brain() -> None:
     assert "MAX_CYCLES" in brain, "MAX_CYCLES constant/reference removed from brain.py"
 
 
-def test_can_self_modify_is_false_in_permissions() -> None:
-    """can_self_modify must remain false in the runtime permission file."""
+def test_can_self_modify_flag_exists_in_permissions() -> None:
+    """The can_self_modify flag must remain declared in MORGOTH_PERMS.json.
+
+    Step 3 flipped the flag to true (Morgoth can PROPOSE via the reflect
+    job). The invariant is no longer the value — it's that the flag never
+    silently disappears. A future refactor that drops the flag must fail
+    this test so the policy stays explicit.
+    """
     import json
 
     perms = json.loads(
         (REPO_ROOT / "MORGOTH_PERMS.json").read_text(encoding="utf-8")
     )
     flags = perms.get("permissions") or {}
-    assert flags.get("can_self_modify") is False, (
-        "can_self_modify must stay false in step 1 of the self-modify frontier "
-        "(MORGOTH_PERMS.json → permissions.can_self_modify)"
+    assert "can_self_modify" in flags, (
+        "can_self_modify flag missing from MORGOTH_PERMS.json → permissions"
     )
+    assert isinstance(flags["can_self_modify"], bool), (
+        "can_self_modify must be a bool"
+    )
+
+
+def test_apply_is_unreachable_from_morgoth() -> None:
+    """Even with can_self_modify=true, Morgoth must not be able to APPLY.
+
+    Two grep-level invariants:
+      1. core/brain.py imports nothing from self_modify (no propose/apply
+         path from research cycles).
+      2. self_modify/reflect.py — the propose entry point — does not
+         import self_modify.apply (the writer of the live tree).
+
+    Apply stays a human-CLI-only act, forever.
+    """
+    import re
+
+    brain = (REPO_ROOT / "core" / "brain.py").read_text(encoding="utf-8")
+    # No `from self_modify...` or `import self_modify...` at any depth.
+    forbidden = re.compile(r"^\s*(from|import)\s+self_modify\b", re.MULTILINE)
+    hits = forbidden.findall(brain)
+    assert not hits, (
+        f"core/brain.py must not import self_modify (found: {hits!r})"
+    )
+
+    reflect_path = REPO_ROOT / "self_modify" / "reflect.py"
+    if reflect_path.exists():
+        reflect = reflect_path.read_text(encoding="utf-8")
+        # Look at import statements only — the docstring mentions the
+        # module name for humans, which is fine.
+        forbidden = re.compile(
+            r"^\s*(from\s+self_modify\.apply|from\s+\.apply|import\s+self_modify\.apply)",
+            re.MULTILINE,
+        )
+        hits = forbidden.findall(reflect)
+        assert not hits, (
+            f"self_modify/reflect.py must not import self_modify.apply "
+            f"(found: {hits!r}) — apply is human-CLI-only"
+        )
