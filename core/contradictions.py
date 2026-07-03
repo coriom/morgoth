@@ -18,6 +18,7 @@ positive).
 from __future__ import annotations
 
 import math
+import os
 from typing import Any, Callable
 
 from chromadb.utils import embedding_functions
@@ -29,6 +30,60 @@ from loguru import logger
 # around 0.48. 0.75 separates the two cleanly. Raise to be stricter, lower
 # to be more lenient about subject variants.
 SUBJECT_SIMILARITY_THRESHOLD: float = 0.75
+
+
+# Temporal window for the CONTRADICTION classification.
+#
+# Rationale: subjects like "BTC price" are point-in-time readings of a rolling
+# metric. Two opposite readings made ≥6 hours apart are almost certainly
+# capturing different windows of the same time-series, not a genuine
+# disagreement. This is REVISION (the belief was updated), not
+# CONTRADICTION. Within-window opposites are kept — they signal a real
+# reasoning or extraction conflict inside a single reading of the world.
+#
+# Env override lets the runtime tune without a code change:
+#   CONTRADICTION_WINDOW_HOURS=6.0
+CONTRADICTION_WINDOW_HOURS: float = float(
+    os.environ.get("CONTRADICTION_WINDOW_HOURS", "6.0")
+)
+
+
+# Timeframe qualifiers that make two subjects NON-COMPARABLE regardless of
+# what the embedding says. "long-term price trends" vs "short-term price
+# trend" are semantically similar in embedding space (both mention "price
+# trend") but describe different horizons — comparing their claims across
+# horizons is a category mistake, not a contradiction.
+#
+# Substring match, case-insensitive. Kept tight — no gray-zone words.
+SHORT_TERM_TOKENS: frozenset[str] = frozenset({
+    "short-term",
+    "24-hour",
+    "24h",
+    "daily",
+    "intraday",
+})
+LONG_TERM_TOKENS: frozenset[str] = frozenset({
+    "long-term",
+    "weekly",
+    "monthly",
+    "yearly",
+})
+
+
+def subjects_timeframe_conflict(subject_a: str, subject_b: str) -> bool:
+    """True iff one subject carries a SHORT-term token and the other a LONG.
+
+    Pure function. Same-side (both short, both long, neither) → False.
+    """
+    if not (isinstance(subject_a, str) and isinstance(subject_b, str)):
+        return False
+    a_low = subject_a.lower()
+    b_low = subject_b.lower()
+    a_short = any(tok in a_low for tok in SHORT_TERM_TOKENS)
+    a_long = any(tok in a_low for tok in LONG_TERM_TOKENS)
+    b_short = any(tok in b_low for tok in SHORT_TERM_TOKENS)
+    b_long = any(tok in b_low for tok in LONG_TERM_TOKENS)
+    return (a_short and b_long) or (a_long and b_short)
 
 
 # Closed directional vocabulary. Two claims are opposed iff they map to

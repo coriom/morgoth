@@ -598,7 +598,10 @@ async def compile_wiki(
     theses = await pm.get_theses(limit=1000)
     if exclude_stale:
         theses = [t for t in theses if t.get("status") != "stale"]
-    contradictions = await pm.get_contradictions(limit=500)
+    # Only surface LIVE contradictions in the wiki — pairs voided by the
+    # remediation script (timeframe guard, cross-window supersession) stay
+    # in the DB as audit trail but do NOT clutter the vault.
+    contradictions = await pm.get_contradictions(limit=500, unresolved_only=True)
 
     # 2. Group by SEMANTIC subject similarity (embeddings). The wiki uses
     # its own threshold (WIKI_SUBJECT_SIMILARITY_THRESHOLD), lower than the

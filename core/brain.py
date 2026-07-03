@@ -18,8 +18,10 @@ from agents.agent_manager import AgentManager
 from api.ws.handler import OutboundWebSocketMessage, WebSocketManager
 from core.config import AppConfig
 from core.contradictions import (
+    CONTRADICTION_WINDOW_HOURS,
     claims_oppose,
     group_theses_by_subject,
+    subjects_timeframe_conflict,
 )
 from core.llm_client import ChatMessage, OllamaLLMClient
 from core.scheduler import Scheduler, Task, TaskPriority, TaskType
@@ -828,18 +830,29 @@ class Brain:
         return valid
 
     async def detect_contradictions(self) -> list[dict[str, Any]]:
-        """Scan active theses; mark every opposed pair contradicted and record it.
+        """Scan active theses; classify opposed pairs into three buckets.
 
-        - Loads active theses from the theses table.
-        - Groups them by semantic subject similarity (Chroma default embedding).
-        - Within each group, every pair whose claims map to opposite directional
-          poles is recorded in the contradictions table; both theses are flipped
-          to status='contradicted'.
+        Three-way outcome per opposing pair:
 
-        Non-blocking: any failure (DB error, embedding failure, missing row)
-        is logged and the function returns the partial list — the cycle's
-        forced-completion path must reach its INTENTIONAL continue regardless.
+        1. **Timeframe conflict** — subjects on different horizons
+           ("long-term" vs "short-term") are non-comparable; the pair is
+           SKIPPED (no contradiction row, no status flip). See
+           ``subjects_timeframe_conflict``.
+        2. **Cross-window** — gap between the two theses' created_at is
+           ≥ ``CONTRADICTION_WINDOW_HOURS`` (default 6h). This is a
+           REVISION on a rolling metric, not a live contradiction. The
+           OLDER thesis is flipped to ``superseded`` with ``superseded_by``
+           pointing at the newer thesis. The newer thesis stays untouched
+           (still active). No contradiction row.
+        3. **Same-window** — gap < window. CURRENT behavior: both flip to
+           ``contradicted`` and a contradiction row is recorded.
+
+        Non-blocking on any DB/embedding failure — returns the partial list
+        so the cycle's forced-completion path reaches its INTENTIONAL
+        continue.
         """
+        from datetime import datetime, timezone
+
         try:
             active = await self._persistent_memory.get_theses(status="active", limit=500)
         except Exception as exc:
@@ -854,9 +867,18 @@ class Brain:
             logger.warning("detect_contradictions: subject grouping failed: {}", exc)
             self._feed_append("ERROR", f"contradiction grouping failed: {type(exc).__name__}")
             return []
+
+        window_seconds = CONTRADICTION_WINDOW_HOURS * 3600.0
         found: list[dict[str, Any]] = []
-        # IDs already marked contradicted in THIS pass; avoid re-flipping.
-        flipped: set[str] = set()
+        flipped: set[str] = set()          # IDs already flipped to contradicted this pass
+        superseded_ids: set[str] = set()   # IDs already flipped to superseded this pass
+
+        def _created_at(thesis: dict[str, Any]) -> datetime | None:
+            raw = thesis.get("created_at")
+            if isinstance(raw, datetime):
+                return raw
+            return None
+
         for group in groups:
             if len(group) < 2:
                 continue
@@ -865,9 +887,57 @@ class Brain:
                     ta, tb = group[i], group[j]
                     if not claims_oppose(ta.get("claim", ""), tb.get("claim", "")):
                         continue
-                    pair_subject = ta.get("subject")
+
+                    # Guard 1: timeframe mismatch — non-comparable subjects.
+                    if subjects_timeframe_conflict(
+                        ta.get("subject", ""), tb.get("subject", "")
+                    ):
+                        logger.debug(
+                            "detect_contradictions: timeframe guard blocked pair "
+                            "{!r} vs {!r}",
+                            ta.get("subject"), tb.get("subject"),
+                        )
+                        continue
+
                     id_a = str(ta.get("thesis_id"))
                     id_b = str(tb.get("thesis_id"))
+                    pair_subject = ta.get("subject")
+
+                    # Guard 2: temporal window — cross-window pairs are
+                    # supersessions on a rolling metric, not contradictions.
+                    ca, cb = _created_at(ta), _created_at(tb)
+                    if ca is not None and cb is not None:
+                        # Both timestamps are timezone-aware in the schema.
+                        gap = abs((ca - cb).total_seconds())
+                        if gap >= window_seconds:
+                            # Older → superseded, newer → untouched.
+                            if ca <= cb:
+                                older_id, newer_id = id_a, id_b
+                            else:
+                                older_id, newer_id = id_b, id_a
+                            if older_id in superseded_ids:
+                                continue
+                            try:
+                                await self._persistent_memory.mark_thesis_superseded(
+                                    older_thesis_id=older_id,
+                                    newer_thesis_id=newer_id,
+                                )
+                                superseded_ids.add(older_id)
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to mark thesis {} superseded: {}",
+                                    older_id, exc,
+                                )
+                                continue
+                            logger.debug(
+                                "detect_contradictions: supersession — {} superseded by {} "
+                                "(gap {:.1f}h ≥ window {:.1f}h)",
+                                older_id[:8], newer_id[:8],
+                                gap / 3600.0, CONTRADICTION_WINDOW_HOURS,
+                            )
+                            continue
+
+                    # Same-window: original contradiction path.
                     try:
                         await self._persistent_memory.record_contradiction(
                             thesis_id_a=id_a,

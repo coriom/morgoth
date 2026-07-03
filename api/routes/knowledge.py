@@ -125,10 +125,21 @@ async def list_theses(
 
 
 @router.get("/contradictions")
-async def list_contradictions(request: Request, limit: int = 100) -> dict[str, Any]:
-    """Return contradictions (newest first) with their two theses pre-resolved."""
+async def list_contradictions(
+    request: Request,
+    limit: int = 100,
+    include_resolved: bool = False,
+) -> dict[str, Any]:
+    """Return contradictions (newest first) with their two theses pre-resolved.
+
+    Default: only UNRESOLVED pairs (resolution IS NULL). Pass
+    ``include_resolved=true`` to see every row including those voided by
+    the remediation script.
+    """
     try:
-        rows = await request.app.state.persistent_memory.get_contradictions(limit=limit)
+        rows = await request.app.state.persistent_memory.get_contradictions(
+            limit=limit, unresolved_only=not include_resolved
+        )
     except Exception as exc:
         logger.exception("GET /api/contradictions failed")
         raise HTTPException(

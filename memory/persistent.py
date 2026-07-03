@@ -167,6 +167,22 @@ class PersistentMemory:
                 )
             except Exception as exc:
                 logger.warning("Could not ensure contradictions table (non-fatal): {}", exc)
+            # Temporal-semantics columns for the detector (step: revision vs
+            # contradiction). superseded_by points at the newer thesis that
+            # replaced this one; resolution on a contradiction row records
+            # why an existing pair was voided (timeframe guard, supersession
+            # reclassification, ...).
+            for alter_sql in (
+                "ALTER TABLE theses ADD COLUMN IF NOT EXISTS superseded_by UUID NULL;",
+                "ALTER TABLE contradictions ADD COLUMN IF NOT EXISTS resolution TEXT NULL;",
+            ):
+                try:
+                    await connection.execute(alter_sql)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not apply schema alter (non-fatal): {} :: {}",
+                        alter_sql, exc,
+                    )
             try:
                 await connection.execute(
                     """
@@ -505,17 +521,29 @@ class PersistentMemory:
             rows = await conn.fetch(query, *params)
         return [dict(row) for row in rows]
 
-    async def get_contradictions(self, limit: int = 50) -> list[dict[str, Any]]:
+    async def get_contradictions(
+        self,
+        limit: int = 50,
+        *,
+        unresolved_only: bool = False,
+    ) -> list[dict[str, Any]]:
         """Return contradictions with their two theses pre-joined (newest first).
 
         LEFT JOIN so a contradiction whose thesis row was deleted yields nulls
         on that side instead of disappearing from the result set — surfaces
         partial state to the API rather than hiding it.
+
+        ``unresolved_only=True`` filters to rows where ``resolution IS NULL``,
+        i.e. genuine live contradictions (used by /api/contradictions and
+        the wiki). ``resolution`` is included in every returned row so
+        downstream callers can see the reason a pair was voided.
         """
         pool = self._require_pool()
+        where = "WHERE c.resolution IS NULL " if unresolved_only else ""
         query = (
             "SELECT "
             "  c.contradiction_id, c.subject_group, c.detected_at, "
+            "  c.resolution, "
             "  c.thesis_id_a, "
             "  ta.subject AS subject_a, ta.claim AS claim_a, "
             "  ta.confidence AS confidence_a, ta.status AS status_a, "
@@ -529,6 +557,7 @@ class PersistentMemory:
             "FROM contradictions c "
             "LEFT JOIN theses ta ON ta.thesis_id = c.thesis_id_a "
             "LEFT JOIN theses tb ON tb.thesis_id = c.thesis_id_b "
+            f"{where}"
             "ORDER BY c.detected_at DESC LIMIT $1"
         )
         async with pool.acquire() as conn:
@@ -544,6 +573,52 @@ class PersistentMemory:
                 "UPDATE theses SET status = $1 WHERE thesis_id = $2 RETURNING thesis_id",
                 status,
                 _uuid.UUID(str(thesis_id)),
+            )
+        return row is not None
+
+    async def mark_thesis_superseded(
+        self,
+        older_thesis_id: str,
+        newer_thesis_id: str,
+    ) -> bool:
+        """Flip an older thesis to 'superseded' and record which thesis replaced it.
+
+        Used by the detector's temporal-semantics branch: when an opposing
+        claim exists across a rolling metric with a gap ≥ CONTRADICTION_WINDOW_HOURS,
+        the older reading is a stale point on a time-series, not a live
+        contradiction. Both columns are set atomically.
+        """
+        pool = self._require_pool()
+        import uuid as _uuid
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE theses SET status = 'superseded', superseded_by = $1 "
+                "WHERE thesis_id = $2 RETURNING thesis_id",
+                _uuid.UUID(str(newer_thesis_id)),
+                _uuid.UUID(str(older_thesis_id)),
+            )
+        return row is not None
+
+    async def set_contradiction_resolution(
+        self,
+        contradiction_id: str,
+        resolution: str,
+    ) -> bool:
+        """Set an audit-trail reason on a contradiction row.
+
+        Used by scripts/remediate_contradictions.py to void existing pairs
+        without deleting the row (rows are never destroyed — resolution is
+        the audit trail). Live API + wiki filter resolution IS NULL when
+        listing 'unresolved' contradictions.
+        """
+        pool = self._require_pool()
+        import uuid as _uuid
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE contradictions SET resolution = $1 "
+                "WHERE contradiction_id = $2 RETURNING contradiction_id",
+                resolution,
+                _uuid.UUID(str(contradiction_id)),
             )
         return row is not None
 
