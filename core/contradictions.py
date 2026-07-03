@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from typing import Any, Callable
 
 from chromadb.utils import embedding_functions
@@ -87,13 +88,24 @@ def subjects_timeframe_conflict(subject_a: str, subject_b: str) -> bool:
 
 
 # Closed directional vocabulary. Two claims are opposed iff they map to
-# different poles. Substring matching against a claim, case-insensitive.
+# different poles. Matching is WORD-BOUNDARY (whole-token), case-insensitive
+# — a substring match would pull "up" out of "upcoming" and falsely pair
+# temporal claims against directional ones (a live bug found after e95abd5
+# left 2 "upcoming vs decreasing" pairs in the belief base).
+#
+# ``uptrend``/``downtrend`` are enumerated explicitly: substring matching
+# used to catch them via ``up``/``down``, but whole-token matching does
+# not, so they must be listed to preserve the directional signal.
+# ``positively``/``negatively`` similarly lose their old substring hit and
+# now produce no pole — an acceptable trade since those adverbs are rare
+# as extraction claims.
 DIRECTION_LEXICON: dict[str, str] = {
     # down pole
     "declining": "down",
     "decreasing": "down",
     "falling": "down",
     "down": "down",
+    "downtrend": "down",
     "weakening": "down",
     "negative": "down",
     "contracting": "down",
@@ -102,6 +114,7 @@ DIRECTION_LEXICON: dict[str, str] = {
     "increasing": "up",
     "rising": "up",
     "up": "up",
+    "uptrend": "up",
     "strengthening": "up",
     "positive": "up",
     "expanding": "up",
@@ -109,16 +122,26 @@ DIRECTION_LEXICON: dict[str, str] = {
 }
 
 
+# Pre-compiled tokenizer: pull runs of ASCII letters. Any non-letter (space,
+# punctuation, digit) acts as a boundary — so ``positive (short-term change
+# rate)`` tokenizes to ``[positive, short, term, change, rate]`` and picks
+# up the ``positive`` pole cleanly.
+_WORD_RE = re.compile(r"[a-z]+")
+
+
 def _claim_pole(claim: str) -> str | None:
     """Return 'up' / 'down' / None for a claim string.
 
-    If a claim contains lexicon words from both poles ("rising but with
-    declining momentum") or none, it is uncomparable.
+    Tokenizes the claim into whole words (``[a-z]+``) and matches DIRECTION_LEXICON
+    entries as WHOLE TOKENS only. If the tokens include words from both poles
+    ("rising but with declining momentum") or none, the claim is uncomparable.
     """
     if not isinstance(claim, str) or not claim:
         return None
-    lower = claim.lower()
-    poles = {pole for word, pole in DIRECTION_LEXICON.items() if word in lower}
+    tokens = set(_WORD_RE.findall(claim.lower()))
+    if not tokens:
+        return None
+    poles = {DIRECTION_LEXICON[t] for t in tokens if t in DIRECTION_LEXICON}
     if len(poles) != 1:
         return None
     return next(iter(poles))

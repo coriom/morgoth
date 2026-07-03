@@ -174,10 +174,12 @@ def test_remediation_classify_matrix() -> None:
     window_seconds = 6.0 * 3600.0
     now = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
 
-    # kept: same timeframe, gap < window
+    # kept: same timeframe, gap < window, claims genuinely oppose
     same_window = {
         "subject_a": "BTC short-term price",
         "subject_b": "BTC short-term price",
+        "claim_a": "declining",
+        "claim_b": "increasing",
         "created_at_a": now,
         "created_at_b": now - timedelta(hours=3),
     }
@@ -187,6 +189,8 @@ def test_remediation_classify_matrix() -> None:
     cross_window = {
         "subject_a": "BTC short-term price",
         "subject_b": "BTC short-term price",
+        "claim_a": "declining",
+        "claim_b": "increasing",
         "created_at_a": now,
         "created_at_b": now - timedelta(hours=7),
     }
@@ -196,6 +200,8 @@ def test_remediation_classify_matrix() -> None:
     timeframe_conflict = {
         "subject_a": "BTC long-term price trends",
         "subject_b": "Bitcoin's short-term price trend",
+        "claim_a": "bearish",
+        "claim_b": "bullish",
         "created_at_a": now,
         "created_at_b": now - timedelta(hours=1),
     }

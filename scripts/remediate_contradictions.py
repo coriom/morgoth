@@ -42,12 +42,25 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.config import load_config  # noqa: E402
 from core.contradictions import (  # noqa: E402
     CONTRADICTION_WINDOW_HOURS,
+    claims_oppose,
     subjects_timeframe_conflict,
 )
 from memory.persistent import PersistentMemory  # noqa: E402
 
 
 def _classify(pair: dict[str, Any], window_seconds: float) -> str:
+    """Classify an unresolved pair under the current rules.
+
+    Order matters. The pole re-validation runs FIRST — a pair whose claims
+    no longer oppose under the fixed word-boundary lexicon is void
+    regardless of timeframe or gap (the recorded pair was a false positive
+    from the substring-collision era). Then the earlier rules apply.
+    """
+    if not claims_oppose(
+        pair.get("claim_a") or "",
+        pair.get("claim_b") or "",
+    ):
+        return "voided_pole_fix"
     if subjects_timeframe_conflict(
         pair.get("subject_a") or "",
         pair.get("subject_b") or "",
@@ -109,7 +122,12 @@ async def main() -> None:
         for p, action in pair_actions:
             id_a = str(p["thesis_id_a"])
             id_b = str(p["thesis_id_b"])
-            if action == "voided_timeframe_guard":
+            if action == "voided_pole_fix":
+                # Both sides never should have been paired — both are
+                # candidates for restoration under the existing rule.
+                restoration_candidates.add(id_a)
+                restoration_candidates.add(id_b)
+            elif action == "voided_timeframe_guard":
                 restoration_candidates.add(id_a)
                 restoration_candidates.add(id_b)
             elif action == "reclassified_supersession":
