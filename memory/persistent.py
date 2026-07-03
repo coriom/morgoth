@@ -183,6 +183,24 @@ class PersistentMemory:
                         "Could not apply schema alter (non-fatal): {} :: {}",
                         alter_sql, exc,
                     )
+            # Operator focus directive: one active row at a time (WHERE
+            # cleared_at IS NULL). History is preserved — a directive is
+            # never deleted, just tombstoned with cleared_at.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS focus_directives (
+                        focus_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        directive TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        cleared_at TIMESTAMPTZ NULL
+                    );
+                    """
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure focus_directives table (non-fatal): {}", exc
+                )
             try:
                 await connection.execute(
                     """
@@ -619,6 +637,53 @@ class PersistentMemory:
                 "WHERE contradiction_id = $2 RETURNING contradiction_id",
                 resolution,
                 _uuid.UUID(str(contradiction_id)),
+            )
+        return row is not None
+
+    async def set_focus_directive(self, directive: str) -> str:
+        """Replace the active focus directive; return the new row's id.
+
+        Atomically tombstones any currently-active row (sets cleared_at =
+        NOW()) and inserts the new directive as the sole active row.
+        History is preserved — the previous row remains for audit.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE focus_directives SET cleared_at = NOW() "
+                    "WHERE cleared_at IS NULL"
+                )
+                row = await conn.fetchrow(
+                    "INSERT INTO focus_directives (directive) "
+                    "VALUES ($1) RETURNING focus_id",
+                    directive,
+                )
+        return str(row["focus_id"])
+
+    async def get_active_focus(self) -> dict[str, Any] | None:
+        """Return the single active directive row or None.
+
+        Returns a dict with ``focus_id``, ``directive``, and ``created_at``
+        so callers can display "since when". Uses LIMIT 1 defensively;
+        set_focus_directive enforces at-most-one-active but a manual
+        override on the DB could break that.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT focus_id, directive, created_at FROM focus_directives "
+                "WHERE cleared_at IS NULL ORDER BY created_at DESC LIMIT 1"
+            )
+        return dict(row) if row else None
+
+    async def clear_focus_directive(self) -> bool:
+        """Tombstone the active directive. Return True if one existed."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE focus_directives SET cleared_at = NOW() "
+                "WHERE cleared_at IS NULL RETURNING focus_id"
             )
         return row is not None
 

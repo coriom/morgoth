@@ -157,6 +157,20 @@ cmd_apply() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli apply "$1")
 }
 
+cmd_focus() {
+    # Three shapes:
+    #   morgoth focus              → show
+    #   morgoth focus "TEXT"       → set
+    #   morgoth focus --clear      → clear
+    if [[ $# -eq 0 ]]; then
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/focus_cli.py show)
+    elif [[ "$1" == "--clear" ]]; then
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/focus_cli.py clear)
+    else
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/focus_cli.py set "$1")
+    fi
+}
+
 # ---------- usage + dispatch ------------------------------------------------
 
 usage() {
@@ -177,6 +191,8 @@ Commands:
   approve ID      approve a pending_approval proposal
   reject ID       reject a proposal (--reason optional)
   apply ID        apply an approved proposal (writes live tree; the door)
+  focus [TEXT|--clear]  set / show / clear the operator focus directive
+                        (steers objective-generation topic choice only)
   help            print this message
 USAGE
 }
@@ -193,6 +209,7 @@ case "${1:-help}" in
     approve)   shift; cmd_approve "$@";;
     reject)    shift; cmd_reject "$@";;
     apply)     shift; cmd_apply "$@";;
+    focus)     shift; cmd_focus "$@";;
     help|-h|--help) usage;;
     *)
         _err "unknown command: $1"

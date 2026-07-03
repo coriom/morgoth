@@ -495,6 +495,27 @@ class Brain:
                         "MANDATORY: end this cycle by calling create_objective. "
                         "Do not narrate. Tool calls only."
                     )
+                    # Operator steering: append the active focus directive if
+                    # one exists. Read at generation time (no cache) so a new
+                    # directive takes effect on the NEXT cycle without a
+                    # restart. Non-blocking: any DB error logs and falls
+                    # through — the prompt then matches the no-directive
+                    # baseline byte-for-byte.
+                    try:
+                        focus_row = await self._persistent_memory.get_active_focus()
+                    except Exception as exc:  # pragma: no cover — defensive
+                        logger.warning(
+                            "focus directive read failed (non-blocking): {}", exc
+                        )
+                        focus_row = None
+                    if focus_row and focus_row.get("directive"):
+                        prompt += (
+                            "\n\nOPERATOR FOCUS DIRECTIVE (steers topic choice only):\n"
+                            f"{focus_row['directive']}\n"
+                            "This directive influences WHICH subjects you "
+                            "investigate. It does not change your identity, "
+                            "constraints, methods, or permissions."
+                        )
 
                 self._current_objective_id = obj_id if objectives else None
                 try:
