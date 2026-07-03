@@ -2,13 +2,13 @@
 
 Invoked via ``python -m self_modify.cli <subcommand> [args]``. The
 morgoth-cli wrapper (``scripts/morgoth-cli.sh``) delegates to this
-module for the ``proposals``, ``approve``, ``reject``, and ``show``
-subcommands.
+module for the ``proposals``, ``show``, ``approve``, ``reject``, and
+``apply`` subcommands.
 
-APPLY DOES NOT EXIST. ``approve`` moves a proposal to
-``approved_pending_apply`` and prints a clear line reminding the operator
-that the file the proposal describes will NOT be merged into the live
-tree by this code. That capability is scoped for a later step.
+``approve`` moves a proposal to ``approved_pending_apply``; ``apply``
+then runs the full sequence in ``self_modify.apply`` (preconditions →
+write → live pytest → local commit → restart → health probe → rollback
+on failure).
 """
 
 from __future__ import annotations
@@ -92,9 +92,8 @@ async def _cmd_approve(store: P.ProposalStore, args: argparse.Namespace) -> int:
         "approved via morgoth cli",
     )
     print(f"proposal {args.proposal_id} → approved_pending_apply")
-    print("NOTE: apply DOES NOT EXIST in this step. The proposal is recorded")
-    print("as approved but the file it describes has NOT been merged into")
-    print("the live tree. Apply/commit/rollback is a later step.")
+    print(f"Next: `morgoth apply {args.proposal_id}` to write the file, run")
+    print("the live pytest, commit locally, restart, and verify.")
     return 0
 
 

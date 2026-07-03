@@ -22,6 +22,7 @@ this script does not modify .gitignore.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import sys
@@ -46,6 +47,8 @@ from memory.persistent import PersistentMemory  # noqa: E402
 
 VAULT_DIR = Path.home() / "Morgoth" / "vault"
 ENTITIES_DIR = VAULT_DIR / "entities"
+SYSTEM_DIR = VAULT_DIR / "system"
+SYSTEM_TOOLS_DIR = SYSTEM_DIR / "tools"
 
 # The wiki has its own subject-similarity threshold, intentionally LOWER than
 # core.contradictions.SUBJECT_SIMILARITY_THRESHOLD (0.75). Rationale: in the
@@ -109,8 +112,27 @@ def _decode_evidence(raw: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _claims_table(theses: list[dict[str, Any]]) -> str:
-    """Deterministic markdown table — facts come directly from DB rows."""
+def _wikilink_source(src: str, known_tools: set[str]) -> str:
+    """Wrap a source name as [[system/tools/<name>|<name>]] when known.
+
+    Root-relative wikilinks so Obsidian resolves them from any depth of
+    entity page. Unknown sources render as plain text — no dangling links.
+    """
+    if src and src in known_tools:
+        return f"[[system/tools/{src}|{src}]]"
+    return src
+
+
+def _claims_table(
+    theses: list[dict[str, Any]],
+    known_tools: set[str] | None = None,
+) -> str:
+    """Deterministic markdown table — facts come directly from DB rows.
+
+    Sources column entries are wrapped as [[system/tools/<name>|<name>]]
+    when the tool name is in ``known_tools`` (i.e. it has a system page).
+    """
+    known = known_tools or set()
     if not theses:
         return "_(no claims)_"
     header = [
@@ -124,15 +146,26 @@ def _claims_table(theses: list[dict[str, Any]]) -> str:
         status = t.get("status") or "—"
         evidence = _decode_evidence(t.get("evidence"))
         sources = sorted({e.get("source", "") for e in evidence if e.get("source")})
-        sources_cell = ", ".join(sources) if sources else "—"
+        linked = [_wikilink_source(s, known) for s in sources]
+        sources_cell = ", ".join(linked) if linked else "—"
         obj_id = str(t.get("objective_id") or "")
         obj_short = obj_id[:8] if obj_id else "—"
         rows.append(f"| {claim} | {conf} | {status} | {sources_cell} | `{obj_short}` |")
     return "\n".join(header + rows)
 
 
-def _entity_page(subject: str, theses: list[dict[str, Any]], summary: str) -> str:
-    """Assemble the markdown for one entity page."""
+def _entity_page(
+    subject: str,
+    theses: list[dict[str, Any]],
+    summary: str,
+    known_tools: set[str] | None = None,
+) -> str:
+    """Assemble the markdown for one entity page.
+
+    Source names in both the claims table and evidence detail are wrapped
+    as [[system/tools/<name>|<name>]] when they appear in ``known_tools``.
+    """
+    known = known_tools or set()
     contradicted = any(t.get("status") == "contradicted" for t in theses)
     header_flag = " ⚠️ contradicted" if contradicted else ""
     parts: list[str] = [
@@ -144,7 +177,7 @@ def _entity_page(subject: str, theses: list[dict[str, Any]], summary: str) -> st
         "",
         "## Claims",
         "",
-        _claims_table(theses),
+        _claims_table(theses, known),
         "",
         "## Evidence detail",
         "",
@@ -161,7 +194,8 @@ def _entity_page(subject: str, theses: list[dict[str, Any]], summary: str) -> st
         for e in evidence:
             src = e.get("source", "?")
             detail = (e.get("detail") or "").replace("\n", " ")
-            parts.append(f"  - `{src}`: {detail}")
+            linked = _wikilink_source(src, known) if src != "?" else "`?`"
+            parts.append(f"  - {linked}: {detail}")
     parts.append("")
     return "\n".join(parts)
 
@@ -314,6 +348,11 @@ def _index_page(
     parts.append("")
     parts.append("See [[contradictions]].")
     parts.append("")
+    parts.append("## System")
+    parts.append("")
+    parts.append("See [[system/_index|what Morgoth IS]] — every registered tool with")
+    parts.append("its description, flags, provenance, and usage.")
+    parts.append("")
     return "\n".join(parts)
 
 
@@ -323,6 +362,222 @@ def _clear_entities_dir() -> None:
         for old in ENTITIES_DIR.glob("*.md"):
             old.unlink()
     ENTITIES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _clear_system_tools_dir() -> None:
+    """Idempotent clear — a retired tool leaves no stale page behind."""
+    if SYSTEM_TOOLS_DIR.exists():
+        for old in SYSTEM_TOOLS_DIR.glob("*.md"):
+            old.unlink()
+    SYSTEM_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================================
+# SYSTEM VAULT — deterministic; NO LLM calls on this path.
+#
+# The system section documents WHAT MORGOTH IS: every registered tool with
+# its ground-truth metadata (name, description, flags), its provenance
+# (hand-built or born through the self-modify pipeline — proposal id +
+# rationale + applied date), and its live usage stats. Prose already exists
+# in the code (docstrings and description= attributes are human- or pipeline-
+# written); regenerating it via LLM would only add hallucination risk.
+# ============================================================================
+
+
+def _registered_tools_offline(config: Any, pm: Any) -> list[Any]:
+    """Build the full tool router with lightweight stand-ins for callables
+    that don't exist offline (agent_manager, notifier, episodic_memory).
+
+    Verified safe: every tool's __init__ just stores references. No I/O at
+    construction. Falls back to data_feeds-only discovery if the offline
+    build ever regresses.
+    """
+    from types import SimpleNamespace
+
+    try:
+        from api.server import build_tool_router
+
+        router = build_tool_router(
+            config, pm, SimpleNamespace(), SimpleNamespace(), SimpleNamespace()
+        )
+        return list(router._tools.values())  # noqa: SLF001 — inventory read
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "compile_wiki: build_tool_router failed offline ({}); "
+            "falling back to data_feeds discovery. System vault will be partial.",
+            exc,
+        )
+        from tools.discovery import discover_data_feed_tools, instantiate_tool
+
+        return [instantiate_tool(cls, config, pm) for cls in discover_data_feed_tools()]
+
+
+async def _load_applied_provenance(pm: Any) -> dict[str, dict[str, Any]]:
+    """Return {target_path: {proposal_id, rationale, updated_at}} for
+    every applied proposal whose file still exists in the live tree.
+
+    An applied-then-reverted proposal (target_path missing) is silently
+    skipped — the system vault documents WHAT IS, not what once was.
+    """
+    pool = pm._require_pool()  # noqa: SLF001
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT proposal_id, target_path, rationale, updated_at "
+            "FROM self_modify_proposals WHERE status = 'applied' "
+            "ORDER BY updated_at DESC"
+        )
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        target = str(row["target_path"])
+        if not (PROJECT_ROOT / target).exists():
+            continue
+        result[target] = {
+            "proposal_id": str(row["proposal_id"]),
+            "rationale": row.get("rationale") or "",
+            "updated_at": row["updated_at"],
+        }
+    return result
+
+
+async def _load_tool_usage(pm: Any) -> tuple[dict[str, int], dict[str, list[tuple[str, str]]]]:
+    """Compute per-tool usage from the DB.
+
+    Returns two maps keyed by tool name:
+    - objectives_count[name] — number of objectives whose sources_used
+      array contains this tool name
+    - theses_fed[name] — list of (subject, slug) for theses whose evidence
+      contains at least one entry with source == name
+
+    Both are computed by pulling the rows and scanning client-side. The
+    row counts are small (≤ a few hundred each) so this is cheap.
+    """
+    pool = pm._require_pool()  # noqa: SLF001
+    async with pool.acquire() as conn:
+        obj_rows = await conn.fetch(
+            "SELECT sources_used FROM objectives WHERE sources_used IS NOT NULL"
+        )
+        thesis_rows = await conn.fetch(
+            "SELECT subject, evidence FROM theses "
+            "WHERE evidence IS NOT NULL AND status != 'stale'"
+        )
+
+    objectives_count: dict[str, int] = {}
+    for row in obj_rows:
+        raw = row["sources_used"]
+        if isinstance(raw, str):
+            try:
+                sources = json.loads(raw)
+            except (ValueError, TypeError):
+                sources = []
+        else:
+            sources = raw or []
+        for name in sources or []:
+            if isinstance(name, str):
+                objectives_count[name] = objectives_count.get(name, 0) + 1
+
+    theses_fed: dict[str, list[tuple[str, str]]] = {}
+    for row in thesis_rows:
+        subject = row["subject"] or ""
+        evidence = _decode_evidence(row["evidence"])
+        seen_sources: set[str] = set()
+        for e in evidence:
+            src = e.get("source")
+            if isinstance(src, str) and src:
+                seen_sources.add(src)
+        for name in seen_sources:
+            theses_fed.setdefault(name, []).append((subject, slugify(subject)))
+    return objectives_count, theses_fed
+
+
+def _tool_page(
+    tool: Any,
+    provenance: dict[str, Any] | None,
+    objectives_count: int,
+    theses_fed: list[tuple[str, str]],
+) -> str:
+    """Assemble one tool's system page. Deterministic — no LLM."""
+    parts: list[str] = [
+        f"# {tool.name}",
+        "",
+        "## Description",
+        "",
+        (getattr(tool, "description", None) or "_(no description)_").strip(),
+        "",
+        "## Flags",
+        "",
+        f"- data_source: **{bool(getattr(tool, 'is_data_source', False))}**",
+        f"- chat_tool:   **{bool(getattr(tool, 'is_chat_tool', True))}**",
+        "",
+        "## Provenance",
+        "",
+    ]
+    if provenance is not None:
+        pid = provenance["proposal_id"]
+        applied_at = provenance["updated_at"]
+        rationale = provenance["rationale"].strip() or "_(no rationale recorded)_"
+        parts.extend(
+            [
+                f"- origin: **self-modify pipeline** (proposal `{pid[:8]}`)",
+                f"- applied_at: `{applied_at}`",
+                f"- rationale: {rationale}",
+                "",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                "- origin: **hand-built** (not born through the self-modify pipeline)",
+                "",
+            ]
+        )
+    parts.extend(
+        [
+            "## Usage",
+            "",
+            f"- objectives that used it: **{objectives_count}**",
+            f"- theses fed: **{len(theses_fed)}**",
+            "",
+            "## Theses fed",
+            "",
+        ]
+    )
+    if not theses_fed:
+        parts.append("_(this tool has not fed any active thesis yet)_")
+    else:
+        # Dedupe (subject, slug) — a subject may repeat if multiple theses
+        # under it cite this source.
+        unique = sorted(set(theses_fed))
+        for subject, slug in unique:
+            parts.append(f"- [[entities/{slug}|{subject}]]")
+    parts.append("")
+    return "\n".join(parts)
+
+
+def _system_index_page(rows: list[dict[str, Any]]) -> str:
+    """Build vault/system/_index.md — one table over every tool."""
+    parts: list[str] = [
+        "# System — what Morgoth IS",
+        "",
+        "_Auto-compiled from the live tool registry. Deterministic — no LLM._",
+        "",
+        f"- Tools documented: **{len(rows)}**",
+        "",
+        "## Tools",
+        "",
+        "| Tool | data_source? | chat? | origin | #objectives | #theses fed |",
+        "|------|--------------|-------|--------|-------------|-------------|",
+    ]
+    for r in rows:
+        parts.append(
+            f"| [[system/tools/{r['name']}|{r['name']}]] "
+            f"| {'yes' if r['is_data_source'] else 'no'} "
+            f"| {'yes' if r['is_chat_tool'] else 'no'} "
+            f"| {r['origin']} "
+            f"| {r['objectives_count']} "
+            f"| {r['theses_fed']} |"
+        )
+    parts.append("")
+    return "\n".join(parts)
 
 
 async def compile_wiki(
@@ -369,9 +624,52 @@ async def compile_wiki(
             if subj:
                 subject_to_canonical[subj] = canonical
 
-    # 3. Prepare vault layout. Clear entities/ for idempotent rewrite.
+    # 3. Prepare vault layout. Clear entities/ and system/tools/ for
+    # idempotent rewrites.
     VAULT_DIR.mkdir(parents=True, exist_ok=True)
     _clear_entities_dir()
+    _clear_system_tools_dir()
+
+    # 3b. Build the SYSTEM section first — deterministic, no LLM — so
+    # entity pages can cross-link source names to system/tools/<name>.md.
+    config = await load_config()
+    tools = _registered_tools_offline(config, pm)
+    tool_names: set[str] = {t.name for t in tools}
+    provenance_by_path = await _load_applied_provenance(pm)
+    objectives_count, theses_fed = await _load_tool_usage(pm)
+
+    system_rows: list[dict[str, Any]] = []
+    for tool in sorted(tools, key=lambda t: t.name):
+        try:
+            src_file = Path(inspect.getfile(tool.__class__)).resolve()
+            rel = str(src_file.relative_to(PROJECT_ROOT))
+        except (TypeError, ValueError):
+            rel = ""
+        provenance = provenance_by_path.get(rel)
+        page = _tool_page(
+            tool=tool,
+            provenance=provenance,
+            objectives_count=objectives_count.get(tool.name, 0),
+            theses_fed=theses_fed.get(tool.name, []),
+        )
+        (SYSTEM_TOOLS_DIR / f"{tool.name}.md").write_text(page, encoding="utf-8")
+        system_rows.append(
+            {
+                "name": tool.name,
+                "is_data_source": bool(getattr(tool, "is_data_source", False)),
+                "is_chat_tool": bool(getattr(tool, "is_chat_tool", True)),
+                "origin": (
+                    f"self-modify `#{provenance['proposal_id'][:8]}`"
+                    if provenance
+                    else "hand-built"
+                ),
+                "objectives_count": objectives_count.get(tool.name, 0),
+                "theses_fed": len(theses_fed.get(tool.name, [])),
+            }
+        )
+    (SYSTEM_DIR / "_index.md").write_text(
+        _system_index_page(system_rows), encoding="utf-8"
+    )
 
     # 4. Generate entity pages. Contradicted subjects first (sticky to top
     # of index too), then alphabetical for stable diffs.
@@ -388,7 +686,8 @@ async def compile_wiki(
         slug = slugify(subject)
         summary = await _llm_summary(llm, subject, ts)
         (ENTITIES_DIR / f"{slug}.md").write_text(
-            _entity_page(subject, ts, summary), encoding="utf-8"
+            _entity_page(subject, ts, summary, known_tools=tool_names),
+            encoding="utf-8",
         )
         entity_index.append((subject, slug, ts))
 
@@ -423,6 +722,7 @@ async def compile_wiki(
         "theses_read": len(theses),
         "entities_written": len(entity_index),
         "contradictions": len(contradictions),
+        "tools_documented": len(system_rows),
         "vault_path": str(VAULT_DIR),
     }
 
@@ -453,6 +753,7 @@ async def main() -> None:
     print(f"theses read: {counts['theses_read']}")
     print(f"entities written: {counts['entities_written']}")
     print(f"contradictions: {counts['contradictions']}")
+    print(f"tools documented: {counts.get('tools_documented', 0)}")
 
 
 if __name__ == "__main__":
