@@ -13,13 +13,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 
-# The OLD literal values — copied verbatim from the pre-refactor brain.py.
-# These are the non-regression baseline. Do NOT change them casually.
+# Superset baselines — the live rail's floor. Silent shrinkage below this
+# floor fails the suite; growth is allowed.
+#
+# POLICY CHANGE (retirement of reddit_search): reddit_search was removed
+# from the source rail after Reddit's 2023 API closure produced 403 across
+# every host + UA and 0 objectives / 0 theses used it. The named policy
+# is: retirement of a broken source drops the corresponding baseline entry;
+# it is not "silent shrinkage". Future retirements follow the same pattern.
 _OLD_DATA_SOURCE_TOOLS = frozenset({
     "get_crypto_price",
     "get_bitcoin_onchain",
     "get_news",
-    "reddit_search",
     "web_search",
 })
 
@@ -29,7 +34,6 @@ _OLD_CHAT_TOOL_NAMES = {
     "get_crypto_price",
     "get_bitcoin_onchain",
     "fred_series_observations",
-    "reddit_search",
     "technical_analysis",
     "remember",
     "recall",

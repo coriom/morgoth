@@ -20,7 +20,7 @@ class ResearchAgent(BaseAgent):
     current_task: str | None = None
     last_error: str | None = None
     specialization: str = "research"
-    preferred_tools: list[str] = Field(default_factory=lambda: ["web_search", "get_news", "reddit_search"])
+    preferred_tools: list[str] = Field(default_factory=lambda: ["web_search", "get_news"])
 
     async def run(self, task: str) -> dict[str, Any]:
         """Run a research mission and return a structured synthesis payload."""

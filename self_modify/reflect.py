@@ -344,15 +344,23 @@ async def _build_context(pm: PersistentMemory, config: AppConfig) -> dict[str, A
     Reuses the system-vault loaders (compile_wiki._registered_tools_offline
     and _load_tool_usage), same code path as the vault build.
     """
+    from core.brain import DATA_SOURCE_TOOLS
     from scripts.compile_wiki import _load_tool_usage, _registered_tools_offline
 
     tools = _registered_tools_offline(config, pm)
     objectives_count, _theses_fed = await _load_tool_usage(pm)
     tool_lines: list[str] = []
     for t in sorted(tools, key=lambda x: x.name):
+        # Label from runtime membership, not the class flag. Static-set
+        # tools (web_search, historically reddit_search) live outside
+        # tools/data_feeds/ and their classes did not carry
+        # is_data_source=True — reading the class flag misled the 8B into
+        # believing "no social/search data source exists" when both were
+        # in the rail.
+        kind = "data_source" if t.name in DATA_SOURCE_TOOLS else "chat/util"
         line = (
             f"- {t.name} "
-            f"({'data_source' if getattr(t, 'is_data_source', False) else 'chat/util'}) "
+            f"({kind}) "
             f"— objectives_using={objectives_count.get(t.name, 0)}: "
             f"{(getattr(t, 'description', '') or '').strip()[:120]}"
         )

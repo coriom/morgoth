@@ -34,7 +34,6 @@ from notifications.telegram import TelegramNotifier
 from tools.agent_control import CreateAgentTool
 from tools.analysis.technical import TechnicalAnalysisTool
 from tools.connectors.fred import FredSeriesObservationsTool, FredSeriesSearchTool
-from tools.connectors.reddit import RedditSearchTool, RedditSubredditPostsTool
 from tools.code_executor import ExecutePythonTool
 from tools.discovery import discover_data_feed_tools, instantiate_tool
 from tools.file_manager import ReadFileTool, WriteFileTool
@@ -65,8 +64,11 @@ def build_tool_router(
         router.register(instantiate_tool(cls, config, persistent_memory))
     router.register(FredSeriesSearchTool(config))
     router.register(FredSeriesObservationsTool(config))
-    router.register(RedditSearchTool(config))
-    router.register(RedditSubredditPostsTool(config))
+    # reddit_search / reddit_subreddit_posts retired: Reddit closed anonymous
+    # JSON in 2023 (403 across every host + UA); the tool produced 0
+    # objectives and 0 theses over its life. Social-sentiment coverage is
+    # left as reflect-pipeline territory (Bluesky's searchPosts is the
+    # natural free/no-key candidate).
     router.register(TechnicalAnalysisTool())
     router.register(CreateAgentTool(config, agent_manager))
     router.register(NotifyTool(config, notifier))

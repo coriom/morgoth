@@ -19,14 +19,25 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 @router.get("")
 async def list_tools(request: Request) -> list[dict[str, Any]]:
-    """Return the registered tool inventory in deterministic name order."""
+    """Return the registered tool inventory in deterministic name order.
+
+    Source of truth for is_data_source is core.brain.DATA_SOURCE_TOOLS —
+    the runtime set the cycle rail actually uses. Reading the class flag
+    instead would let a tool's self-report diverge from its rail
+    membership (the reddit_search / web_search issue that this fix
+    resolves): both live in tools/connectors/ so discovery doesn't see
+    them, and both had is_data_source unset even though brain.py's
+    _STATIC_DATA_SOURCES includes them.
+    """
+    from core.brain import DATA_SOURCE_TOOLS
+
     router_obj = request.app.state.tool_router
     tools: list[dict[str, Any]] = []
     for tool in router_obj._tools.values():  # noqa: SLF001 — inventory read
         tools.append(
             {
                 "name": tool.name,
-                "is_data_source": bool(getattr(tool, "is_data_source", False)),
+                "is_data_source": tool.name in DATA_SOURCE_TOOLS,
                 "is_chat_tool": bool(getattr(tool, "is_chat_tool", True)),
             }
         )

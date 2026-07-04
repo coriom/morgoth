@@ -494,8 +494,15 @@ def _tool_page(
     provenance: dict[str, Any] | None,
     objectives_count: int,
     theses_fed: list[tuple[str, str]],
+    is_data_source: bool = False,
 ) -> str:
-    """Assemble one tool's system page. Deterministic — no LLM."""
+    """Assemble one tool's system page. Deterministic — no LLM.
+
+    is_data_source is passed IN by the caller from the runtime
+    DATA_SOURCE_TOOLS set — reading the class flag directly would let a
+    tool's page disagree with its rail membership (the reddit /
+    web_search issue).
+    """
     parts: list[str] = [
         f"# {tool.name}",
         "",
@@ -505,7 +512,7 @@ def _tool_page(
         "",
         "## Flags",
         "",
-        f"- data_source: **{bool(getattr(tool, 'is_data_source', False))}**",
+        f"- data_source: **{is_data_source}**",
         f"- chat_tool:   **{bool(getattr(tool, 'is_chat_tool', True))}**",
         "",
         "## Provenance",
@@ -642,6 +649,13 @@ async def compile_wiki(
     objectives_count, theses_fed = await _load_tool_usage(pm)
 
     system_rows: list[dict[str, Any]] = []
+    # Source of truth for data-source labeling: runtime DATA_SOURCE_TOOLS
+    # membership from core.brain — not the class flag. Static-set tools
+    # (web_search etc.) live outside tools/data_feeds/ and never had the
+    # class attribute set; deriving from the runtime set makes the wiki
+    # match /api/tools and the reflect context.
+    from core.brain import DATA_SOURCE_TOOLS
+
     for tool in sorted(tools, key=lambda t: t.name):
         try:
             src_file = Path(inspect.getfile(tool.__class__)).resolve()
@@ -649,17 +663,19 @@ async def compile_wiki(
         except (TypeError, ValueError):
             rel = ""
         provenance = provenance_by_path.get(rel)
+        is_ds = tool.name in DATA_SOURCE_TOOLS
         page = _tool_page(
             tool=tool,
             provenance=provenance,
             objectives_count=objectives_count.get(tool.name, 0),
             theses_fed=theses_fed.get(tool.name, []),
+            is_data_source=is_ds,
         )
         (SYSTEM_TOOLS_DIR / f"{tool.name}.md").write_text(page, encoding="utf-8")
         system_rows.append(
             {
                 "name": tool.name,
-                "is_data_source": bool(getattr(tool, "is_data_source", False)),
+                "is_data_source": is_ds,
                 "is_chat_tool": bool(getattr(tool, "is_chat_tool", True)),
                 "origin": (
                     f"self-modify `#{provenance['proposal_id'][:8]}`"

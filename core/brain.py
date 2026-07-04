@@ -49,7 +49,6 @@ MIN_DISTINCT_SOURCES: int = 3
 # tools/data_feeds/ so auto-discovery doesn't find them, but they ARE
 # valid sources in the multi-source rail. Kept as an explicit constant.
 _STATIC_DATA_SOURCES: frozenset[str] = frozenset({
-    "reddit_search",
     "web_search",
 })
 
@@ -59,7 +58,6 @@ _STATIC_DATA_SOURCES: frozenset[str] = frozenset({
 _STATIC_CHAT_TOOL_NAMES: tuple[str, ...] = (
     "web_search",
     "fred_series_observations",
-    "reddit_search",
     "technical_analysis",
     "remember",
     "recall",

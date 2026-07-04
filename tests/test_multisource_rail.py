@@ -124,7 +124,7 @@ async def test_get_sources_used_parses_json_string_column(app_config) -> None:
 
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(
-        return_value={"sources_used": '["get_crypto_price", "reddit_search"]'}
+        return_value={"sources_used": '["get_crypto_price", "web_search"]'}
     )
 
     mock_pool = MagicMock()
@@ -135,17 +135,21 @@ async def test_get_sources_used_parses_json_string_column(app_config) -> None:
         "12345678-1234-5678-1234-567812345678"
     )
 
-    assert result == ["get_crypto_price", "reddit_search"]
+    assert result == ["get_crypto_price", "web_search"]
 
 
 async def test_data_source_tools_membership() -> None:
     """DATA_SOURCE_TOOLS must contain the external data sources and exclude internal tools.
 
-    SUPERSET assertion: the baseline five external sources must always be
+    SUPERSET assertion: the baseline four external sources must always be
     present (silent shrinkage of the source rail is a regression), but
     the auto-discovery pipeline is allowed to grow the set with new
     is_data_source=True tools. Internal / non-source tools must remain
     absent.
+
+    reddit_search was retired (Reddit's 2023 API closure produced 403
+    across every host + UA, 0 objectives / 0 theses used it); the
+    baseline dropped from five to four.
 
     fred_series_observations is intentionally NOT included: without a
     FRED_API_KEY in .env the tool always fails, so counting it as a
@@ -157,7 +161,6 @@ async def test_data_source_tools_membership() -> None:
         "get_crypto_price",
         "get_bitcoin_onchain",
         "get_news",
-        "reddit_search",
         "web_search",
     })
     missing = baseline - DATA_SOURCE_TOOLS

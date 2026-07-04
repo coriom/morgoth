@@ -102,7 +102,12 @@ def test_tool_page_hand_built_no_provenance() -> None:
         description="Fetch crypto prices.",
         is_data_source=True,
     )
-    page = cw._tool_page(tool, provenance=None, objectives_count=5, theses_fed=[])
+    # is_data_source now passed IN by the caller (from DATA_SOURCE_TOOLS),
+    # not read from the tool's class attribute.
+    page = cw._tool_page(
+        tool, provenance=None, objectives_count=5, theses_fed=[],
+        is_data_source=True,
+    )
     assert "# get_crypto_price" in page
     assert "Fetch crypto prices." in page
     assert "data_source: **True**" in page

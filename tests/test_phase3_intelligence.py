@@ -10,7 +10,6 @@ from agents.agent_manager import AgentManager
 from core.llm_client import ChatMessage, ChatResponse
 from tools.analysis.technical import TechnicalAnalysisTool
 from tools.connectors.fred import FredSeriesObservationsTool, FredSeriesSearchTool
-from tools.connectors.reddit import RedditSearchTool, RedditSubredditPostsTool
 
 
 pytestmark = pytest.mark.asyncio
@@ -97,50 +96,6 @@ async def test_fred_observations_tool_normalizes_missing_values(
     assert result["result"]["observations"][1]["value"] is None
 
 
-async def test_reddit_search_tool_normalizes_posts(app_config, DummyHTTPClientFixture, DummyResponseFixture) -> None:
-    """Reddit search should normalize listing children."""
-
-    client = DummyHTTPClientFixture(
-        DummyResponseFixture(
-            {
-                "data": {
-                    "children": [
-                        {
-                            "data": {
-                                "id": "abc",
-                                "subreddit": "test",
-                                "title": "Macro sentiment",
-                                "author": "user",
-                                "score": 42,
-                                "num_comments": 7,
-                                "url": "https://example.com",
-                                "permalink": "/r/test/comments/abc",
-                                "created_utc": 1770000000,
-                                "selftext": "details",
-                            }
-                        }
-                    ]
-                }
-            }
-        )
-    )
-    result = await RedditSearchTool(app_config, client=client).execute(query="macro", subreddit="r/test", limit=1)
-
-    assert result["success"] is True
-    assert result["result"][0]["title"] == "Macro sentiment"
-    assert result["metadata"]["subreddit"] == "test"
-
-
-async def test_reddit_subreddit_posts_tool_uses_hot_listing(app_config, DummyHTTPClientFixture, DummyResponseFixture) -> None:
-    """Subreddit posts should use the hot listing endpoint."""
-
-    client = DummyHTTPClientFixture(DummyResponseFixture({"data": {"children": []}}))
-    result = await RedditSubredditPostsTool(app_config, client=client).execute(subreddit="technology", limit=3)
-
-    assert result["success"] is True
-    assert client.calls[0][1].endswith("/r/technology/hot.json")
-
-
 async def test_technical_analysis_tool_returns_indicators() -> None:
     """Technical analysis should calculate RSI, MACD, and moving averages."""
 
@@ -157,8 +112,8 @@ async def test_technical_analysis_tool_returns_indicators() -> None:
 @pytest.mark.parametrize(
     ("name", "task", "tools", "expected_specialization", "expected_tool"),
     [
-        ("research-alpha", "Investigate the current liquidity regime.", ["web_search"], "research", "reddit_search"),
-        ("sentiment-alpha", "Analyze social mood around AI infrastructure.", ["reddit_search"], "sentiment", "get_news"),
+        # reddit_search-based parametrize entries removed with the tool's
+        # retirement; the remaining entry covers the macro specialization.
         ("macro-alpha", "Analyze unemployment and inflation indicators.", ["fred_series_search"], "macro", "fred_series_observations"),
     ],
 )

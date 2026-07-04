@@ -152,7 +152,7 @@ async def test_prompt_demands_different_source_when_below_minimum(app_config) ->
 async def test_prompt_switches_to_minimum_met_when_threshold_reached(app_config) -> None:
     """At or above MIN_DISTINCT_SOURCES the prompt switches to the completion-friendly wording."""
 
-    sources_full = ["get_crypto_price", "web_search", "reddit_search"]
+    sources_full = ["get_crypto_price", "web_search", "get_news"]
     assert len(set(sources_full)) >= MIN_DISTINCT_SOURCES
 
     prompt = await _build_prompt(_build_brain(app_config)[0], sources_used=sources_full)
