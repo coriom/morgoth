@@ -26,7 +26,12 @@ default ``ollama``.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 from typing import Any, Callable
 
@@ -43,7 +48,14 @@ DEFAULT_ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS: int = 1024
 ANTHROPIC_TIMEOUT_SECS: float = 60.0
 
-VALID_PROVIDERS: tuple[str, ...] = ("ollama", "anthropic")
+VALID_PROVIDERS: tuple[str, ...] = ("ollama", "anthropic", "claude-cli")
+
+# claude-cli branch. --tools "" disables all tools (documented in the CLI
+# help; stable across versions). No --max-turns on 2.1.x — `-p` is
+# single-shot by default. Timeout is generous because the CLI's initial
+# cache warmup on cold cache can take tens of seconds.
+CLAUDE_CLI_BIN: str = "claude"
+CLAUDE_CLI_TIMEOUT_SECS: int = 180
 
 
 class ReflectLLMError(RuntimeError):
@@ -206,6 +218,143 @@ async def _anthropic_call(
 # public entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# claude-cli branch — shells out to the locally installed Claude Code CLI.
+# ---------------------------------------------------------------------------
+
+def _build_claude_cli_argv(prompt: str) -> list[str]:
+    """Build the argv for headless single-shot invocation.
+
+    Order matters only for the subprocess module's parsing (it doesn't
+    — order is stable). Kept as a helper so tests can assert the exact
+    shape without spawning a real subprocess.
+    """
+    argv: list[str] = [
+        CLAUDE_CLI_BIN,
+        "-p", prompt,
+        "--output-format", "json",
+        # --tools "" disables ALL tools. The reflect prompt is
+        # spec-generation only; any tool call would be model-side prose.
+        "--tools", "",
+    ]
+    # Model override — env-driven; default (empty) lets the subscription
+    # pick, and the JSON response reports what was actually used.
+    model = (os.environ.get("REFLECT_CLI_MODEL") or "").strip()
+    if model:
+        argv.extend(["--model", model])
+    return argv
+
+
+def _run_claude_cli(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    """Blocking subprocess call. Kept as a module-level helper so tests
+    can patch it cleanly and the caller can drive it via to_thread."""
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=CLAUDE_CLI_TIMEOUT_SECS,
+        cwd=cwd,
+        check=False,
+    )
+
+
+def _parse_claude_cli_json(stdout: str) -> tuple[str, str, bool]:
+    """Return (result_text, model_reported, is_error).
+
+    ``model_reported`` = pipe-joined sorted keys of ``modelUsage`` (the
+    CLI often mixes models — haiku for classification + opus for the
+    actual reply — so a single-name field would be a lie).
+    """
+    try:
+        data = json.loads(stdout)
+    except (ValueError, TypeError) as exc:
+        raise ReflectLLMError(
+            f"claude-cli JSON parse failed: {type(exc).__name__}"
+        ) from None
+    if not isinstance(data, dict):
+        raise ReflectLLMError("claude-cli JSON was not an object")
+    is_error = bool(data.get("is_error"))
+    result_text = str(data.get("result") or "")
+    model_usage = data.get("modelUsage") or {}
+    if isinstance(model_usage, dict) and model_usage:
+        model_reported = "|".join(sorted(str(k) for k in model_usage))
+    else:
+        model_reported = "unknown"
+    return result_text, model_reported, is_error
+
+
+async def _claude_cli_call(
+    prompt: str,
+    runner: Callable[[list[str], str], subprocess.CompletedProcess[str]] | None,
+) -> tuple[str, dict[str, Any]]:
+    """claude-cli branch. Neutral cwd is mandatory (see comment)."""
+    if shutil.which(CLAUDE_CLI_BIN) is None and runner is None:
+        # Fast-fail before creating a tempdir. Tests inject a runner so
+        # this check is skipped in the mock path.
+        raise ReflectLLMError(
+            "claude CLI not found on PATH — install Claude Code "
+            "(https://claude.com/claude-code) or use --provider ollama"
+        )
+
+    argv = _build_claude_cli_argv(prompt)
+    # NEUTRAL cwd: a fresh tempdir prevents the CLI from loading a
+    # CLAUDE.md, project skills, or any repo-local context that would
+    # break prompt comparability with the other engines AND would be a
+    # prompt-injection surface. Cleaned in finally regardless of outcome.
+    tmp_cwd = tempfile.mkdtemp(prefix="morgoth-reflect-cli-")
+    t0 = time.monotonic()
+    run = runner or _run_claude_cli
+    try:
+        try:
+            completed = await asyncio.to_thread(run, argv, tmp_cwd)
+        except FileNotFoundError:
+            # Subprocess couldn't spawn — binary vanished between the
+            # PATH check and the exec call. Same operator instruction.
+            raise ReflectLLMError(
+                "claude CLI not found on PATH — install Claude Code "
+                "(https://claude.com/claude-code) or use --provider ollama"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise ReflectLLMError(
+                f"claude CLI timed out after {CLAUDE_CLI_TIMEOUT_SECS}s"
+            ) from None
+    finally:
+        shutil.rmtree(tmp_cwd, ignore_errors=True)
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    if completed.returncode != 0:
+        # Do NOT surface stdout/stderr — the CLI can embed session
+        # metadata or fragments of the prompt. The return code is enough
+        # for triage; full output is preserved for the operator via the
+        # CLI's own transcripts, not our logs.
+        logger.error(
+            "reflect_chat[claude-cli]: nonzero returncode {} "
+            "(stdout not logged)", completed.returncode,
+        )
+        raise ReflectLLMError(
+            f"claude CLI exited with returncode {completed.returncode}"
+        )
+
+    text, model_reported, is_error = _parse_claude_cli_json(completed.stdout)
+    if is_error:
+        raise ReflectLLMError("claude CLI reported is_error=true in JSON payload")
+
+    meta = {
+        "provider": "claude-cli",
+        "model": model_reported,
+        "prompt_len": len(prompt),
+        "response_len": len(text),
+        "latency_ms": latency_ms,
+    }
+    logger.info("reflect_chat[claude-cli]: {}", meta)
+    return text.strip(), meta
+
+
+# ---------------------------------------------------------------------------
+# public entry point
+# ---------------------------------------------------------------------------
+
 async def reflect_chat(
     prompt: str,
     config: AppConfig,
@@ -213,6 +362,7 @@ async def reflect_chat(
     *,
     ollama_client: OllamaLLMClient | None = None,
     httpx_client_factory: Callable[[], httpx.AsyncClient] | None = None,
+    claude_cli_runner: Callable[[list[str], str], subprocess.CompletedProcess[str]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Send ``prompt`` to the selected engine; return (text, meta).
 
@@ -220,13 +370,15 @@ async def reflect_chat(
     latency) suitable for logging or persisting to the proposal row's
     ``engine`` column — it contains NO request/response payload.
 
-    The injectable client factories are for tests only; production code
-    passes neither and gets the default construction.
+    The injectable client factories / runner are for tests only;
+    production code passes neither and gets the default construction.
     """
     if provider == "ollama":
         return await _ollama_call(prompt, config, ollama_client)
     if provider == "anthropic":
         return await _anthropic_call(prompt, httpx_client_factory)
+    if provider == "claude-cli":
+        return await _claude_cli_call(prompt, claude_cli_runner)
     raise ReflectLLMError(
         f"unknown provider {provider!r}; expected one of {VALID_PROVIDERS!r}"
     )

@@ -594,7 +594,7 @@ async def _main_async(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--provider",
-        choices=("ollama", "anthropic"),
+        choices=("ollama", "anthropic", "claude-cli"),
         default=None,
         help="LLM engine for the reflect prompt. "
              "Overrides REFLECT_PROVIDER env; default 'ollama'.",
