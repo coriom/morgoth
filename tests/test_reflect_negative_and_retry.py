@@ -290,7 +290,9 @@ async def test_list_recent_rejections_filters_and_orders() -> None:
 # ---------- run_reflection: retry-with-feedback end-to-end --------------
 
 VALID_SPEC = {
-    "tool_name": "get_ok_tool",
+    # tool_name tokens must appear in description — the coherence gate
+    # runs before shape. "test" and "digest" are present in the desc.
+    "tool_name": "get_test_digest",
     "api_base_url": "https://api.example.com",
     "endpoint_path": "/v1/thing",
     "digest_fields": ["a", "b", "c"],

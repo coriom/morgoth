@@ -75,13 +75,85 @@ CORRECTIVE_RETRIES: int = 1
 # Pre-submit outcomes that are eligible for a corrective retry AND get
 # persisted to the DB (so the negative list can render them back).
 _RETRY_ELIGIBLE_OUTCOMES: tuple[str, ...] = (
-    "malformed", "rejected_smoke", "rejected_shape",
+    "malformed", "rejected_name", "rejected_smoke", "rejected_shape",
 )
 _OUTCOME_TO_STATUS: dict[str, str] = {
     "malformed": P.STATUS_MALFORMED,
+    "rejected_name": P.STATUS_REJECTED_NAME,
     "rejected_smoke": P.STATUS_REJECTED_SMOKE,
     "rejected_shape": P.STATUS_REJECTED_SHAPE,
 }
+
+# ---------- name/content coherence -----------------------------------------
+#
+# Rejects specs whose tool_name promises content the description +
+# endpoint_path never mention. Deterministic, pure string check —
+# NO semantic lexicon, no LLM. Catches the observed 4/4 lie class:
+# exchange_flows on mining pools, exchange_netflow on network economics.
+#
+# CAVEAT: Asset framing (btc/bitcoin/eth/ethereum/crypto/cryptocurrency)
+# is stopworded — a name's "btc" token is framing, not content. Same
+# for generic containers (stats/data/info/index) and the CRUD framing
+# verbs (get/fetch). Utility-tool canonical operation names
+# (recall/remember/notify) are stopworded so the calibration passes
+# all 18 registered tools; reflect only proposes data_feeds tools so
+# these stopwords never affect a live gate decision.
+_NAME_STOPWORDS: frozenset[str] = frozenset({
+    "get", "fetch", "the", "a", "an", "tool",
+    "btc", "bitcoin", "eth", "ethereum", "crypto", "cryptocurrency",
+    "data", "info", "stats", "index",
+    "recall", "remember", "notify",
+})
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]")
+
+
+def _normalize_for_coherence(text: str) -> str:
+    """Lowercase + strip non-alphanumerics.
+
+    Collapses hyphens (``on-chain`` → ``onchain``), ampersands
+    (``Fear & Greed`` → ``feargreed``), spaces, and slashes so the
+    substring check tolerates real prose formatting.
+    """
+    if not isinstance(text, str):
+        return ""
+    return _NON_ALNUM_RE.sub("", text.lower())
+
+
+def _token_appears(token: str, normalized_text: str) -> bool:
+    """Substring check with a two-step trailing-char stem.
+
+    The stem lets ``history`` match ``historical`` and ``notify``
+    match ``notification`` without an English lexicon. Truncation is
+    length-guarded (≥5 for -1, ≥6 for -2) so short tokens don't
+    false-positive.
+    """
+    tl = token.lower()
+    if tl in normalized_text:
+        return True
+    if len(tl) >= 5 and tl[:-1] in normalized_text:
+        return True
+    if len(tl) >= 6 and tl[:-2] in normalized_text:
+        return True
+    return False
+
+
+def _name_coherence_check(
+    tool_name: str, description: str, endpoint_path: str,
+) -> list[str]:
+    """Return the list of tool_name tokens missing from
+    description + endpoint_path. Empty list = PASS.
+
+    Runs pre-submit, after well-formedness (so we know tool_name is a
+    valid snake_case identifier). Zero network cost. The retry set
+    includes this outcome because the corrective prompt carries the
+    exact missing tokens — a structured-feedback test of whether this
+    axis is correctable at all (free-text feedback already failed —
+    the fourth proposal kept the same name family).
+    """
+    text = _normalize_for_coherence(f"{description} {endpoint_path}")
+    tokens = [t for t in tool_name.split("_") if t and t.lower() not in _NAME_STOPWORDS]
+    return [t for t in tokens if not _token_appears(t, text)]
 
 # Identifier regexes for fields that are inserted RAW into the template
 # (only tool_name and derivatives — class_name / const_name).
@@ -774,6 +846,24 @@ async def _one_reflect_attempt(
         return {"outcome": "malformed", "reason": err,
                 "proposal_id": pid, "pipeline_status": None, "spec": spec}
 
+    # Name/content coherence — pure-local, no network. Every meaningful
+    # token of tool_name must appear (normalized substring, with a
+    # small trailing-char stem) in description + endpoint_path.
+    missing_tokens = _name_coherence_check(
+        spec["tool_name"], spec.get("description", ""), spec.get("endpoint_path", ""),
+    )
+    if missing_tokens:
+        reason = (
+            f"name token(s) not reflected in description/endpoint: "
+            f"{missing_tokens} — the name must describe what the tool fetches"
+        )
+        log(f"outcome: rejected_name — {reason}")
+        pid = await _persist_pre_submit_reject(
+            store, "rejected_name", spec, reason, provider, retry_of,
+        )
+        return {"outcome": "rejected_name", "reason": reason,
+                "proposal_id": pid, "pipeline_status": None, "spec": spec}
+
     if tool_name_collides(spec["tool_name"], config, pm):
         reason = f"tool_name {spec['tool_name']!r} collides with a registered tool"
         log(f"outcome: rejected_collision — {reason}")
@@ -864,9 +954,9 @@ async def run_reflection(
 
     Result shape:
       {'outcome': 'refused_flag' | 'refused_cap' | 'none' | 'unparseable' |
-                  'malformed' | 'rejected_url' | 'rejected_smoke' |
-                  'rejected_shape' | 'rejected_collision' | 'rejected_zone' |
-                  'submitted',
+                  'malformed' | 'rejected_name' | 'rejected_url' |
+                  'rejected_smoke' | 'rejected_shape' | 'rejected_collision' |
+                  'rejected_zone' | 'submitted',
        'reason': str,                      # human-readable
        'proposal_id': str | None,
        'pipeline_status': str | None,      # only when outcome == 'submitted'

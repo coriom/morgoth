@@ -219,7 +219,9 @@ async def test_smoke_get_json_body_returned_on_2xx() -> None:
 # ---------- end-to-end: outcome=rejected_shape propagates -----------------
 
 VALID_SPEC = {
-    "tool_name": "get_ok_tool",
+    # tool_name tokens must appear in description — the coherence gate
+    # runs before shape. "test" and "digest" are present in the desc.
+    "tool_name": "get_test_digest",
     "api_base_url": "https://api.example.com",
     "endpoint_path": "/v1/thing",
     "digest_fields": ["a", "b", "c"],

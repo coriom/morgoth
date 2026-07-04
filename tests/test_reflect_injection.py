@@ -27,7 +27,10 @@ DANGEROUS_CALL_TARGETS = {"__import__", "system", "eval", "exec", "compile"}
 """Names that MUST NOT appear as function calls anywhere in a rendered file."""
 
 BASE_SPEC = {
-    "tool_name": "get_x_y_z",
+    # tool_name tokens ("benign", "payload") intentionally match
+    # description words so the coherence gate passes — this file's
+    # subject is INJECTION, not name/content coherence.
+    "tool_name": "get_benign_payload",
     "api_base_url": "https://api.example.com",
     "endpoint_path": "/v1/data",
     "digest_fields": ["field_a", "field_b", "field_c"],
@@ -182,7 +185,7 @@ def test_clean_spec_renders_correctly_and_is_valid_python() -> None:
     # Class exists.
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
     assert len(class_defs) == 1
-    assert class_defs[0].name == "GetXYZTool"
+    assert class_defs[0].name == "GetBenignPayloadTool"
     # Load-bearing constants are present.
     for expected in [
         "_BASE_URL", "_ENDPOINT_PATH", "_SOURCE_LABEL",
@@ -234,7 +237,13 @@ async def test_tool_name_collision_rejected() -> None:
     store_mock = MagicMock()
     store_mock.count_by_status_and_author = AsyncMock(return_value=0)
 
-    colliding = dict(BASE_SPEC, tool_name="get_crypto_price")
+    # Description mentions "price" so the coherence gate (which runs
+    # before collision) passes — we're testing collision, not coherence.
+    colliding = dict(
+        BASE_SPEC,
+        tool_name="get_crypto_price",
+        description="Fetch the current USD price of a crypto asset.",
+    )
 
     class _FakeTool:
         def __init__(self, name: str) -> None:
