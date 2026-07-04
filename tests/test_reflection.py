@@ -148,17 +148,23 @@ async def test_smoke_get_reports_network_error() -> None:
 # ---------- code template --------------------------------------------------
 
 def test_template_render_contains_all_load_bearing_fields() -> None:
+    """Updated for the repr-based template (Phase C hardening).
+
+    Non-identifier fields (URL, description, digest, source label) are
+    inserted via ``repr()`` so a payload with a quote or newline cannot
+    break out of a string literal. See tests/test_reflect_injection.py
+    for the full injection-audit suite.
+    """
     class_name = reflect._snake_to_class_name(VALID_SPEC["tool_name"])
     rendered = reflect.TOOL_TEMPLATE.format(
         tool_name=VALID_SPEC["tool_name"],
         class_name=class_name,
-        const_name=VALID_SPEC["tool_name"].upper(),
-        base_url=VALID_SPEC["api_base_url"],
-        endpoint_path=VALID_SPEC["endpoint_path"],
-        digest_fields=list(VALID_SPEC["digest_fields"]),
-        description=VALID_SPEC["description"],
-        docstring_first_line=VALID_SPEC["description"],
-        source_label="api.coingecko.com",
+        tool_name_repr=repr(VALID_SPEC["tool_name"]),
+        base_url_repr=repr(VALID_SPEC["api_base_url"]),
+        endpoint_path_repr=repr(VALID_SPEC["endpoint_path"]),
+        digest_fields_repr=repr(list(VALID_SPEC["digest_fields"])),
+        description_repr=repr(VALID_SPEC["description"]),
+        source_label_repr=repr("api.coingecko.com"),
     )
     assert f"class {class_name}(BaseTool):" in rendered
     assert 'is_data_source = True' in rendered

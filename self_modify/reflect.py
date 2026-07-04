@@ -40,6 +40,7 @@ self_modify.apply`` here; the guardrail test enforces the absence.
 
 from __future__ import annotations
 
+import html
 import ipaddress
 import json
 import re
@@ -60,8 +61,19 @@ from self_modify.zones import classify_proposal
 
 REFLECTION_PENDING_CAP: int = 3
 SMOKE_TIMEOUT_SECS: float = 10.0
+
+# Identifier regexes for fields that are inserted RAW into the template
+# (only tool_name and derivatives — class_name / const_name).
 SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]{2,49}$")
 DIGEST_FIELD_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+# RFC 3986 unreserved + reserved + pct-encoded characters. Anything
+# outside this set (quotes, whitespace, backslash, newline, backtick,
+# angle brackets, ...) is rejected in URL fields BEFORE render — even
+# though the render itself is now via repr() and cannot break out of a
+# string literal, a URL with a stray quote or newline is malformed
+# input that should never have reached this stage.
+URL_ALLOWED_CHARS_RE = re.compile(r"^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 
 
 # ---------- code template ---------------------------------------------------
@@ -70,10 +82,18 @@ DIGEST_FIELD_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 # in via str.format; nothing else in the file changes. Model output never
 # reaches the code path — only the six spec fields do.
 
-TOOL_TEMPLATE = '''"""{docstring_first_line}
+# Every non-identifier substitution goes through Python's repr(), which
+# produces a valid string literal regardless of the input. That makes
+# quote-breakout and newline-injection STRUCTURALLY IMPOSSIBLE: a `"""`
+# in a description becomes '\'\'\'' (or with double-quotes escaped),
+# never closing a docstring; a `"` in a URL becomes `\"`, never
+# breaking a string boundary. The only fields inserted RAW are
+# tool_name and class_name (both validated by SNAKE_CASE_RE upstream);
+# every other user-influenced string lands as a Python literal.
+TOOL_TEMPLATE = '''"""Morgoth-authored data-feed tool: {tool_name}.
 
-Auto-generated from a Morgoth-authored spec via the reflect job.
-See self_modify_proposals for the proposal row (proposed_by='morgoth').
+Auto-generated from a spec via self_modify.reflect. See
+self_modify_proposals for the proposal row (proposed_by='morgoth').
 """
 
 from __future__ import annotations
@@ -87,21 +107,20 @@ from core.config import AppConfig, PermissionDeniedError
 from tools.base_tool import BaseTool
 
 
-{const_name}_BASE_URL = "{base_url}"
+_BASE_URL = {base_url_repr}
+_ENDPOINT_PATH = {endpoint_path_repr}
+_SOURCE_LABEL = {source_label_repr}
+_TOOL_DESCRIPTION = {description_repr}
+_DIGEST_FIELDS = {digest_fields_repr}
 
 
 class {class_name}(BaseTool):
-    """{description}"""
+    __doc__ = _TOOL_DESCRIPTION
 
-    name = "{tool_name}"
+    name = {tool_name_repr}
     is_data_source = True
-    description = (
-        "{description}"
-    )
-    parameters = {{
-        "type": "object",
-        "properties": {{}},
-    }}
+    description = _TOOL_DESCRIPTION
+    parameters = {{"type": "object", "properties": {{}}}}
 
     def __init__(
         self,
@@ -119,12 +138,12 @@ class {class_name}(BaseTool):
             raise PermissionDeniedError("Internet access is disabled by permissions")
 
         try:
-            resp = await self._client.get(f"{{{const_name}_BASE_URL}}{endpoint_path}")
+            resp = await self._client.get(_BASE_URL + _ENDPOINT_PATH)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             return self.failure(
-                f"{source_label} request failed: {{exc}}",
-                source="{source_label}",
+                f"{{_SOURCE_LABEL}} request failed: {{exc}}",
+                source=_SOURCE_LABEL,
             )
 
         data = resp.json()
@@ -133,27 +152,27 @@ class {class_name}(BaseTool):
         # pattern for {{"data": [...]}} shaped responses).
         record: dict[str, Any] = {{}}
         if isinstance(data, dict):
-            for key in {digest_fields!r}:
+            for key in _DIGEST_FIELDS:
                 if key in data:
                     record[key] = data[key]
             if not record and isinstance(data.get("data"), list) and data["data"]:
                 first = data["data"][0]
                 if isinstance(first, dict):
-                    for key in {digest_fields!r}:
+                    for key in _DIGEST_FIELDS:
                         if key in first:
                             record[key] = first[key]
         elif isinstance(data, list) and data and isinstance(data[0], dict):
-            for key in {digest_fields!r}:
+            for key in _DIGEST_FIELDS:
                 if key in data[0]:
                     record[key] = data[0][key]
         if not record:
             return self.failure(
                 "response did not contain any of the expected digest fields",
-                source="{source_label}",
+                source=_SOURCE_LABEL,
             )
 
         fetched_at = datetime.now(timezone.utc).isoformat()
-        return self.success(record, source="{source_label}", fetched_at=fetched_at)
+        return self.success(record, source=_SOURCE_LABEL, fetched_at=fetched_at)
 '''
 
 
@@ -196,29 +215,75 @@ def _parse_spec(text: str) -> dict[str, Any] | None:
     return obj
 
 
+def _html_normalize(s: str) -> str:
+    """Decode HTML entities that the 8B sometimes emits (&amp; → &, etc.).
+
+    Applied to URL fields BEFORE the smoke test. First live reflection
+    failed partly on `&amp;` in the query string — normalization
+    recovers legitimately-intended URLs without weakening any gate: the
+    identifier regex on digest_fields still applies BEFORE render, and
+    the URL charset check runs on the normalized string.
+    """
+    return html.unescape(s) if isinstance(s, str) else s
+
+
 def _spec_is_well_formed(spec: dict[str, Any]) -> str | None:
-    """Return an error string if the spec is malformed; None if OK."""
+    """Return an error string if the spec is malformed; None if OK.
+
+    Rejects at spec-validation level (before render): non-identifier
+    tool_name / digest_fields, disallowed URL characters, duplicate
+    digest_fields, missing/short description or rationale. The template
+    itself now inserts every non-identifier via repr(), so a payload
+    that slips past validation still cannot break out of a string
+    literal — this is defense in depth.
+    """
     tool_name = spec.get("tool_name")
     if not isinstance(tool_name, str) or not SNAKE_CASE_RE.match(tool_name):
         return f"tool_name must match {SNAKE_CASE_RE.pattern}"
     url = spec.get("api_base_url")
     if not isinstance(url, str) or not url:
         return "api_base_url missing"
+    if not URL_ALLOWED_CHARS_RE.match(_html_normalize(url)):
+        return "api_base_url contains characters outside the RFC 3986 URL set"
     path = spec.get("endpoint_path")
     if not isinstance(path, str):
         return "endpoint_path missing"
+    if path and not URL_ALLOWED_CHARS_RE.match(_html_normalize(path)):
+        return "endpoint_path contains characters outside the RFC 3986 URL set"
     digest = spec.get("digest_fields")
     if not (isinstance(digest, list) and 3 <= len(digest) <= 6):
         return "digest_fields must be a list of 3-6 items"
     for f in digest:
         if not (isinstance(f, str) and DIGEST_FIELD_RE.match(f)):
             return f"digest field {f!r} is not a snake-case identifier"
+    if len(digest) != len(set(digest)):
+        return "digest_fields must be unique"
     desc = spec.get("description")
     if not isinstance(desc, str) or len(desc.strip()) < 10:
         return "description too short"
     if not isinstance(spec.get("rationale"), str):
         return "rationale missing"
     return None
+
+
+def tool_name_collides(
+    tool_name: str,
+    config: AppConfig,
+    pm: PersistentMemory,
+) -> bool:
+    """True iff ``tool_name`` matches an already-registered tool.
+
+    Uses the same offline discovery path the system-vault compiler
+    relies on — instantiates tools with SimpleNamespace stand-ins for
+    non-DB collaborators. Collisions must reject the proposal BEFORE
+    submission (the pipeline's zone check would also refuse a target
+    path where a file already exists, but that's a different failure
+    mode; catching it at name-level gives a cleaner error).
+    """
+    from scripts.compile_wiki import _registered_tools_offline
+
+    existing = {t.name for t in _registered_tools_offline(config, pm)}
+    return tool_name in existing
 
 
 def _host_is_public(host: str) -> bool:
@@ -413,10 +478,28 @@ async def run_reflection(
                 "reason": f"could not parse spec: {_short(raw, 300)}",
                 "proposal_id": None, "pipeline_status": None, "spec": None}
 
+    # Normalize HTML entities in URL fields BEFORE validation & smoke.
+    # The 8B occasionally emits `&amp;` for `&`; without normalization
+    # a legitimate query string is rejected at smoke. Applied to spec
+    # in-place so downstream render / submit sees the clean value.
+    if isinstance(spec.get("api_base_url"), str):
+        spec["api_base_url"] = _html_normalize(spec["api_base_url"])
+    if isinstance(spec.get("endpoint_path"), str):
+        spec["endpoint_path"] = _html_normalize(spec["endpoint_path"])
+
     err = _spec_is_well_formed(spec)
     if err:
         log(f"outcome: malformed — {err}")
         return {"outcome": "malformed", "reason": err,
+                "proposal_id": None, "pipeline_status": None, "spec": spec}
+
+    # Gate 4.5: collision — a name already registered would be caught
+    # by the pipeline's zone/target-exists check anyway, but rejecting
+    # earlier gives a cleaner error and avoids a wasted sandbox run.
+    if tool_name_collides(spec["tool_name"], config, pm):
+        reason = f"tool_name {spec['tool_name']!r} collides with a registered tool"
+        log(f"outcome: rejected_collision — {reason}")
+        return {"outcome": "rejected_collision", "reason": reason,
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
 
     # Gate 5: URL + smoke
@@ -433,22 +516,24 @@ async def run_reflection(
                 "reason": f"smoke test on {smoke_target}: {smoke_err}",
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
 
-    # Gate 6: code assembly (deterministic template)
+    # Gate 6: code assembly (deterministic template, repr-based).
+    #
+    # Only tool_name and its derivatives (class_name) are inserted raw —
+    # they are validated by SNAKE_CASE_RE. Every other user-influenced
+    # field is inserted via repr(), producing a Python string literal.
+    # Injection via quote breakout or newline is structurally impossible.
     tool_name = spec["tool_name"]
     class_name = _snake_to_class_name(tool_name)
-    const_name = tool_name.upper()
-    source_label = spec["api_base_url"].replace("https://", "").split("/")[0]
-    docstring_first_line = spec["description"].strip().split("\n")[0][:200]
+    source_label = urlparse(spec["api_base_url"]).hostname or ""
     content = TOOL_TEMPLATE.format(
         tool_name=tool_name,
         class_name=class_name,
-        const_name=const_name,
-        base_url=spec["api_base_url"],
-        endpoint_path=spec["endpoint_path"],
-        digest_fields=list(spec["digest_fields"]),
-        description=spec["description"].replace('"', "'"),
-        docstring_first_line=docstring_first_line,
-        source_label=source_label,
+        tool_name_repr=repr(tool_name),
+        base_url_repr=repr(spec["api_base_url"]),
+        endpoint_path_repr=repr(spec["endpoint_path"]),
+        digest_fields_repr=repr(list(spec["digest_fields"])),
+        description_repr=repr(spec["description"]),
+        source_label_repr=repr(source_label),
     )
     log(f"code assembled: {len(content)} bytes")
 
