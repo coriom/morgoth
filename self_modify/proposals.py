@@ -16,6 +16,15 @@ Lifecycle
                   ├─ approve → approved_pending_apply [terminal in step 1]
                   └─ reject  → rejected               [terminal]
 
+    rejected_shape                                    [terminal, pre-submit]
+        Reflect-time reject when the API response does not carry the
+        proposed digest_fields at the template's extraction site (or
+        those fields are array/dict-valued and would break the compact
+        digest contract). Not written by the pipeline gates; produced
+        by ``self_modify.reflect`` before ``submit()`` is called, so
+        the row never actually exists — the constant lives here for
+        callers that want to reason over the reflect outcome uniformly.
+
 Terminology note: ``approved_pending_apply`` is deliberately terminal in
 this step. APPLY DOES NOT EXIST yet. An approved proposal sits inert; the
 apply/commit/rollback machinery is scoped for a later step.
@@ -37,6 +46,9 @@ STATUS_TESTS_FAILED = "tests_failed"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_APPROVED_PENDING_APPLY = "approved_pending_apply"
 STATUS_REJECTED = "rejected"
+# Pre-submit reflect-time reject when the endpoint's response does not
+# structurally support the proposed digest fields. See module docstring.
+STATUS_REJECTED_SHAPE = "rejected_shape"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
 STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
@@ -48,6 +60,7 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_PENDING_APPROVAL,
     STATUS_APPROVED_PENDING_APPLY,
     STATUS_REJECTED,
+    STATUS_REJECTED_SHAPE,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
 )

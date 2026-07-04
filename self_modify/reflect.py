@@ -65,8 +65,23 @@ SMOKE_TIMEOUT_SECS: float = 10.0
 
 # Identifier regexes for fields that are inserted RAW into the template
 # (only tool_name and derivatives — class_name / const_name).
+#
+# tool_name STAYS strict snake_case — it becomes a Python class name
+# (via ``_snake_to_class_name``) and a file name; the file path is used
+# by the zone classifier. Anything outside ``[a-z][a-z0-9_]`` here would
+# either produce invalid Python or land on a path the classifier can't
+# reason about.
+#
+# DIGEST_FIELD_RE was relaxed to accept camelCase because real JSON APIs
+# routinely return keys like ``poolId``, ``blockCount``, ``avgMatchRate``.
+# The prior snake-case-only rule was refusing legitimate specs by
+# construction — a spec-format tension, not a real security constraint:
+# digest_fields are inserted via ``repr()`` into a list literal (see
+# ``TOOL_TEMPLATE``), so the charset stays alphanumeric+underscore and
+# no quote/space/metachar can slip past this regex. Injection audit
+# lives in tests/test_reflect_injection.py.
 SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]{2,49}$")
-DIGEST_FIELD_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+DIGEST_FIELD_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
 
 # RFC 3986 unreserved + reserved + pct-encoded characters. Anything
 # outside this set (quotes, whitespace, backslash, newline, backtick,
@@ -325,16 +340,120 @@ def _url_passes_gate(url: str) -> str | None:
     return None
 
 
-async def _smoke_get(url: str) -> str | None:
-    """Return None on 2xx; error string otherwise."""
+async def _smoke_get(url: str) -> tuple[str | None, Any]:
+    """Return ``(error, body)`` — body is the JSON-parsed response on
+    2xx, otherwise ``None``.
+
+    The old smoke gate stopped at 2xx and never looked at the body.
+    Two proposals (cec526ec fee_histogram array, ccb623d1 pools-list
+    top-level) passed 2xx while being structurally unusable at the
+    template's extraction site. The shape gate (``_shape_check``)
+    consumes the returned body; keeping the fetch here means one HTTP
+    call, not two.
+    """
     try:
         async with httpx.AsyncClient(timeout=SMOKE_TIMEOUT_SECS) as client:
             resp = await client.get(url)
     except httpx.HTTPError as exc:
-        return f"network error: {type(exc).__name__}: {exc}"
+        return f"network error: {type(exc).__name__}: {exc}", None
     if not 200 <= resp.status_code < 300:
-        return f"non-2xx status {resp.status_code}"
-    return None
+        return f"non-2xx status {resp.status_code}", None
+    try:
+        body = resp.json()
+    except (ValueError, json.JSONDecodeError):
+        return "response is not JSON", None
+    return None, body
+
+
+# ---------- shape gate -----------------------------------------------------
+
+# How many response keys to include in a rejected_shape reason. The
+# operator needs enough to see "oh, the API returns pools not data",
+# but not so many that the log becomes noise.
+_SHAPE_KEYS_SHOWN = 15
+
+
+def _template_extraction_site(
+    body: Any, digest_fields: list[str],
+) -> tuple[dict[str, Any] | None, str]:
+    """Mirror the template's extraction logic — return the dict the
+    template will read fields from, plus a human-readable site label.
+
+    Returns ``(None, reason)`` if the body's overall shape is
+    unusable (neither a dict with matching top-level keys nor a
+    ``{"data": [...]}`` fallback nor a top-level list-of-dicts).
+
+    Kept BYTE-ALIGNED with ``TOOL_TEMPLATE``'s ``execute`` method:
+    top-level dict first; if no field matches, ``data[0]`` fallback;
+    else top-level list first element. Any drift between the two
+    will surface as a false accept or false reject — the injection
+    audit tests both extraction sites.
+    """
+    if isinstance(body, dict):
+        if any(f in body for f in digest_fields):
+            return body, "top-level dict"
+        data = body.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0], "data[0] (nested)"
+        keys = list(body.keys())
+        keys_shown = keys[:_SHAPE_KEYS_SHOWN]
+        more = f", …(+{len(keys) - _SHAPE_KEYS_SHOWN} more)" if len(keys) > _SHAPE_KEYS_SHOWN else ""
+        return None, (
+            f"missing at top-level: {digest_fields} — response is a dict "
+            f"but no digest field matches and there is no `data`: "
+            f"[<dict>] fallback; real keys: [{', '.join(keys_shown)}{more}]"
+        )
+    if isinstance(body, list):
+        if not body:
+            return None, "response is an empty list"
+        if not isinstance(body[0], dict):
+            return None, (
+                f"response is a list but its first element is a "
+                f"{type(body[0]).__name__}, not a dict"
+            )
+        return body[0], "list[0] (top-level list)"
+    return None, f"response is neither dict nor list (got {type(body).__name__})"
+
+
+def _shape_check(body: Any, digest_fields: list[str]) -> str | None:
+    """Return None if every ``digest_field`` is extractable AND scalar
+    at the template's chosen site; otherwise return a reason string.
+
+    Contract enforced (documents the rejects):
+
+    1. **Extractability**: field must exist at the extraction site the
+       template will actually use. Missing → rejected.
+    2. **Scalarity**: extracted value must not be ``list`` or ``dict``.
+       Array-valued fields (e.g. ``fee_histogram: [[...], [...]]``)
+       ARE extractable but break the digest's compact-findings
+       contract — the tool's ``findings`` string is truncated by
+       downstream consumers, and dumping a nested list makes the
+       digest useless. Reject rather than silently produce garbage.
+    """
+    site, desc = _template_extraction_site(body, digest_fields)
+    if site is None:
+        return desc
+    missing = [f for f in digest_fields if f not in site]
+    non_scalar = [
+        f for f in digest_fields
+        if f in site and isinstance(site[f], (list, dict))
+    ]
+    problems: list[str] = []
+    if missing:
+        problems.append(f"missing at {desc}: {missing}")
+    if non_scalar:
+        problems.append(
+            f"array/dict-valued at {desc} (breaks compact digest): {non_scalar}"
+        )
+    if not problems:
+        return None
+    keys = list(site.keys())
+    keys_shown = keys[:_SHAPE_KEYS_SHOWN]
+    more = f", …(+{len(keys) - _SHAPE_KEYS_SHOWN} more)" if len(keys) > _SHAPE_KEYS_SHOWN else ""
+    return (
+        f"{'; '.join(problems)} — real keys at {desc}: "
+        f"[{', '.join(keys_shown)}{more}]"
+    )
 
 
 # ---------- context ---------------------------------------------------------
@@ -531,11 +650,23 @@ async def run_reflection(
         log(f"outcome: rejected_url — {url_err}")
         return {"outcome": "rejected_url", "reason": url_err,
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
-    smoke_err = await _smoke_get(smoke_target)
+    smoke_err, body = await _smoke_get(smoke_target)
     if smoke_err:
         log(f"outcome: rejected_smoke — {smoke_err}")
         return {"outcome": "rejected_smoke",
                 "reason": f"smoke test on {smoke_target}: {smoke_err}",
+                "proposal_id": None, "pipeline_status": None, "spec": spec}
+
+    # Gate 5.5: SHAPE — the response body actually carries the proposed
+    # digest fields at the extraction site the template will use, and
+    # those fields are scalars. Catches specs that pass 2xx but would
+    # produce empty or unusable digests at runtime (see the ccb623d1 /
+    # cec526ec pair).
+    shape_err = _shape_check(body, list(spec["digest_fields"]))
+    if shape_err:
+        log(f"outcome: rejected_shape — {shape_err}")
+        return {"outcome": "rejected_shape",
+                "reason": f"shape check on {smoke_target}: {shape_err}",
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
 
     # Gate 6: code assembly (deterministic template, repr-based).

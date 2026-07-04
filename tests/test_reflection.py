@@ -81,7 +81,14 @@ def test_spec_well_formed_matrix() -> None:
     assert reflect._spec_is_well_formed(bad) is not None
     bad = dict(VALID_SPEC, digest_fields=["a", "b", "c", "d", "e", "f", "g"])  # too many
     assert reflect._spec_is_well_formed(bad) is not None
-    bad = dict(VALID_SPEC, digest_fields=["BadField", "b", "c"])  # not snake case
+    # camelCase is now ACCEPTED (real APIs return camelCase keys, and
+    # the field is inserted via repr() so injection-neutral).
+    ok = dict(VALID_SPEC, digest_fields=["poolId", "blockCount", "avgMatchRate"])
+    assert reflect._spec_is_well_formed(ok) is None
+    # But identifiers with metacharacters or whitespace stay rejected.
+    bad = dict(VALID_SPEC, digest_fields=["has space", "b_ok", "c_ok"])
+    assert reflect._spec_is_well_formed(bad) is not None
+    bad = dict(VALID_SPEC, digest_fields=["has-dash", "b_ok", "c_ok"])
     assert reflect._spec_is_well_formed(bad) is not None
 
 
@@ -128,8 +135,9 @@ async def test_smoke_get_reports_non_2xx() -> None:
     fake_client.__aexit__ = AsyncMock(return_value=None)
     fake_client.get = AsyncMock(return_value=SimpleNamespace(status_code=404))
     with patch.object(reflect.httpx, "AsyncClient", return_value=fake_client):
-        err = await reflect._smoke_get("https://example.com/x")
+        err, body = await reflect._smoke_get("https://example.com/x")
     assert err is not None and "404" in err
+    assert body is None
 
 
 @pytest.mark.asyncio
@@ -141,8 +149,9 @@ async def test_smoke_get_reports_network_error() -> None:
     fake_client.__aexit__ = AsyncMock(return_value=None)
     fake_client.get = AsyncMock(side_effect=httpx.ConnectError("boom"))
     with patch.object(reflect.httpx, "AsyncClient", return_value=fake_client):
-        err = await reflect._smoke_get("https://example.com/x")
+        err, body = await reflect._smoke_get("https://example.com/x")
     assert err is not None and "ConnectError" in err
+    assert body is None
 
 
 # ---------- code template --------------------------------------------------
@@ -322,10 +331,23 @@ async def test_reflect_submits_valid_spec_with_proposed_by_morgoth() -> None:
     store_mock.submit = AsyncMock(return_value="prop-1")
     store_mock.get = AsyncMock(return_value={"proposal_id": "prop-1"})
 
+    # Response body carries each digest field as a scalar so the shape
+    # gate passes — this is the "clean end-to-end" happy path.
+    shape_ok_body = {
+        "market_cap_percentage": {},  # NB: passed to shape check via json()
+        "active_cryptocurrencies": 12000,
+        "markets": 800,
+    }
+    # market_cap_percentage is a dict — that would fail the scalarity
+    # rule; swap it for a scalar so the shape check accepts.
+    shape_ok_body["market_cap_percentage"] = 42.5
     fake_client = AsyncMock()
     fake_client.__aenter__ = AsyncMock(return_value=fake_client)
     fake_client.__aexit__ = AsyncMock(return_value=None)
-    fake_client.get = AsyncMock(return_value=SimpleNamespace(status_code=200))
+    fake_client.get = AsyncMock(return_value=SimpleNamespace(
+        status_code=200,
+        json=MagicMock(return_value=shape_ok_body),
+    ))
 
     with patch("self_modify.reflect.P.ProposalStore", return_value=store_mock), \
          patch("self_modify.reflect._build_context",
