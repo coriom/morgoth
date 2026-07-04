@@ -359,11 +359,17 @@ async def _build_context(pm: PersistentMemory, config: AppConfig) -> dict[str, A
         # believing "no social/search data source exists" when both were
         # in the rail.
         kind = "data_source" if t.name in DATA_SOURCE_TOOLS else "chat/util"
+        # Full description — no truncation. Measured max across the 18
+        # registered tools is 285 chars (see tests/test_reflect_context.py);
+        # cutting at 120 was causing the reflect model to propose duplicate
+        # coverage because a description's tail ("...and mempool size")
+        # never reached the prompt. Total tools_block ≈ 2 KB, well within
+        # any ollama num_ctx budget.
         line = (
             f"- {t.name} "
             f"({kind}) "
             f"— objectives_using={objectives_count.get(t.name, 0)}: "
-            f"{(getattr(t, 'description', '') or '').strip()[:120]}"
+            f"{(getattr(t, 'description', '') or '').strip()}"
         )
         tool_lines.append(line)
 
