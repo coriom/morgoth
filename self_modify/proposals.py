@@ -16,14 +16,22 @@ Lifecycle
                   ├─ approve → approved_pending_apply [terminal in step 1]
                   └─ reject  → rejected               [terminal]
 
-    rejected_shape                                    [terminal, pre-submit]
-        Reflect-time reject when the API response does not carry the
-        proposed digest_fields at the template's extraction site (or
-        those fields are array/dict-valued and would break the compact
-        digest contract). Not written by the pipeline gates; produced
-        by ``self_modify.reflect`` before ``submit()`` is called, so
-        the row never actually exists — the constant lives here for
-        callers that want to reason over the reflect outcome uniformly.
+    Pre-submit terminals (written DIRECTLY by ``submit_terminal``,
+    never transit ``submitted``):
+
+    malformed         [terminal]  Spec parsed but failed validation
+                                  (bad tool_name, digest_fields, ...).
+    rejected_smoke    [terminal]  URL was fetchable but returned non-2xx
+                                  / network failure / non-JSON body.
+    rejected_shape    [terminal]  Body was JSON but the template's
+                                  extraction site does not yield the
+                                  proposed digest_fields as scalars.
+
+    These rows carry the rejected SPEC as ``content`` (JSON) so a
+    later reflect run can render them back into its prompt as a
+    negative list — the model stops re-proposing already-judged
+    candidates. Rows are never in ``submitted`` state; the transition
+    is single-step, at reject time.
 
 Terminology note: ``approved_pending_apply`` is deliberately terminal in
 this step. APPLY DOES NOT EXIST yet. An approved proposal sits inert; the
@@ -46,8 +54,12 @@ STATUS_TESTS_FAILED = "tests_failed"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_APPROVED_PENDING_APPLY = "approved_pending_apply"
 STATUS_REJECTED = "rejected"
-# Pre-submit reflect-time reject when the endpoint's response does not
-# structurally support the proposed digest fields. See module docstring.
+# Pre-submit reflect-time terminal statuses. Rows land here directly
+# via ``submit_terminal`` (never transit ``submitted``); they carry the
+# rejected SPEC as ``content`` (JSON) so the negative-list loader can
+# render them back into the next reflect prompt as calibration data.
+STATUS_MALFORMED = "malformed"
+STATUS_REJECTED_SMOKE = "rejected_smoke"
 STATUS_REJECTED_SHAPE = "rejected_shape"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
@@ -60,9 +72,31 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_PENDING_APPROVAL,
     STATUS_APPROVED_PENDING_APPLY,
     STATUS_REJECTED,
+    STATUS_MALFORMED,
+    STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
+)
+
+# The four statuses the reflect negative-list loader considers.
+# Gate-3 rejects (rejected) plus the three pre-submit terminals that
+# carry a rejected spec (malformed, rejected_smoke, rejected_shape).
+NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
+    STATUS_REJECTED,
+    STATUS_MALFORMED,
+    STATUS_REJECTED_SMOKE,
+    STATUS_REJECTED_SHAPE,
+)
+
+# The statuses that ``submit_terminal`` is allowed to write. Anything
+# outside this set MUST transit ``submitted`` and go through the normal
+# pipeline — the guard keeps ``submit_terminal`` from being repurposed
+# to short-circuit gates it was never meant to bypass.
+_PRE_SUBMIT_TERMINAL_STATUSES: tuple[str, ...] = (
+    STATUS_MALFORMED,
+    STATUS_REJECTED_SMOKE,
+    STATUS_REJECTED_SHAPE,
 )
 
 
@@ -85,6 +119,7 @@ class ProposalStore:
         rationale: str,
         proposed_by: str = "human",
         engine: str = "ollama",
+        retry_of: str | None = None,
     ) -> str:
         """Insert a new proposal in ``submitted`` state; return its id.
 
@@ -93,6 +128,10 @@ class ProposalStore:
         which LLM the spec came from ('ollama' | 'anthropic'). Together
         they are the calibration axis: proposal quality can be sliced by
         ``proposed_by × engine`` for the future security-agent gate.
+
+        ``retry_of`` points at the proposal_id of a preceding pre-submit
+        reject that this attempt is correcting (see ``reflect``'s
+        retry-with-feedback loop). NULL for first attempts.
         """
         proposal_id = str(_uuid.uuid4())
         pool = self._pm._require_pool()  # noqa: SLF001
@@ -101,8 +140,8 @@ class ProposalStore:
                 """
                 INSERT INTO self_modify_proposals
                     (proposal_id, target_path, change_type, content, rationale,
-                     status, proposed_by, engine)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     status, proposed_by, engine, retry_of)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
                 _uuid.UUID(proposal_id),
                 target_path,
@@ -112,8 +151,88 @@ class ProposalStore:
                 STATUS_SUBMITTED,
                 proposed_by,
                 engine,
+                _uuid.UUID(retry_of) if retry_of else None,
             )
         return proposal_id
+
+    async def submit_terminal(
+        self,
+        *,
+        target_path: str,
+        change_type: str,
+        content: str,
+        rationale: str | None,
+        status: str,
+        status_reason: str,
+        proposed_by: str,
+        engine: str,
+        retry_of: str | None = None,
+    ) -> str:
+        """Insert a proposal DIRECTLY into a terminal pre-submit status.
+
+        Used only for calibration-worthy pre-submit rejects: ``malformed``,
+        ``rejected_smoke``, ``rejected_shape``. The row never transits
+        ``submitted`` — this is a single-step write. ``content`` should
+        be the rejected spec serialized as JSON so a later reflect run's
+        negative-list loader can render it back.
+
+        Guarded to statuses declared in ``PRE_SUBMIT_TERMINAL_STATUSES``
+        so it can't be misused to short-circuit the normal pipeline.
+        """
+        if status not in _PRE_SUBMIT_TERMINAL_STATUSES:
+            raise ValueError(
+                f"submit_terminal: status {status!r} is not one of "
+                f"{_PRE_SUBMIT_TERMINAL_STATUSES}"
+            )
+        proposal_id = str(_uuid.uuid4())
+        pool = self._pm._require_pool()  # noqa: SLF001
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO self_modify_proposals
+                    (proposal_id, target_path, change_type, content, rationale,
+                     status, status_reason, proposed_by, engine, retry_of)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                """,
+                _uuid.UUID(proposal_id),
+                target_path,
+                change_type,
+                content,
+                rationale,
+                status,
+                status_reason,
+                proposed_by,
+                engine,
+                _uuid.UUID(retry_of) if retry_of else None,
+            )
+        return proposal_id
+
+    async def list_recent_rejections(
+        self,
+        *,
+        proposed_by: str = "morgoth",
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Return recent rejections for the reflect negative-list loader.
+
+        Includes rejects across the four statuses in
+        ``NEGATIVE_LIST_STATUSES``: gate-3 operator rejects
+        (``rejected``) plus the three pre-submit terminals
+        (``malformed``, ``rejected_smoke``, ``rejected_shape``).
+        Ordered by ``updated_at`` DESC — most recent judgment first —
+        so the negative list stays fresh even when the DB grows.
+        """
+        pool = self._pm._require_pool()  # noqa: SLF001
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM self_modify_proposals "
+                "WHERE proposed_by = $1 AND status = ANY($2::text[]) "
+                "ORDER BY updated_at DESC LIMIT $3",
+                proposed_by,
+                list(NEGATIVE_LIST_STATUSES),
+                limit,
+            )
+        return [dict(r) for r in rows]
 
     async def count_by_status_and_author(
         self,

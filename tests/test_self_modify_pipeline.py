@@ -54,12 +54,15 @@ async def test_submit_inserts_and_returns_uuid() -> None:
     assert isinstance(pid, str) and len(pid) == 36  # uuid4 string
     # Was the INSERT called with the right lifecycle-start status?
     args = conn.execute.await_args.args
-    # (pid, target_path, change_type, content, rationale, status, proposed_by, engine)
-    assert args[-3] == P.STATUS_SUBMITTED
+    # (pid, target_path, change_type, content, rationale, status,
+    #  proposed_by, engine, retry_of)
+    assert args[-4] == P.STATUS_SUBMITTED
     # Default proposed_by is 'human' when not overridden.
-    assert args[-2] == "human"
+    assert args[-3] == "human"
     # Default engine is 'ollama' when not overridden.
-    assert args[-1] == "ollama"
+    assert args[-2] == "ollama"
+    # retry_of is NULL for a fresh submit.
+    assert args[-1] is None
 
 
 @pytest.mark.asyncio

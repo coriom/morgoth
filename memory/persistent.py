@@ -179,6 +179,13 @@ class PersistentMemory:
                 "proposed_by TEXT NOT NULL DEFAULT 'human';",
                 "ALTER TABLE self_modify_proposals ADD COLUMN IF NOT EXISTS "
                 "engine TEXT NOT NULL DEFAULT 'ollama';",
+                # retry_of points at the proposal_id of a preceding
+                # pre-submit reject that this attempt is correcting.
+                # NULL for first attempts. Used by the reflect
+                # retry-with-feedback loop and by the calibration axis
+                # to distinguish first-shot proposals from corrections.
+                "ALTER TABLE self_modify_proposals ADD COLUMN IF NOT EXISTS "
+                "retry_of UUID NULL;",
             ):
                 try:
                     await connection.execute(alter_sql)

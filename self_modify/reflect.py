@@ -62,6 +62,26 @@ from self_modify.zones import classify_proposal
 
 REFLECTION_PENDING_CAP: int = 3
 SMOKE_TIMEOUT_SECS: float = 10.0
+# Negative list — how many recent rejections to render in the reflect
+# prompt so the model stops re-proposing already-judged specs.
+NEGATIVE_LIST_LIMIT: int = 8
+# Truncate each rejection's reason at this many chars in the prompt.
+# The full reason lives on the DB row for the operator to inspect.
+NEGATIVE_LIST_REASON_CHARS: int = 100
+# Retry-with-feedback: after a pre-submit reject, this many corrective
+# attempts run before the reflect run terminates. Held at 1 to bound
+# billing on the paid engines (each attempt is one full LLM call).
+CORRECTIVE_RETRIES: int = 1
+# Pre-submit outcomes that are eligible for a corrective retry AND get
+# persisted to the DB (so the negative list can render them back).
+_RETRY_ELIGIBLE_OUTCOMES: tuple[str, ...] = (
+    "malformed", "rejected_smoke", "rejected_shape",
+)
+_OUTCOME_TO_STATUS: dict[str, str] = {
+    "malformed": P.STATUS_MALFORMED,
+    "rejected_smoke": P.STATUS_REJECTED_SMOKE,
+    "rejected_shape": P.STATUS_REJECTED_SHAPE,
+}
 
 # Identifier regexes for fields that are inserted RAW into the template
 # (only tool_name and derivatives — class_name / const_name).
@@ -458,11 +478,65 @@ def _shape_check(body: Any, digest_fields: list[str]) -> str | None:
 
 # ---------- context ---------------------------------------------------------
 
+def _endpoint_from_row(row: dict[str, Any]) -> str | None:
+    """Best-effort recover ``endpoint_path`` from a stored rejection row.
+
+    Pre-submit rejections persist the spec as JSON in ``content``.
+    Gate-3 rejects (STATUS_REJECTED) instead hold assembled Python; we
+    can find ``_ENDPOINT_PATH = <literal>`` there. Silent on anything
+    unrecognized — the negative list still renders with just the name.
+    """
+    content = row.get("content") or ""
+    if not isinstance(content, str) or not content:
+        return None
+    stripped = content.lstrip()
+    if stripped.startswith("{"):
+        try:
+            spec = json.loads(content)
+        except (ValueError, TypeError):
+            return None
+        ep = spec.get("endpoint_path") if isinstance(spec, dict) else None
+        return ep if isinstance(ep, str) else None
+    m = re.search(r"^_ENDPOINT_PATH\s*=\s*(['\"])(.*?)\1", content, re.M)
+    return m.group(2) if m else None
+
+
+def _rejections_block(rows: list[dict[str, Any]]) -> str:
+    """Render recent rejections as a negative-list prompt block.
+
+    Each line: ``- <tool_name>[ (<endpoint_path>)]: <reason>``. Reason
+    is truncated at NEGATIVE_LIST_REASON_CHARS so a single verbose
+    shape reject doesn't dominate the block. Rendering intentionally
+    omits the block header — the caller decides whether to render at
+    all (empty history keeps the prompt byte-identical to the pre-
+    negative-list version).
+    """
+    lines: list[str] = []
+    for row in rows:
+        target = row.get("target_path") or ""
+        tool_name = (
+            target.rsplit("/", 1)[-1].removesuffix(".py") if target else "unknown"
+        )
+        endpoint = _endpoint_from_row(row)
+        reason = (row.get("status_reason") or "").strip()
+        if not reason:
+            reason = f"(status={row.get('status')})"
+        if len(reason) > NEGATIVE_LIST_REASON_CHARS:
+            reason = reason[: NEGATIVE_LIST_REASON_CHARS] + "…"
+        head = f"- {tool_name}"
+        if endpoint:
+            head += f" ({endpoint})"
+        lines.append(f"{head}: {reason}")
+    return "\n".join(lines)
+
+
 async def _build_context(pm: PersistentMemory, config: AppConfig) -> dict[str, Any]:
-    """Registered tools + last objective topics + last active thesis subjects.
+    """Registered tools + objectives + thesis subjects + rejections.
 
     Reuses the system-vault loaders (compile_wiki._registered_tools_offline
-    and _load_tool_usage), same code path as the vault build.
+    and _load_tool_usage), same code path as the vault build. Rejections
+    come from ``ProposalStore.list_recent_rejections`` — the negative
+    list injected to stop the model re-proposing already-judged specs.
     """
     from core.brain import DATA_SOURCE_TOOLS
     from scripts.compile_wiki import _load_tool_usage, _registered_tools_offline
@@ -506,15 +580,41 @@ async def _build_context(pm: PersistentMemory, config: AppConfig) -> dict[str, A
         if len(thesis_lines) >= 15:
             break
 
+    store = P.ProposalStore(pm)
+    try:
+        rej_rows = await store.list_recent_rejections(
+            proposed_by="morgoth", limit=NEGATIVE_LIST_LIMIT,
+        )
+    except Exception as exc:
+        # A DB hiccup here must not break reflect — the negative list
+        # is opportunistic prompt enrichment, not a gate.
+        logger.warning("reflect: negative-list load failed: {}", exc)
+        rej_rows = []
+    rejections_block = _rejections_block(rej_rows)
+
     return {
         "tools_block": "\n".join(tool_lines) if tool_lines else "(none)",
         "objectives_block": "\n".join(obj_lines) if obj_lines else "(none)",
         "theses_block": "\n".join(thesis_lines) if thesis_lines else "(none)",
+        "rejections_block": rejections_block,
     }
 
 
 def _reflection_prompt(ctx: dict[str, Any]) -> str:
-    """The single prompt sent to the 8B."""
+    """The single prompt sent to the 8B.
+
+    When ``rejections_block`` is empty, no negative-list section is
+    emitted at all — the prompt stays BYTE-IDENTICAL to the pre-
+    negative-list version. This is the non-regression contract: a
+    fresh install (no rejections in the DB) sees the same prompt it
+    would have seen before this feature landed.
+    """
+    negative_list_section = ""
+    if ctx.get("rejections_block"):
+        negative_list_section = (
+            f"\n\nALREADY REJECTED — do NOT re-propose these or trivial variants:\n"
+            f"{ctx['rejections_block']}"
+        )
     return f"""You are proposing ONE new data-feed tool for Morgoth to add.
 
 CURRENT TOOLS (name, kind, usage, description):
@@ -524,7 +624,7 @@ RECENT OBJECTIVE TOPICS (newest first):
 {ctx['objectives_block']}
 
 RECENT ACTIVE THESIS SUBJECTS:
-{ctx['theses_block']}
+{ctx['theses_block']}{negative_list_section}
 
 TASK: Suggest EXACTLY ONE new tool under tools/data_feeds/ that fills a
 gap the context above shows. The API must be FREE, require NO API key,
@@ -542,74 +642,114 @@ OUTPUT FORMAT — a single JSON object OR the word NONE. Nothing else.
 }}"""
 
 
+def _corrective_prompt(prompt: str, spec: dict[str, Any] | None, reason: str) -> str:
+    """Append a CORRECTION block to the original prompt.
+
+    The corrective attempt sees EVERYTHING the original attempt saw
+    plus the rejected spec and the exact gate reason. For shape
+    rejects the reason already contains the real API keys the model
+    needed — the retry is the model's chance to use them.
+    """
+    spec_block = json.dumps(spec, indent=2) if spec is not None else "(no spec produced)"
+    return (
+        f"{prompt}\n\n"
+        "YOUR PREVIOUS ATTEMPT WAS REJECTED.\n"
+        f"spec:\n{spec_block}\n"
+        f"reason: {reason}\n\n"
+        "Produce a CORRECTED spec addressing the reason (fix the failing "
+        "field(s); pick a different endpoint if the response shape can't "
+        "carry a compact scalar digest), or the literal word NONE if no "
+        "correction is honest."
+    )
+
+
 # ---------- main entry point -----------------------------------------------
 
 def _short(msg: str, n: int = 200) -> str:
     return msg if len(msg) <= n else msg[:n] + "…"
 
 
-async def run_reflection(
+def _target_path_for_reject(spec: dict[str, Any] | None) -> str:
+    """Best-effort target_path for a rejected-spec DB row.
+
+    A malformed spec may not carry a legal tool_name — but the row
+    still needs a NOT NULL ``target_path``. We take whatever tool_name
+    the spec offers (or ``invalid_spec``) and stuff it under
+    ``tools/data_feeds/`` so downstream selectors that filter by
+    directory still find the row.
+    """
+    tn = spec.get("tool_name") if isinstance(spec, dict) else None
+    if not (isinstance(tn, str) and tn and SNAKE_CASE_RE.match(tn)):
+        tn = "invalid_spec"
+    return f"tools/data_feeds/{tn}.py"
+
+
+async def _persist_pre_submit_reject(
+    store: P.ProposalStore,
+    outcome: str,
+    spec: dict[str, Any] | None,
+    reason: str,
+    provider: str,
+    retry_of: str | None,
+) -> str | None:
+    """Write a terminal row for a retry-eligible pre-submit reject.
+
+    ``content`` is the spec serialized as JSON — that's the payload
+    the next reflect run's negative-list loader parses back to
+    surface ``endpoint_path``. Returns the new proposal_id, or None
+    on write failure (DB errors here must not break reflect).
+    """
+    status = _OUTCOME_TO_STATUS[outcome]
+    payload = json.dumps(spec, indent=2) if spec else ""
+    try:
+        return await store.submit_terminal(
+            target_path=_target_path_for_reject(spec),
+            change_type="new_file",
+            content=payload,
+            rationale=(spec or {}).get("rationale") if isinstance(spec, dict) else None,
+            status=status,
+            status_reason=reason,
+            proposed_by="morgoth",
+            engine=provider,
+            retry_of=retry_of,
+        )
+    except Exception as exc:
+        logger.warning(
+            "reflect: could not persist {} row (non-fatal): {}", status, exc,
+        )
+        return None
+
+
+async def _one_reflect_attempt(
     config: AppConfig,
     pm: PersistentMemory,
     llm: OllamaLLMClient,
+    store: P.ProposalStore,
+    prompt: str,
+    provider: str,
     *,
-    provider: str = "ollama",
+    retry_of: str | None = None,
 ) -> dict[str, Any]:
-    """Attempt one proposal cycle. Returns a structured result.
+    """Run one attempt from LLM call through every gate to submit.
 
-    ``provider`` selects the engine used ONLY for the reflect prompt
-    (ollama or anthropic). Prompt, context, and every gate are byte-
-    identical across engines — this is a same-input/different-model
-    test. ``provider`` is persisted on the proposal row as ``engine``.
-
-    Result shape:
-      {'outcome': 'refused_flag' | 'refused_cap' | 'none' | 'unparseable' |
-                  'malformed' | 'rejected_url' | 'rejected_smoke' |
-                  'rejected_zone' | 'submitted',
-       'reason': str,                    # human-readable
-       'proposal_id': str | None,
-       'pipeline_status': str | None,    # only when outcome == 'submitted'
-       'spec': dict | None}
+    Retry-eligible pre-submit rejects (``malformed`` / ``rejected_smoke`` /
+    ``rejected_shape``) also get persisted to the DB inside this
+    function — the caller consumes the returned ``proposal_id`` when
+    building a corrective retry, and the row lands on the negative
+    list for future runs. Non-eligible pre-submit outcomes
+    (rejected_url / rejected_collision / rejected_zone / unparseable)
+    stay ephemeral by design.
     """
     log = lambda msg: logger.info("reflect: {}", msg)  # noqa: E731
 
-    # Gate 1: permission
-    if not config.permissions.permissions.can_self_modify:
-        log("refused — can_self_modify=false")
-        return {"outcome": "refused_flag", "reason": "can_self_modify is false",
-                "proposal_id": None, "pipeline_status": None, "spec": None}
-
-    store = P.ProposalStore(pm)
-
-    # Gate 0: cap
-    n_pending = await store.count_by_status_and_author(
-        status=P.STATUS_PENDING_APPROVAL, proposed_by="morgoth"
-    )
-    if n_pending >= REFLECTION_PENDING_CAP:
-        reason = (
-            f"pending queue full ({n_pending}/{REFLECTION_PENDING_CAP} "
-            "morgoth-authored pending); review existing proposals first"
-        )
-        log(f"refused — {reason}")
-        return {"outcome": "refused_cap", "reason": reason,
-                "proposal_id": None, "pipeline_status": None, "spec": None}
-
-    # Gate 2: context
-    ctx = await _build_context(pm, config)
-    prompt = _reflection_prompt(ctx)
-    log(f"context built: {len(ctx['tools_block'].splitlines())} tools, "
-        f"{len(ctx['objectives_block'].splitlines())} objectives, "
-        f"{len(ctx['theses_block'].splitlines())} thesis subjects")
-
-    # Gate 3: single LLM call (engine-switchable — same prompt everywhere)
-    log(f"engine: {provider}")
+    label = f"[retry_of={retry_of[:8]}]" if retry_of else "[first attempt]"
+    log(f"engine: {provider} {label}")
     raw, _meta = await reflect_chat(prompt, config, provider, ollama_client=llm)
     log(f"raw spec (first 400 chars): {_short(raw, 400)}")
 
-    # Gate 4: parse
+    # Parse.
     spec = _parse_spec(raw)
     if spec is None:
-        # Distinguish NONE from garbage — both stop here cleanly.
         if raw.upper().startswith("NONE") or raw.upper() == "":
             log("outcome: NONE (model declined)")
             return {"outcome": "none", "reason": "model declined (NONE)",
@@ -619,10 +759,7 @@ async def run_reflection(
                 "reason": f"could not parse spec: {_short(raw, 300)}",
                 "proposal_id": None, "pipeline_status": None, "spec": None}
 
-    # Normalize HTML entities in URL fields BEFORE validation & smoke.
-    # The 8B occasionally emits `&amp;` for `&`; without normalization
-    # a legitimate query string is rejected at smoke. Applied to spec
-    # in-place so downstream render / submit sees the clean value.
+    # Normalize URL fields BEFORE validation & smoke.
     if isinstance(spec.get("api_base_url"), str):
         spec["api_base_url"] = _html_normalize(spec["api_base_url"])
     if isinstance(spec.get("endpoint_path"), str):
@@ -631,19 +768,18 @@ async def run_reflection(
     err = _spec_is_well_formed(spec)
     if err:
         log(f"outcome: malformed — {err}")
+        pid = await _persist_pre_submit_reject(
+            store, "malformed", spec, err, provider, retry_of,
+        )
         return {"outcome": "malformed", "reason": err,
-                "proposal_id": None, "pipeline_status": None, "spec": spec}
+                "proposal_id": pid, "pipeline_status": None, "spec": spec}
 
-    # Gate 4.5: collision — a name already registered would be caught
-    # by the pipeline's zone/target-exists check anyway, but rejecting
-    # earlier gives a cleaner error and avoids a wasted sandbox run.
     if tool_name_collides(spec["tool_name"], config, pm):
         reason = f"tool_name {spec['tool_name']!r} collides with a registered tool"
         log(f"outcome: rejected_collision — {reason}")
         return {"outcome": "rejected_collision", "reason": reason,
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
 
-    # Gate 5: URL + smoke
     smoke_target = spec["api_base_url"].rstrip("/") + spec["endpoint_path"]
     url_err = _url_passes_gate(spec["api_base_url"])
     if url_err:
@@ -652,29 +788,25 @@ async def run_reflection(
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
     smoke_err, body = await _smoke_get(smoke_target)
     if smoke_err:
+        reason = f"smoke test on {smoke_target}: {smoke_err}"
         log(f"outcome: rejected_smoke — {smoke_err}")
-        return {"outcome": "rejected_smoke",
-                "reason": f"smoke test on {smoke_target}: {smoke_err}",
-                "proposal_id": None, "pipeline_status": None, "spec": spec}
+        pid = await _persist_pre_submit_reject(
+            store, "rejected_smoke", spec, reason, provider, retry_of,
+        )
+        return {"outcome": "rejected_smoke", "reason": reason,
+                "proposal_id": pid, "pipeline_status": None, "spec": spec}
 
-    # Gate 5.5: SHAPE — the response body actually carries the proposed
-    # digest fields at the extraction site the template will use, and
-    # those fields are scalars. Catches specs that pass 2xx but would
-    # produce empty or unusable digests at runtime (see the ccb623d1 /
-    # cec526ec pair).
     shape_err = _shape_check(body, list(spec["digest_fields"]))
     if shape_err:
+        reason = f"shape check on {smoke_target}: {shape_err}"
         log(f"outcome: rejected_shape — {shape_err}")
-        return {"outcome": "rejected_shape",
-                "reason": f"shape check on {smoke_target}: {shape_err}",
-                "proposal_id": None, "pipeline_status": None, "spec": spec}
+        pid = await _persist_pre_submit_reject(
+            store, "rejected_shape", spec, reason, provider, retry_of,
+        )
+        return {"outcome": "rejected_shape", "reason": reason,
+                "proposal_id": pid, "pipeline_status": None, "spec": spec}
 
-    # Gate 6: code assembly (deterministic template, repr-based).
-    #
-    # Only tool_name and its derivatives (class_name) are inserted raw —
-    # they are validated by SNAKE_CASE_RE. Every other user-influenced
-    # field is inserted via repr(), producing a Python string literal.
-    # Injection via quote breakout or newline is structurally impossible.
+    # Code assembly (deterministic template, repr-based).
     tool_name = spec["tool_name"]
     class_name = _snake_to_class_name(tool_name)
     source_label = urlparse(spec["api_base_url"]).hostname or ""
@@ -690,7 +822,6 @@ async def run_reflection(
     )
     log(f"code assembled: {len(content)} bytes")
 
-    # Gate 7: pre-submission zone check (enforcement level 1)
     target_path = f"tools/data_feeds/{tool_name}.py"
     zone = classify_proposal(target_path, "new_file")
     if zone != "green":
@@ -699,8 +830,6 @@ async def run_reflection(
                 "reason": f"pre-submission zone check: {zone}",
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
 
-    # Gate 8: submit — persist the engine that produced the spec so
-    # future analysis can slice proposal quality by proposed_by × engine.
     proposal_id = await store.submit(
         target_path=target_path,
         change_type="new_file",
@@ -708,6 +837,7 @@ async def run_reflection(
         rationale=spec["rationale"],
         proposed_by="morgoth",
         engine=provider,
+        retry_of=retry_of,
     )
     row = await store.get(proposal_id)
     final_status = await gates.run_pipeline(store, row)
@@ -715,6 +845,103 @@ async def run_reflection(
     return {"outcome": "submitted", "reason": final_status,
             "proposal_id": proposal_id, "pipeline_status": final_status,
             "spec": spec}
+
+
+async def run_reflection(
+    config: AppConfig,
+    pm: PersistentMemory,
+    llm: OllamaLLMClient,
+    *,
+    provider: str = "ollama",
+) -> dict[str, Any]:
+    """Attempt one proposal cycle, with one corrective retry on
+    retry-eligible pre-submit rejects.
+
+    ``provider`` selects the engine used ONLY for the reflect prompt.
+    Prompt, context, and every gate are byte-identical across engines —
+    this is a same-input/different-model test. ``provider`` is
+    persisted on the proposal row as ``engine``.
+
+    Result shape:
+      {'outcome': 'refused_flag' | 'refused_cap' | 'none' | 'unparseable' |
+                  'malformed' | 'rejected_url' | 'rejected_smoke' |
+                  'rejected_shape' | 'rejected_collision' | 'rejected_zone' |
+                  'submitted',
+       'reason': str,                      # human-readable
+       'proposal_id': str | None,
+       'pipeline_status': str | None,      # only when outcome == 'submitted'
+       'spec': dict | None,
+       'first_attempt': dict | None,       # populated when a retry fired
+       'retried': bool}
+
+    Retry policy: if the first attempt lands on malformed / rejected_smoke
+    / rejected_shape, ONE corrective attempt runs with the failing spec
+    and the exact gate reason injected. The retry goes through EVERY
+    gate from parse onward — no gate is skipped. The pending-queue cap
+    is checked once at run-start; a retry can only produce ONE
+    pending_approval so the cap can't be violated by the retry itself.
+    """
+    log = lambda msg: logger.info("reflect: {}", msg)  # noqa: E731
+
+    if not config.permissions.permissions.can_self_modify:
+        log("refused — can_self_modify=false")
+        return {"outcome": "refused_flag", "reason": "can_self_modify is false",
+                "proposal_id": None, "pipeline_status": None, "spec": None,
+                "first_attempt": None, "retried": False}
+
+    store = P.ProposalStore(pm)
+
+    n_pending = await store.count_by_status_and_author(
+        status=P.STATUS_PENDING_APPROVAL, proposed_by="morgoth"
+    )
+    if n_pending >= REFLECTION_PENDING_CAP:
+        reason = (
+            f"pending queue full ({n_pending}/{REFLECTION_PENDING_CAP} "
+            "morgoth-authored pending); review existing proposals first"
+        )
+        log(f"refused — {reason}")
+        return {"outcome": "refused_cap", "reason": reason,
+                "proposal_id": None, "pipeline_status": None, "spec": None,
+                "first_attempt": None, "retried": False}
+
+    ctx = await _build_context(pm, config)
+    prompt = _reflection_prompt(ctx)
+    n_rej = len(ctx["rejections_block"].splitlines()) if ctx.get("rejections_block") else 0
+    log(f"context built: {len(ctx['tools_block'].splitlines())} tools, "
+        f"{len(ctx['objectives_block'].splitlines())} objectives, "
+        f"{len(ctx['theses_block'].splitlines())} thesis subjects, "
+        f"{n_rej} past rejections")
+
+    first = await _one_reflect_attempt(
+        config, pm, llm, store, prompt, provider, retry_of=None,
+    )
+    first_out = first["outcome"]
+
+    if first_out not in _RETRY_ELIGIBLE_OUTCOMES:
+        # Not eligible for retry — return the first attempt's result.
+        first["first_attempt"] = None
+        first["retried"] = False
+        return first
+
+    # Retry-with-feedback: build the corrective prompt and run one more
+    # attempt. The retry's row (if it also fails eligibly) links back
+    # to the first attempt's row via retry_of, so calibration can slice
+    # correction-success rate per engine.
+    log(f"retry: eligible outcome {first_out!r} — building corrective prompt")
+    corrective = _corrective_prompt(prompt, first.get("spec"), first["reason"])
+    retry = await _one_reflect_attempt(
+        config, pm, llm, store, corrective, provider,
+        retry_of=first.get("proposal_id"),
+    )
+    log(f"retry: outcome {retry['outcome']!r} — final")
+    retry["first_attempt"] = {
+        "outcome": first_out,
+        "reason": first["reason"],
+        "proposal_id": first.get("proposal_id"),
+        "spec": first.get("spec"),
+    }
+    retry["retried"] = True
+    return retry
 
 
 # ---------- CLI entry point ------------------------------------------------
@@ -764,13 +991,21 @@ async def _main_async(argv: list[str] | None = None) -> int:
     print(f"provider:        {provider}")
     print(f"outcome:         {result['outcome']}")
     print(f"reason:          {result['reason']}")
+    if result.get("retried"):
+        first = result.get("first_attempt") or {}
+        print("first_attempt:")
+        print(f"  outcome:       {first.get('outcome')}")
+        print(f"  reason:        {first.get('reason')}")
+        if first.get("proposal_id"):
+            print(f"  proposal_id:   {first['proposal_id']}")
     if result.get("spec"):
         print("spec:")
         for key, value in result["spec"].items():
             print(f"  {key:16}: {value}")
     if result.get("proposal_id"):
         print(f"proposal_id:     {result['proposal_id']}")
-        print(f"pipeline_status: {result['pipeline_status']}")
+        if result.get("pipeline_status"):
+            print(f"pipeline_status: {result['pipeline_status']}")
     return 0 if result["outcome"] in {"submitted", "none"} else 1
 
 

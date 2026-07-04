@@ -341,7 +341,9 @@ async def test_submit_records_engine_column() -> None:
         engine="anthropic",
     )
     args = conn.execute.await_args.args
-    # (query, pid, target, change_type, content, rationale, status, proposed_by, engine)
-    assert args[-1] == "anthropic"
-    assert args[-2] == "morgoth"
-    assert args[-3] == STATUS_SUBMITTED
+    # (query, pid, target, change_type, content, rationale, status,
+    #  proposed_by, engine, retry_of)
+    assert args[-1] is None  # retry_of NULL for first attempts
+    assert args[-2] == "anthropic"
+    assert args[-3] == "morgoth"
+    assert args[-4] == STATUS_SUBMITTED
