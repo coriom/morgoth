@@ -56,6 +56,7 @@ from core.llm_client import ChatMessage, OllamaLLMClient
 from memory.persistent import PersistentMemory
 from self_modify import gates
 from self_modify import proposals as P
+from self_modify.reflect_llm import ReflectLLMError, reflect_chat, resolve_provider
 from self_modify.zones import classify_proposal
 
 
@@ -426,8 +427,15 @@ async def run_reflection(
     config: AppConfig,
     pm: PersistentMemory,
     llm: OllamaLLMClient,
+    *,
+    provider: str = "ollama",
 ) -> dict[str, Any]:
     """Attempt one proposal cycle. Returns a structured result.
+
+    ``provider`` selects the engine used ONLY for the reflect prompt
+    (ollama or anthropic). Prompt, context, and every gate are byte-
+    identical across engines — this is a same-input/different-model
+    test. ``provider`` is persisted on the proposal row as ``engine``.
 
     Result shape:
       {'outcome': 'refused_flag' | 'refused_cap' | 'none' | 'unparseable' |
@@ -468,9 +476,9 @@ async def run_reflection(
         f"{len(ctx['objectives_block'].splitlines())} objectives, "
         f"{len(ctx['theses_block'].splitlines())} thesis subjects")
 
-    # Gate 3: single LLM call
-    response = await llm.chat([ChatMessage(role="user", content=prompt)])
-    raw = (response.message.content or "").strip()
+    # Gate 3: single LLM call (engine-switchable — same prompt everywhere)
+    log(f"engine: {provider}")
+    raw, _meta = await reflect_chat(prompt, config, provider, ollama_client=llm)
     log(f"raw spec (first 400 chars): {_short(raw, 400)}")
 
     # Gate 4: parse
@@ -554,13 +562,15 @@ async def run_reflection(
                 "reason": f"pre-submission zone check: {zone}",
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
 
-    # Gate 8: submit
+    # Gate 8: submit — persist the engine that produced the spec so
+    # future analysis can slice proposal quality by proposed_by × engine.
     proposal_id = await store.submit(
         target_path=target_path,
         change_type="new_file",
         content=content,
         rationale=spec["rationale"],
         proposed_by="morgoth",
+        engine=provider,
     )
     row = await store.get(proposal_id)
     final_status = await gates.run_pipeline(store, row)
@@ -572,19 +582,49 @@ async def run_reflection(
 
 # ---------- CLI entry point ------------------------------------------------
 
-async def _main_async() -> int:
+async def _main_async(argv: list[str] | None = None) -> int:
+    import argparse
+    import sys as _sys
+
     from core.config import load_config
+
+    parser = argparse.ArgumentParser(
+        prog="self_modify.reflect",
+        description="Run one reflection cycle (Morgoth proposes a new tool).",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=("ollama", "anthropic"),
+        default=None,
+        help="LLM engine for the reflect prompt. "
+             "Overrides REFLECT_PROVIDER env; default 'ollama'.",
+    )
+    args = parser.parse_args(_sys.argv[1:] if argv is None else argv)
+
+    # Resolve provider with a clean refusal if the env has a typo.
+    try:
+        provider = resolve_provider(args.provider)
+    except ReflectLLMError as exc:
+        # Clean CLI refusal — no traceback.
+        print(f"reflect: {exc}", file=_sys.stderr)
+        return 2
 
     config = await load_config()
     pm = PersistentMemory(config)
     await pm.initialize()
     llm = OllamaLLMClient(config)
     try:
-        result = await run_reflection(config, pm, llm)
+        try:
+            result = await run_reflection(config, pm, llm, provider=provider)
+        except ReflectLLMError as exc:
+            # Missing key / API errors surface as clean single-line output.
+            print(f"reflect: {exc}", file=_sys.stderr)
+            return 2
     finally:
         await pm.close()
         await llm.close()
 
+    print(f"provider:        {provider}")
     print(f"outcome:         {result['outcome']}")
     print(f"reason:          {result['reason']}")
     if result.get("spec"):

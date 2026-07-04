@@ -159,9 +159,11 @@ cmd_apply() {
 
 cmd_reflect() {
     # One-shot reflection cycle: Morgoth proposes a new green-zone tool.
-    # Gated by can_self_modify in MORGOTH_PERMS.json. Prints each step
-    # to stdout via the reflect module's own log; final result at exit.
-    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.reflect)
+    # Gated by can_self_modify in MORGOTH_PERMS.json. Extra args pass
+    # through — supports `morgoth reflect --provider anthropic` for the
+    # engine switch. Prints each step to stdout via the reflect module's
+    # own log; final result at exit.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.reflect "$@")
 }
 
 cmd_focus() {

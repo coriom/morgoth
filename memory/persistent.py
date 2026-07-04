@@ -177,6 +177,8 @@ class PersistentMemory:
                 "ALTER TABLE contradictions ADD COLUMN IF NOT EXISTS resolution TEXT NULL;",
                 "ALTER TABLE self_modify_proposals ADD COLUMN IF NOT EXISTS "
                 "proposed_by TEXT NOT NULL DEFAULT 'human';",
+                "ALTER TABLE self_modify_proposals ADD COLUMN IF NOT EXISTS "
+                "engine TEXT NOT NULL DEFAULT 'ollama';",
             ):
                 try:
                     await connection.execute(alter_sql)

@@ -71,13 +71,15 @@ class ProposalStore:
         content: str,
         rationale: str,
         proposed_by: str = "human",
+        engine: str = "ollama",
     ) -> str:
         """Insert a new proposal in ``submitted`` state; return its id.
 
-        ``proposed_by`` records provenance: ``'human'`` for operator-injected
-        rows, ``'morgoth'`` for reflection-born ones. The column is the
-        calibration axis for a future security-agent gate on Morgoth-born
-        proposals.
+        ``proposed_by`` records provenance ('human' for operator-injected
+        rows, 'morgoth' for reflection-born ones). ``engine`` records
+        which LLM the spec came from ('ollama' | 'anthropic'). Together
+        they are the calibration axis: proposal quality can be sliced by
+        ``proposed_by × engine`` for the future security-agent gate.
         """
         proposal_id = str(_uuid.uuid4())
         pool = self._pm._require_pool()  # noqa: SLF001
@@ -85,8 +87,9 @@ class ProposalStore:
             await conn.execute(
                 """
                 INSERT INTO self_modify_proposals
-                    (proposal_id, target_path, change_type, content, rationale, status, proposed_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    (proposal_id, target_path, change_type, content, rationale,
+                     status, proposed_by, engine)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 _uuid.UUID(proposal_id),
                 target_path,
@@ -95,6 +98,7 @@ class ProposalStore:
                 rationale,
                 STATUS_SUBMITTED,
                 proposed_by,
+                engine,
             )
         return proposal_id
 
