@@ -58,6 +58,40 @@ _VENV_PYTHON = "/home/corio/Morgoth/morgoth/.venv/bin/python"
 # suite is a failure, not an outage.
 _PYTEST_TIMEOUT_SECS = 180
 
+# Cached feasibility probe for user+net namespace isolation. The probe
+# tries to enter a user+net ns and immediately exit; anything non-zero
+# means the kernel or seccomp policy is denying the operation and we
+# should fail-open with a loud warning (defense-in-depth degraded —
+# the repr-based template render is still the primary injection
+# barrier). Cached because the probe runs ~10ms and gate_tests can
+# fire in a tight cycle.
+_isolation_available_cache: bool | None = None
+
+
+def _isolation_available() -> bool:
+    """True iff ``unshare --user --map-root-user --net`` returns 0.
+
+    Cached after first call. Loopback UP inside the ns requires
+    ``--map-root-user`` on WSL2 kernels; the probe just checks that
+    the ns can be entered at all — the wrapper takes care of raising
+    lo. A False here means the sandbox will run un-isolated with a
+    logged warning and a status_reason marker so the operator can
+    see the degraded posture at gate 3.
+    """
+    global _isolation_available_cache
+    if _isolation_available_cache is not None:
+        return _isolation_available_cache
+    try:
+        rc = subprocess.run(
+            ["unshare", "--user", "--map-root-user", "--net", "true"],
+            capture_output=True,
+            timeout=5,
+        ).returncode
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        rc = 1
+    _isolation_available_cache = rc == 0
+    return _isolation_available_cache
+
 
 async def gate_zone(
     store: P.ProposalStore,
@@ -90,15 +124,59 @@ async def gate_zone(
     return "green"
 
 
+def _build_pytest_argv(sandbox: Path, *, isolated: bool) -> list[str]:
+    """Return the argv used to invoke pytest inside ``sandbox``.
+
+    Isolated form wraps the invocation in ``unshare --user
+    --map-root-user --net sh -c "ip link set lo up; cd <sandbox> &&
+    exec <venv-python> -m pytest -q"`` so the sandbox has loopback
+    reachable (needed by any test that binds to 127.0.0.1) but no
+    route to the outside world. Non-isolated form is the plain call
+    the sandbox always used.
+    """
+    if isolated:
+        inner = (
+            f"ip link set lo up; cd {sandbox} && "
+            f"exec {_VENV_PYTHON} -m pytest -q"
+        )
+        return ["unshare", "--user", "--map-root-user", "--net",
+                "sh", "-c", inner]
+    return [_VENV_PYTHON, "-m", "pytest", "-q"]
+
+
 def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
-    """Blocking call — run pytest -q from ``sandbox``. Used via to_thread."""
-    return subprocess.run(
-        [_VENV_PYTHON, "-m", "pytest", "-q"],
-        cwd=str(sandbox),
+    """Blocking call — run pytest -q from ``sandbox``, wrapped in a
+    user+net namespace when the kernel supports it.
+
+    The wrapper appears in argv when isolation is available; when it
+    is not, the caller sees the plain invocation AND a warning line
+    in the logs. The isolation decision is made per-call (probe is
+    cached) so a kernel update that flips the feature does not
+    require a Morgoth restart.
+    """
+    isolated = _isolation_available()
+    if not isolated:
+        logger.warning(
+            "sandbox network isolation UNAVAILABLE — running with host "
+            "network (defense-in-depth degraded)"
+        )
+    argv = _build_pytest_argv(sandbox, isolated=isolated)
+    # cwd needs to point at the sandbox for the non-isolated form;
+    # under isolation the ``cd`` inside the shell script does that job
+    # from inside the ns and cwd here is irrelevant.
+    cwd = None if isolated else str(sandbox)
+    completed = subprocess.run(
+        argv,
+        cwd=cwd,
         capture_output=True,
         text=True,
         timeout=_PYTEST_TIMEOUT_SECS,
     )
+    # Attach the isolation marker to the completed process for the
+    # caller to append to status_reason. subprocess.CompletedProcess
+    # has no free slot, so we stash on a wrapper attribute.
+    completed.isolated = isolated  # type: ignore[attr-defined]
+    return completed
 
 
 async def gate_tests(
@@ -143,25 +221,37 @@ async def gate_tests(
             await store.update_status(proposal_id, P.STATUS_TESTS_FAILED, reason)
             return P.STATUS_TESTS_FAILED
 
+        # Isolation posture — attached by _run_pytest_in_sandbox for
+        # the status_reason tail so the operator sees it at gate 3.
+        isolation_marker = (
+            "isolation=on" if getattr(completed, "isolated", False) else "isolation=off"
+        )
+
         if completed.returncode != 0:
             # Capture the tail of stdout+stderr for the operator (kept
             # bounded — full pytest output can be huge).
             tail = (completed.stdout + completed.stderr)[-2000:]
-            reason = f"gate_tests: pytest exit={completed.returncode}\n---tail---\n{tail}"
+            reason = (
+                f"gate_tests: pytest exit={completed.returncode} "
+                f"({isolation_marker})\n---tail---\n{tail}"
+            )
             logger.warning(
-                "gate_tests: FAIL proposal_id={} exit={}",
+                "gate_tests: FAIL proposal_id={} exit={} {}",
                 proposal_id,
                 completed.returncode,
+                isolation_marker,
             )
             await store.update_status(proposal_id, P.STATUS_TESTS_FAILED, reason)
             return P.STATUS_TESTS_FAILED
 
         # PASS
-        logger.info("gate_tests: PASS proposal_id={}", proposal_id)
+        logger.info(
+            "gate_tests: PASS proposal_id={} {}", proposal_id, isolation_marker,
+        )
         await store.update_status(
             proposal_id,
             P.STATUS_PENDING_APPROVAL,
-            "gate_tests: pytest passed in sandbox",
+            f"gate_tests: pytest passed in sandbox ({isolation_marker})",
         )
         return P.STATUS_PENDING_APPROVAL
     finally:
