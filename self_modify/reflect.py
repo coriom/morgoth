@@ -75,11 +75,13 @@ CORRECTIVE_RETRIES: int = 1
 # Pre-submit outcomes that are eligible for a corrective retry AND get
 # persisted to the DB (so the negative list can render them back).
 _RETRY_ELIGIBLE_OUTCOMES: tuple[str, ...] = (
-    "malformed", "rejected_name", "rejected_smoke", "rejected_shape",
+    "malformed", "rejected_name", "rejected_endpoint",
+    "rejected_smoke", "rejected_shape",
 )
 _OUTCOME_TO_STATUS: dict[str, str] = {
     "malformed": P.STATUS_MALFORMED,
     "rejected_name": P.STATUS_REJECTED_NAME,
+    "rejected_endpoint": P.STATUS_REJECTED_ENDPOINT,
     "rejected_smoke": P.STATUS_REJECTED_SMOKE,
     "rejected_shape": P.STATUS_REJECTED_SHAPE,
 }
@@ -136,6 +138,104 @@ def _token_appears(token: str, normalized_text: str) -> bool:
     if len(tl) >= 6 and tl[:-2] in normalized_text:
         return True
     return False
+
+
+# ---------- endpoint duplication ------------------------------------------
+#
+# Two data-source tools hitting the same (host, path) after
+# normalization make the 3-distinct-sources rail fictional. The
+# reflect gate rejects any proposed endpoint that duplicates a
+# currently-registered data_source tool's declared endpoint. Only
+# tools with is_data_source=True are compared — utility tools live
+# outside the source rail.
+
+
+def _normalize_endpoint(url_or_hostpath: str, path: str | None = None) -> str:
+    """Normalize an endpoint to a comparable ``host/path`` string.
+
+    - Strips scheme (``https://``).
+    - Strips ``www.`` prefix? NO — ``api.coingecko.com`` and
+      ``www.coingecko.com`` are legitimately different hosts.
+    - Drops the query string entirely (same path + different query =
+      same data family — the mining-pool endpoint's 24h/24hr query
+      variants must both match).
+    - Strips trailing slash.
+    - Lowercase.
+
+    Accepts either a full URL (in ``url_or_hostpath``) or a base +
+    path pair. When ``path`` is supplied it is joined with a single
+    slash.
+    """
+    if path is not None:
+        base = url_or_hostpath.rstrip("/")
+        joined = f"{base}/{path.lstrip('/')}" if path else base
+    else:
+        joined = url_or_hostpath
+    lower = joined.lower().strip()
+    # Strip the scheme by dropping the first '://'.
+    scheme_split = lower.split("://", 1)
+    hostpath = scheme_split[1] if len(scheme_split) == 2 else lower
+    # Drop query string.
+    hostpath = hostpath.split("?", 1)[0]
+    # Drop fragment.
+    hostpath = hostpath.split("#", 1)[0]
+    # Trim trailing slash.
+    return hostpath.rstrip("/")
+
+
+def _registered_endpoints(config: AppConfig, pm: PersistentMemory) -> dict[str, str]:
+    """Return a dict mapping normalized endpoint → owning tool_name.
+
+    Walks the offline registry, filters to data_source tools, and
+    unions their declared ``api_endpoints`` ClassVars. Tools that
+    declare an empty tuple (dynamic path, RSS multi-URL, search API)
+    contribute nothing — they are exempt from the duplication check.
+    """
+    from scripts.compile_wiki import _registered_tools_offline
+
+    result: dict[str, str] = {}
+    for t in _registered_tools_offline(config, pm):
+        if not getattr(t, "is_data_source", False):
+            continue
+        for ep in getattr(type(t), "api_endpoints", ()) or ():
+            if not isinstance(ep, str) or not ep:
+                continue
+            normalized = _normalize_endpoint(ep)
+            # First-declarer wins on collisions between existing tools
+            # (which shouldn't happen — the whole point of this table
+            # is that they're distinct).
+            result.setdefault(normalized, t.name)
+    return result
+
+
+def _registered_digest_fields(config: AppConfig, pm: PersistentMemory) -> set[str]:
+    """Union of every registered data_source tool's declared
+    ``digest_fields``. Used by the field-overlap gate-3 note (a
+    weak-signal advisory, not a reject)."""
+    from scripts.compile_wiki import _registered_tools_offline
+
+    seen: set[str] = set()
+    for t in _registered_tools_offline(config, pm):
+        if not getattr(t, "is_data_source", False):
+            continue
+        for f in getattr(type(t), "digest_fields", ()) or ():
+            if isinstance(f, str) and f:
+                seen.add(f)
+    return seen
+
+
+def _endpoint_duplicates(
+    api_base_url: str,
+    endpoint_path: str,
+    registered: dict[str, str],
+) -> tuple[str | None, str | None]:
+    """Return ``(matched_endpoint, owning_tool)`` if the proposed
+    (base_url, path) normalizes to an already-registered endpoint;
+    else ``(None, None)``."""
+    normalized = _normalize_endpoint(api_base_url, endpoint_path)
+    if normalized in registered:
+        return normalized, registered[normalized]
+    return None, None
 
 
 def _name_coherence_check(
@@ -227,6 +327,12 @@ class {class_name}(BaseTool):
 
     name = {tool_name_repr}
     is_data_source = True
+    # Declared endpoints for the duplication gate on FUTURE reflect
+    # runs. Normalized form: host+path, no scheme, no query, no
+    # trailing slash. Derived deterministically from the spec so the
+    # next model can see this tool's endpoint in the reflect registry.
+    api_endpoints = ({endpoint_declaration_repr},)
+    digest_fields = tuple(_DIGEST_FIELDS)
     description = _TOOL_DESCRIPTION
     parameters = {{"type": "object", "properties": {{}}}}
 
@@ -864,6 +970,26 @@ async def _one_reflect_attempt(
         return {"outcome": "rejected_name", "reason": reason,
                 "proposal_id": pid, "pipeline_status": None, "spec": spec}
 
+    # Endpoint duplication — pure-local, no network. Two data_source
+    # tools on the same (host, path) make the distinct-sources rail
+    # fictional. Dynamic-path tools (empty api_endpoints tuple) are
+    # exempt on BOTH sides — they neither match nor are matched.
+    registered_endpoints = _registered_endpoints(config, pm)
+    matched, owner = _endpoint_duplicates(
+        spec["api_base_url"], spec["endpoint_path"], registered_endpoints,
+    )
+    if matched is not None:
+        reason = (
+            f"endpoint duplicates {owner}: {matched} — two sources on "
+            f"one endpoint make the distinct-sources rail fictional"
+        )
+        log(f"outcome: rejected_endpoint — {reason}")
+        pid = await _persist_pre_submit_reject(
+            store, "rejected_endpoint", spec, reason, provider, retry_of,
+        )
+        return {"outcome": "rejected_endpoint", "reason": reason,
+                "proposal_id": pid, "pipeline_status": None, "spec": spec}
+
     if tool_name_collides(spec["tool_name"], config, pm):
         reason = f"tool_name {spec['tool_name']!r} collides with a registered tool"
         log(f"outcome: rejected_collision — {reason}")
@@ -900,6 +1026,9 @@ async def _one_reflect_attempt(
     tool_name = spec["tool_name"]
     class_name = _snake_to_class_name(tool_name)
     source_label = urlparse(spec["api_base_url"]).hostname or ""
+    endpoint_declaration = _normalize_endpoint(
+        spec["api_base_url"], spec["endpoint_path"],
+    )
     content = TOOL_TEMPLATE.format(
         tool_name=tool_name,
         class_name=class_name,
@@ -909,6 +1038,7 @@ async def _one_reflect_attempt(
         digest_fields_repr=repr(list(spec["digest_fields"])),
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
+        endpoint_declaration_repr=repr(endpoint_declaration),
     )
     log(f"code assembled: {len(content)} bytes")
 
@@ -932,6 +1062,28 @@ async def _one_reflect_attempt(
     row = await store.get(proposal_id)
     final_status = await gates.run_pipeline(store, row)
     log(f"outcome: submitted — id={proposal_id[:8]} status={final_status}")
+
+    # Field-overlap advisory (gate-3 note, NOT a reject). If the spec
+    # reaches pending_approval and its digest_fields exact-match any
+    # currently-registered digest field name, append a note to the
+    # status_reason so the operator sees it at ``morgoth show``. This
+    # is a WEAK-signal advisory: exact-name overlap catches only a
+    # narrow class of duplication (the historical market_price_usd
+    # case doesn't fire — get_crypto_price surfaces ``price`` not
+    # ``market_price_usd``). Semantic dedup is gate-2.5 territory.
+    if final_status == P.STATUS_PENDING_APPROVAL:
+        registered_field_names = _registered_digest_fields(config, pm)
+        overlap = sorted(set(spec["digest_fields"]) & registered_field_names)
+        if overlap:
+            final_row = await store.get(proposal_id)
+            existing = (final_row or {}).get("status_reason") or ""
+            note = f"note: field-name overlap with existing digests: {overlap}"
+            await store.update_status(
+                proposal_id, P.STATUS_PENDING_APPROVAL,
+                (existing + " " + note).strip() if existing else note,
+            )
+            log(f"pending_approval note: {note}")
+
     return {"outcome": "submitted", "reason": final_status,
             "proposal_id": proposal_id, "pipeline_status": final_status,
             "spec": spec}

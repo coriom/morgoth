@@ -33,6 +33,13 @@ class GetNewsTool(BaseTool):
 
     name = "get_news"
     is_data_source = True
+    # Topic-dynamic multi-URL: RSS_FEEDS above holds N different hosts;
+    # empty tuple exempts this tool from the endpoint-duplication gate.
+    # A future proposal targeting one specific RSS host is still gated
+    # by that host's own duplication check.
+    api_endpoints = ()
+    # Result is a list of items — no top-level scalar digest.
+    digest_fields = ()
     description = "Fetch news items from RSS feeds by topic."
     parameters = {
         "type": "object",

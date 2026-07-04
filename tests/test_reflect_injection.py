@@ -44,6 +44,9 @@ def _render(spec: dict[str, Any]) -> str:
     tool_name = spec["tool_name"]
     class_name = reflect._snake_to_class_name(tool_name)
     source_label = urlparse(spec["api_base_url"]).hostname or ""
+    endpoint_declaration = reflect._normalize_endpoint(
+        spec["api_base_url"], spec["endpoint_path"],
+    )
     return reflect.TOOL_TEMPLATE.format(
         tool_name=tool_name,
         class_name=class_name,
@@ -53,6 +56,7 @@ def _render(spec: dict[str, Any]) -> str:
         digest_fields_repr=repr(list(spec["digest_fields"])),
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
+        endpoint_declaration_repr=repr(endpoint_declaration),
     )
 
 

@@ -165,6 +165,9 @@ def test_template_render_contains_all_load_bearing_fields() -> None:
     for the full injection-audit suite.
     """
     class_name = reflect._snake_to_class_name(VALID_SPEC["tool_name"])
+    endpoint_declaration = reflect._normalize_endpoint(
+        VALID_SPEC["api_base_url"], VALID_SPEC["endpoint_path"],
+    )
     rendered = reflect.TOOL_TEMPLATE.format(
         tool_name=VALID_SPEC["tool_name"],
         class_name=class_name,
@@ -174,6 +177,7 @@ def test_template_render_contains_all_load_bearing_fields() -> None:
         digest_fields_repr=repr(list(VALID_SPEC["digest_fields"])),
         description_repr=repr(VALID_SPEC["description"]),
         source_label_repr=repr("api.coingecko.com"),
+        endpoint_declaration_repr=repr(endpoint_declaration),
     )
     assert f"class {class_name}(BaseTool):" in rendered
     assert 'is_data_source = True' in rendered

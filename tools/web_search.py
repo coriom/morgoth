@@ -24,6 +24,13 @@ class WebSearchTool(BaseTool):
     """Search the web using DuckDuckGo's public endpoint."""
 
     name = "web_search"
+    # Query-dynamic: DDG is called with per-invocation query params, no
+    # static path. Empty tuple exempts from the endpoint-duplication
+    # gate — a future proposal targeting DDG explicitly still gets its
+    # own duplication check against this tool's actual host+path.
+    api_endpoints = ()
+    # Result is a list of {title, snippet, url} — no top-level scalars.
+    digest_fields = ()
     description = "Search the web for general information using DuckDuckGo."
     parameters = {
         "type": "object",

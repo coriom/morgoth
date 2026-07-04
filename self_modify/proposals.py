@@ -26,6 +26,12 @@ Lifecycle
                                   the name lies about what the tool
                                   fetches (e.g. "exchange_flows" on a
                                   mining-pool endpoint).
+    rejected_endpoint [terminal]  api_base_url + endpoint_path (after
+                                  normalization) duplicates an already-
+                                  registered data_source tool's
+                                  endpoint. Two sources on one endpoint
+                                  make the distinct-sources rail
+                                  fictional.
     rejected_smoke    [terminal]  URL was fetchable but returned non-2xx
                                   / network failure / non-JSON body.
     rejected_shape    [terminal]  Body was JSON but the template's
@@ -65,6 +71,7 @@ STATUS_REJECTED = "rejected"
 # render them back into the next reflect prompt as calibration data.
 STATUS_MALFORMED = "malformed"
 STATUS_REJECTED_NAME = "rejected_name"
+STATUS_REJECTED_ENDPOINT = "rejected_endpoint"
 STATUS_REJECTED_SMOKE = "rejected_smoke"
 STATUS_REJECTED_SHAPE = "rejected_shape"
 # Apply-time statuses (step 2 — the door).
@@ -80,6 +87,7 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED,
     STATUS_MALFORMED,
     STATUS_REJECTED_NAME,
+    STATUS_REJECTED_ENDPOINT,
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
     STATUS_APPLIED,
@@ -88,12 +96,12 @@ ALL_STATUSES: tuple[str, ...] = (
 
 # The statuses the reflect negative-list loader considers. Gate-3
 # rejects (rejected) plus the pre-submit terminals that carry a
-# rejected spec (malformed, rejected_name, rejected_smoke,
-# rejected_shape).
+# rejected spec.
 NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED,
     STATUS_MALFORMED,
     STATUS_REJECTED_NAME,
+    STATUS_REJECTED_ENDPOINT,
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
 )
@@ -105,6 +113,7 @@ NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
 _PRE_SUBMIT_TERMINAL_STATUSES: tuple[str, ...] = (
     STATUS_MALFORMED,
     STATUS_REJECTED_NAME,
+    STATUS_REJECTED_ENDPOINT,
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
 )

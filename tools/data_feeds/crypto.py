@@ -58,6 +58,8 @@ class GetCryptoPriceTool(BaseTool):
 
     name = "get_crypto_price"
     is_data_source = True
+    api_endpoints = ("api.coingecko.com/api/v3/simple/price",)
+    digest_fields = ("symbol", "price", "change_24h", "volume_24h")
     description = (
         "Fetch the current USD price and 24h metrics for a crypto asset. "
         "Accepts both ticker (btc, eth, sol) and full name (bitcoin, ethereum)."

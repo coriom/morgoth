@@ -32,6 +32,20 @@ class BaseTool(ABC):
     is_data_source: ClassVar[bool] = False
     is_chat_tool: ClassVar[bool] = True
 
+    # Endpoints (normalized ``host/path``, no scheme, no trailing slash,
+    # no query string) that this tool hits. Used by the reflect
+    # endpoint-duplication gate to prevent two data sources landing
+    # on the same URL family. Empty tuple → the tool has no static
+    # endpoint (dynamic path parameter, RSS multi-URL, or search API);
+    # such tools are EXEMPT from the check.
+    api_endpoints: ClassVar[tuple[str, ...]] = ()
+    # Field names this tool includes in ``self.success(result, ...)`` at
+    # the top level of ``result``. Used by the reflect field-overlap
+    # note (surfaced at gate 3 as an operator hint, NOT a hard reject —
+    # exact-name overlap is a weak signal, and semantic dedup is
+    # gate-2.5 territory).
+    digest_fields: ClassVar[tuple[str, ...]] = ()
+
     @abstractmethod
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Execute the tool and return the contract-defined result."""

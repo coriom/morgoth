@@ -24,6 +24,20 @@ class GetBitcoinOnchainTool(BaseTool):
 
     name = "get_bitcoin_onchain"
     is_data_source = True
+    api_endpoints = (
+        "mempool.space/api/v1/mining/hashrate/3d",
+        "mempool.space/api/v1/difficulty-adjustment",
+        "mempool.space/api/v1/fees/recommended",
+        "mempool.space/api/mempool",
+    )
+    digest_fields = (
+        "hash_rate",
+        "difficulty",
+        "next_difficulty_adjustment",
+        "fees_sat_vb",
+        "mempool_tx_count",
+        "mempool_vsize",
+    )
     description = (
         "Fetch real Bitcoin on-chain metrics: current hash rate, mining "
         "difficulty + next adjustment, recommended fees (sat/vB), and "

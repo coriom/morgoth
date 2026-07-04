@@ -27,6 +27,8 @@ class GetCryptoGlobalMarketTool(BaseTool):
 
     name = 'get_crypto_global_market'
     is_data_source = True
+    api_endpoints = ('api.coinpaprika.com/v1/global',)
+    digest_fields = tuple(_DIGEST_FIELDS)
     description = _TOOL_DESCRIPTION
     parameters = {"type": "object", "properties": {}}
 

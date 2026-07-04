@@ -25,6 +25,8 @@ class GetFearGreedIndexTool(BaseTool):
 
     name = "get_fear_greed_index"
     is_data_source = True
+    api_endpoints = ("api.alternative.me/fng",)
+    digest_fields = ("value", "value_classification", "timestamp")
     description = (
         "Fetch the current Crypto Fear & Greed Index (0-100 composite; "
         "0 = extreme fear, 100 = extreme greed) from alternative.me. "
