@@ -483,16 +483,50 @@ class Brain:
                         f"ACT NOW. Tool call only. No explanation."
                     )
                 else:
-                    prompt = (
-                        "NO ACTIVE OBJECTIVES.\n\n"
-                        "STEP 1: Call get_crypto_price with symbol='bitcoin' to scan markets.\n"
-                        "STEP 2: After receiving the price, IMMEDIATELY call create_objective "
-                        "with a title and description based on what you observed. "
-                        "Pick a specific topic to investigate next "
-                        "(e.g., on-chain metrics, sentiment shift, news event, technical pattern).\n\n"
-                        "MANDATORY: end this cycle by calling create_objective. "
-                        "Do not narrate. Tool calls only."
+                    # Knowledge-grounded generation. The context block
+                    # renders recent titles (with a DIVERGE instruction),
+                    # data-source tool usage (a 0-usage tool is
+                    # unexplored territory), active thesis subjects,
+                    # and open contradictions. Non-blocking: if the
+                    # builder returns "" (empty DB or transient
+                    # failure) we fall back to the historical
+                    # STEP-1 price-scan bootstrap so a zero-knowledge
+                    # Morgoth still generates.
+                    from core.objective_gen_context import (
+                        build_generation_context,
                     )
+                    generation_ctx = await build_generation_context(
+                        self._persistent_memory, self._config,
+                    )
+                    if generation_ctx:
+                        prompt = (
+                            f"{generation_ctx}"
+                            "NO ACTIVE OBJECTIVES.\n\n"
+                            "Pick ONE specific investigable topic "
+                            "grounded in the state above:\n"
+                            "- an unexplored data source's territory "
+                            "(a 0-usage count signals unexplored ground),\n"
+                            "- an open contradiction (a live research lead),\n"
+                            "- or a thesis subject that needs deeper evidence.\n"
+                            "DIVERGE from the recent titles above.\n\n"
+                            "MANDATORY: end this cycle by calling create_objective. "
+                            "Do not narrate. Tool calls only."
+                        )
+                    else:
+                        # Bootstrap fallback — zero-knowledge state
+                        # (empty DB) or builder failure. Kept
+                        # byte-identical to the pre-context prompt so
+                        # first-run behavior is preserved.
+                        prompt = (
+                            "NO ACTIVE OBJECTIVES.\n\n"
+                            "STEP 1: Call get_crypto_price with symbol='bitcoin' to scan markets.\n"
+                            "STEP 2: After receiving the price, IMMEDIATELY call create_objective "
+                            "with a title and description based on what you observed. "
+                            "Pick a specific topic to investigate next "
+                            "(e.g., on-chain metrics, sentiment shift, news event, technical pattern).\n\n"
+                            "MANDATORY: end this cycle by calling create_objective. "
+                            "Do not narrate. Tool calls only."
+                        )
                     # Operator steering: append the active focus directive if
                     # one exists. Read at generation time (no cache) so a new
                     # directive takes effect on the NEXT cycle without a
