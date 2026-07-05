@@ -404,6 +404,40 @@ class PersistentMemory:
                 )
         return [dict(row) for row in rows]
 
+    async def timeout_stale_objectives(
+        self,
+        max_age_days: float,
+    ) -> list[dict[str, Any]]:
+        """Terminate non-terminal objectives older than ``max_age_days``.
+
+        Runs one atomic UPDATE ... RETURNING, transitioning any
+        ``pending`` or ``in_progress`` row whose ``created_at`` is
+        STRICTLY OLDER than ``NOW() - max_age_days * INTERVAL '1 day'``
+        into the ``stale_timeout`` terminal status. Returns the
+        terminated rows' identifying fields for a logging pass.
+
+        MAX_CYCLES bounds an objective's active lifetime to <1h of
+        cycling, so any non-terminal row days old is by construction
+        abandoned — no updated_at column exists (see schema); the
+        created_at test is safe and requires no schema change. The
+        SELECTOR only reads ``status='pending'``, so an
+        ``in_progress`` row stuck by a lost cycle-end update becomes
+        permanently unreachable without this sweep.
+
+        Strict inequality on the boundary means a fresh row created
+        EXACTLY N days ago survives — the test lock covers it.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "UPDATE objectives SET status = 'stale_timeout' "
+                "WHERE status IN ('pending', 'in_progress') "
+                "AND created_at < NOW() - ($1::float * INTERVAL '1 day') "
+                "RETURNING objective_id, title, created_at, cycle_count",
+                float(max_age_days),
+            )
+        return [dict(row) for row in rows]
+
     async def update_objective(
         self,
         objective_id: str,

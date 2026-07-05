@@ -45,6 +45,40 @@ When working on an objective, ALWAYS finish by calling update_objective. Never l
 
 MIN_DISTINCT_SOURCES: int = 3
 
+# Objectives older than this transition to ``stale_timeout`` at
+# Brain.initialize(). Rationale: MAX_CYCLES bounds an objective's
+# ACTIVE lifetime to well under an hour of cycling, so a
+# non-terminal row days old is by construction abandoned (either
+# the selector never re-visits ``in_progress`` rows — it filters on
+# ``pending`` only — or a process restart lost the in-flight id).
+# Resuming decades-stale market context would be worse than
+# terminating it (markets moved; the evidence is dated), so the
+# timeout is the right shape for BOTH orphaning modes.
+# Env-overridable via ``OBJECTIVE_STALE_DAYS`` (float; invalid ->
+# warn + default).
+OBJECTIVE_STALE_DAYS: float = 7.0
+
+
+def _resolve_stale_days() -> float:
+    """Env override → validated float; silent-fallback on parse error."""
+    import os
+    raw = os.environ.get("OBJECTIVE_STALE_DAYS")
+    if raw is None:
+        return OBJECTIVE_STALE_DAYS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "OBJECTIVE_STALE_DAYS={!r} not a float; using default", raw,
+        )
+        return OBJECTIVE_STALE_DAYS
+    if value <= 0:
+        logger.warning(
+            "OBJECTIVE_STALE_DAYS={!r} must be > 0; using default", raw,
+        )
+        return OBJECTIVE_STALE_DAYS
+    return value
+
 # Non-data_feeds source-classified tools: they don't live under
 # tools/data_feeds/ so auto-discovery doesn't find them, but they ARE
 # valid sources in the multi-source rail. Kept as an explicit constant.
@@ -190,6 +224,43 @@ class Brain:
             )
 
         await self._persistent_memory.initialize()
+        # Stale-objective sweep: transition non-terminal rows older
+        # than OBJECTIVE_STALE_DAYS (env-overridable) to
+        # ``stale_timeout``. Non-blocking: any failure warns and
+        # startup proceeds — losing the sweep costs a stuck row, not
+        # the whole brain init. See OBJECTIVE_STALE_DAYS docstring
+        # for the orphaning modes this covers.
+        try:
+            stale_days = _resolve_stale_days()
+            terminated = await self._persistent_memory.timeout_stale_objectives(
+                stale_days,
+            )
+            if terminated:
+                now = datetime.now(timezone.utc)
+                for row in terminated:
+                    created = row.get("created_at")
+                    if isinstance(created, datetime):
+                        age_days = (now - created).total_seconds() / 86400.0
+                        age_repr = f"{age_days:.1f}d"
+                    else:
+                        age_repr = "unknown"
+                    logger.info(
+                        "stale objective terminated: id={} title={!r} "
+                        "age={} cycle_count={}",
+                        str(row.get("objective_id", ""))[:8],
+                        (row.get("title") or "")[:80],
+                        age_repr,
+                        row.get("cycle_count", 0),
+                    )
+            else:
+                logger.info(
+                    "stale-objective sweep: no rows older than {} days",
+                    stale_days,
+                )
+        except Exception as exc:
+            logger.warning(
+                "stale-objective sweep failed (non-blocking): {}", exc,
+            )
         await self._episodic_memory.initialize()
         await self._scheduler.initialize()
         awakening = await self.awaken()
