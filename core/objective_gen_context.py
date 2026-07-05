@@ -53,20 +53,35 @@ _OPEN_CONTRADICTIONS_SCAN = 50
 
 
 async def _recent_objective_titles(pm: Any, limit: int) -> list[str]:
-    """Newest-first list of ``objectives.title`` — for the divergence hint.
+    """Newest-first list of objective titles for the divergence hint.
 
     ``pm.get_objectives()`` sorts by priority ASC then created_at ASC
     (oldest first), which is the wrong axis for divergence. This
     dedicated query hits the pool directly, read-only.
+
+    Legacy rows may have empty/null title; description is fetched
+    alongside so the render can derive a readable placeholder without
+    a DB backfill. The write-side derivation
+    (``tools.objectives_tool.derive_title_from_description``) is
+    reused here so both paths produce the same string.
     """
+    from tools.objectives_tool import derive_title_from_description
+
     pool = pm._require_pool()  # noqa: SLF001 — same pattern as ProposalStore
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT title FROM objectives "
+            "SELECT title, description FROM objectives "
             "ORDER BY created_at DESC LIMIT $1",
             limit,
         )
-    return [row["title"] for row in rows if row.get("title")]
+    resolved: list[str] = []
+    for row in rows:
+        title = (row.get("title") or "").strip()
+        if not title:
+            title = derive_title_from_description(row.get("description") or "")
+        if title:
+            resolved.append(title)
+    return resolved
 
 
 async def build_generation_context(pm: Any, config: Any) -> str:
@@ -179,9 +194,16 @@ async def build_generation_context(pm: Any, config: Any) -> str:
         )
 
     if contradictions:
+        # Header count = TOTAL unresolved rows (truthful, unchanged).
+        # Body = first ``_OPEN_CONTRADICTIONS_SHOWN`` DISTINCT
+        # subject_groups, order-preserving (first occurrence wins).
+        # Previously we sliced first then rendered — three
+        # contradictions on the same subject_group produced three
+        # duplicated lines, wasting the sample budget.
         total = len(contradictions)
+        seen: set[str] = set()
         groups: list[str] = []
-        for c in contradictions[:_OPEN_CONTRADICTIONS_SHOWN]:
+        for c in contradictions:
             group = (c.get("subject_group") or "").strip()
             if not group:
                 # Fallback shape if the join failed on one side —
@@ -189,8 +211,12 @@ async def build_generation_context(pm: Any, config: Any) -> str:
                 a = (c.get("subject_a") or "").strip()
                 b = (c.get("subject_b") or "").strip()
                 group = f"{a} vs {b}".strip(" vs")
-            if group:
-                groups.append(group)
+            if not group or group in seen:
+                continue
+            seen.add(group)
+            groups.append(group)
+            if len(groups) >= _OPEN_CONTRADICTIONS_SHOWN:
+                break
         head = f"OPEN CONTRADICTIONS ({total}):"
         section_lines = [head] + [f"- {g}" for g in groups]
         sections.append("\n".join(section_lines))

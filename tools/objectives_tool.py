@@ -10,6 +10,34 @@ from memory.persistent import PersistentMemory
 from tools.base_tool import BaseTool
 
 
+# How many words of the description form the derived title when the
+# LLM omits ``title`` from its ``create_objective`` tool-call args.
+# llama3.1:8b was measured to drop the title 2/5 dry-runs — those
+# calls used to KeyError and silently waste the cycle slot; now they
+# land as writable rows with a derived title.
+_TITLE_DERIVATION_WORDS = 8
+
+
+def derive_title_from_description(description: str) -> str:
+    """Deterministic title fallback for missing/empty ``title`` args.
+
+    - First ``_TITLE_DERIVATION_WORDS`` words of the description.
+    - Ellipsis appended if the description had more words than that.
+    - Empty description → ``"(untitled investigation)"`` sentinel so
+      the row remains queryable + human-readable.
+
+    No LLM, no round-trip, no writes; purely a string operation.
+    """
+    if not isinstance(description, str):
+        description = "" if description is None else str(description)
+    words = description.split()
+    if not words:
+        return "(untitled investigation)"
+    head = words[: _TITLE_DERIVATION_WORDS]
+    ellipsis = "…" if len(words) > _TITLE_DERIVATION_WORDS else ""
+    return " ".join(head) + ellipsis
+
+
 class CreateObjectiveTool(BaseTool):
     """Create a persistent objective in the PostgreSQL objectives table."""
 
@@ -37,8 +65,16 @@ class CreateObjectiveTool(BaseTool):
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Insert a new objective row and return the created record."""
 
-        title = str(kwargs["title"])[:100]
-        description = str(kwargs["description"])
+        description = str(kwargs.get("description") or "")
+        # Missing / empty / whitespace-only title → derive from
+        # description. The prior handler KeyError'd here and returned
+        # failure, silently wasting the cycle slot; measured 2/5 on
+        # the dry-run. Deterministic fallback keeps the row writable.
+        raw_title = kwargs.get("title")
+        title = str(raw_title).strip() if raw_title is not None else ""
+        if not title:
+            title = derive_title_from_description(description)
+        title = title[:100]
         priority = int(kwargs.get("priority", 3))
 
         try:
