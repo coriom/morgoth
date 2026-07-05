@@ -72,9 +72,19 @@ _NON_TERMINAL_STATUSES: tuple[str, ...] = ("pending", "in_progress")
 
 
 def _compose_for_embedding(title: str, description: str) -> str:
-    """Match calibration harness: ``"title. description"``, trimmed."""
-    text = f"{title}. {description}".strip(". ").strip()
-    return text or "(empty)"
+    """Match calibration harness: ``"title. description"``, trimmed.
+
+    When description is empty (legacy rows created before the
+    write-side description fallback landed), embed just the title —
+    no trailing ``". "``. The old ``.strip(". ")`` also stripped
+    legitimate trailing periods from titles; the explicit-branch
+    form here preserves them.
+    """
+    t = (title or "").strip()
+    d = (description or "").strip()
+    if not d:
+        return t or "(empty)"
+    return f"{t}. {d}"
 
 
 async def _find_semantic_duplicate(
@@ -186,6 +196,18 @@ class CreateObjectiveTool(BaseTool):
         if not title:
             title = derive_title_from_description(description)
         title = title[:100]
+        # Symmetric description fallback — the first production else-
+        # branch generation (cefaeb94) landed with a real title and
+        # an EMPTY description. Empty descriptions degrade the dedup
+        # gate's embedding and leave the operator staring at a blank
+        # detail field. Copy the (already fallback-resolved) title.
+        # Degenerate case: BOTH title and description missing →
+        # title derives to "(untitled investigation)" from the empty
+        # description, and description then copies that same sentinel.
+        # The row remains writable, queryable, and readable — the
+        # contract the title fallback established.
+        if not description.strip():
+            description = title
         priority = int(kwargs.get("priority", 3))
 
         # Semantic dedup gate — see module docstring for the side-door
