@@ -1,10 +1,26 @@
-"""Objective creation tool for Morgoth."""
+"""Objective creation tool for Morgoth.
+
+Side-door policy (mid-cycle spawns): ``create_objective`` is in
+``CHAT_TOOL_NAMES``, which means the 8B can invoke it WHILE working
+another objective — not just from the empty-queue generation branch.
+That is INTENTIONAL: the model finding a real gap while investigating
+a subject is legitimate. The control is not a spawn ban; it is the
+semantic dedup gate below. Divergence context from
+``core.objective_gen_context`` is NOT injected into work cycles
+because it would pollute the work prompt with generation-time
+scaffolding; keeping generation and work prompts separate is the
+design intent, and dedup is what prevents the basin from re-entering
+through the side door.
+"""
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
+
+from loguru import logger
 
 from memory.persistent import PersistentMemory
 from tools.base_tool import BaseTool
@@ -16,6 +32,101 @@ from tools.base_tool import BaseTool
 # calls used to KeyError and silently waste the cycle slot; now they
 # land as writable rows with a derived title.
 _TITLE_DERIVATION_WORDS = 8
+
+
+# Semantic dedup threshold, calibrated against real DB pairs:
+#   near-dup real DB    → 0.86 (must match)
+#   case-variant        → 1.00 (must match)
+#   near-dup vs unrelated targets → ≤0.55 (must not match)
+# 0.75 sits in the middle of that 0.31-wide gap: comfortable margin
+# on both sides. Env-overridable so an operator can tighten/loosen
+# without a redeploy.
+DEFAULT_OBJECTIVE_DEDUP_THRESHOLD: float = 0.75
+
+
+def _resolve_dedup_threshold() -> float:
+    """Env override → validated float. Silent-fallback on parse error."""
+    raw = os.environ.get("OBJECTIVE_DEDUP_THRESHOLD")
+    if raw is None:
+        return DEFAULT_OBJECTIVE_DEDUP_THRESHOLD
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "OBJECTIVE_DEDUP_THRESHOLD={!r} not a float; using default", raw,
+        )
+        return DEFAULT_OBJECTIVE_DEDUP_THRESHOLD
+    if not 0.0 < value <= 1.0:
+        logger.warning(
+            "OBJECTIVE_DEDUP_THRESHOLD={!r} out of (0,1]; using default", raw,
+        )
+        return DEFAULT_OBJECTIVE_DEDUP_THRESHOLD
+    return value
+
+
+# Non-terminal statuses — objectives in these states are actively
+# being worked or queued for work. Comparisons against terminal
+# rows (``done``, ``completed``) would false-positive an obvious
+# "we already investigated this" case as duplication of live work.
+_NON_TERMINAL_STATUSES: tuple[str, ...] = ("pending", "in_progress")
+
+
+def _compose_for_embedding(title: str, description: str) -> str:
+    """Match calibration harness: ``"title. description"``, trimmed."""
+    text = f"{title}. {description}".strip(". ").strip()
+    return text or "(empty)"
+
+
+async def _find_semantic_duplicate(
+    pm: PersistentMemory,
+    new_title: str,
+    new_description: str,
+    threshold: float,
+    embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
+) -> dict[str, Any] | None:
+    """Return an existing non-terminal objective if the new one is a
+    semantic duplicate; else ``None``.
+
+    Fetches non-terminal rows directly from the pool (read-only),
+    batch-embeds the new proposal + every candidate, and returns the
+    FIRST match at or above the threshold. First-match rather than
+    best-match because the operator-visible signal is "which row
+    should you work instead" — for a small non-terminal set the
+    first candidate is fine and keeps the render deterministic.
+
+    ``embed_fn`` is injectable for tests (mirrors the pattern used by
+    ``core.contradictions.group_theses_by_subject``).
+
+    Fail-open contract is the CALLER's responsibility — any exception
+    here must propagate so the caller's ``try/except`` runs the
+    write anyway.
+    """
+    from core.contradictions import _cosine, _get_embedding_fn
+
+    pool = pm._require_pool()  # noqa: SLF001
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT objective_id, title, description, status FROM objectives "
+            "WHERE status = ANY($1::text[]) ORDER BY created_at ASC",
+            list(_NON_TERMINAL_STATUSES),
+        )
+    if not rows:
+        return None
+
+    new_text = _compose_for_embedding(new_title, new_description)
+    corpus = [new_text] + [
+        _compose_for_embedding(
+            r.get("title") or "", r.get("description") or "",
+        )
+        for r in rows
+    ]
+    fn = embed_fn or _get_embedding_fn()
+    embeddings = fn(corpus)
+    new_emb = list(embeddings[0])
+    for row, emb in zip(rows, embeddings[1:]):
+        if _cosine(new_emb, list(emb)) >= threshold:
+            return dict(row)
+    return None
 
 
 def derive_title_from_description(description: str) -> str:
@@ -76,6 +187,30 @@ class CreateObjectiveTool(BaseTool):
             title = derive_title_from_description(description)
         title = title[:100]
         priority = int(kwargs.get("priority", 3))
+
+        # Semantic dedup gate — see module docstring for the side-door
+        # policy. Any error → warn + proceed with creation (fail-open):
+        # a slipped duplicate costs redundant cycles; a blocked
+        # creation path costs the whole generation capability.
+        try:
+            threshold = _resolve_dedup_threshold()
+            duplicate = await _find_semantic_duplicate(
+                self._persistent_memory, title, description, threshold,
+            )
+        except Exception as exc:
+            logger.warning(
+                "objective dedup gate failed (fail-open): {}", exc,
+            )
+            duplicate = None
+        if duplicate is not None:
+            existing_id = str(duplicate.get("objective_id") or "")
+            existing_title = str(duplicate.get("title") or "").strip()
+            short_id = existing_id[:8]
+            return self.failure(
+                f"duplicate of active objective {existing_title!r} "
+                f"({short_id}) — work that objective instead of "
+                f"spawning a variant"
+            )
 
         try:
             row = await self._persistent_memory.create_objective(
