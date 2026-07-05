@@ -20,7 +20,11 @@ SERVICE="morgoth.service"
 API_BASE="http://localhost:8000"
 LOG_FILE="/home/corio/Morgoth/morgoth.systemd.log"
 SYSTEMCTL="/usr/bin/systemctl"
-READY_WAIT_SECS=30
+# Warmup measured at ~55s (initialize runs each tool once, loads MiniLM
+# + Chroma, opens the pg pool). The old 30s budget expired mid-warmup
+# on every real restart, prompting a systemctl-based workaround. 90s
+# gives 60% margin over the measured mean without paying for pathologies.
+READY_WAIT_SECS=90
 
 # ---------- helpers ---------------------------------------------------------
 
