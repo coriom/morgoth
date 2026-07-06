@@ -43,6 +43,7 @@ from __future__ import annotations
 import html
 import ipaddress
 import json
+import os
 import re
 import socket
 from typing import Any
@@ -76,7 +77,7 @@ CORRECTIVE_RETRIES: int = 1
 # persisted to the DB (so the negative list can render them back).
 _RETRY_ELIGIBLE_OUTCOMES: tuple[str, ...] = (
     "malformed", "rejected_name", "rejected_endpoint",
-    "rejected_smoke", "rejected_shape",
+    "rejected_smoke", "rejected_shape", "rejected_stale",
 )
 _OUTCOME_TO_STATUS: dict[str, str] = {
     "malformed": P.STATUS_MALFORMED,
@@ -84,6 +85,7 @@ _OUTCOME_TO_STATUS: dict[str, str] = {
     "rejected_endpoint": P.STATUS_REJECTED_ENDPOINT,
     "rejected_smoke": P.STATUS_REJECTED_SMOKE,
     "rejected_shape": P.STATUS_REJECTED_SHAPE,
+    "rejected_stale": P.STATUS_REJECTED_STALE,
 }
 
 # ---------- name/content coherence -----------------------------------------
@@ -613,6 +615,174 @@ def _template_extraction_site(
     return None, f"response is neither dict nor list (got {type(body).__name__})"
 
 
+# ---------- freshness gate --------------------------------------------
+#
+# Silent-staleness failure class: a chronologically-ascending array
+# returned by an endpoint (e.g. DefiLlama TVL history) passes the
+# shape gate — fields exist at [0], values are scalars — but the
+# template extracts data[0], which is the OLDEST element. The applied
+# tool would return years-old values on every call, poisoning
+# findings → syntheses → theses. Damage is silent; a loud reject
+# here is asymmetrically better.
+#
+# The check runs on list-shaped bodies (top-level OR nested via
+# ``data``). It compares [0] vs [-1] on the first date-like field
+# it finds. Skew below the threshold OR no date-like field →
+# fail-open (the existing shape checks still gate).
+
+_DATE_FIELD_NAMES: frozenset[str] = frozenset({
+    "date", "timestamp", "time", "day", "created_at", "updated_at",
+})
+
+_FRESHNESS_SKEW_DAYS: float = 30.0
+
+
+def _resolve_freshness_skew_days() -> float:
+    """Env override → validated float; silent-fallback on parse error."""
+    raw = os.environ.get("FRESHNESS_SKEW_DAYS")
+    if raw is None:
+        return _FRESHNESS_SKEW_DAYS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "FRESHNESS_SKEW_DAYS={!r} not a float; using default", raw,
+        )
+        return _FRESHNESS_SKEW_DAYS
+    if value <= 0:
+        logger.warning(
+            "FRESHNESS_SKEW_DAYS={!r} must be > 0; using default", raw,
+        )
+        return _FRESHNESS_SKEW_DAYS
+    return value
+
+
+def _parse_date_value(value: Any) -> Any:
+    """Best-effort date parse. Returns ``datetime`` or ``None``.
+
+    Accepted forms:
+      - int/float epoch seconds (> 1e9 ≈ 2001)
+      - int/float epoch milliseconds (> 1e12 ≈ 2001)
+      - ISO-8601 string (``datetime.fromisoformat`` after ``Z`` fix)
+      - numeric string of the above
+    """
+    from datetime import datetime, timezone
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value > 1e12:
+            try:
+                return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
+            except (ValueError, OSError, OverflowError):
+                return None
+        if value > 1e9:
+            try:
+                return datetime.fromtimestamp(value, tz=timezone.utc)
+            except (ValueError, OSError, OverflowError):
+                return None
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # Numeric string first (unix seconds / ms).
+        try:
+            n = float(s)
+        except ValueError:
+            n = None
+        if n is not None:
+            parsed = _parse_date_value(n)
+            if parsed is not None:
+                return parsed
+        # ISO-8601 — ``Z`` isn't accepted by fromisoformat until 3.11,
+        # normalize defensively.
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _find_date_field(element: dict[str, Any]) -> tuple[str | None, Any]:
+    """Return ``(field_name, parsed_datetime)`` of the first
+    date-like field on ``element``. Prefers name-match, then
+    value-parse. ``(None, None)`` if nothing qualifies.
+    """
+    if not isinstance(element, dict):
+        return None, None
+    # Name-based lookup first (case-insensitive).
+    for k, v in element.items():
+        if isinstance(k, str) and k.lower() in _DATE_FIELD_NAMES:
+            parsed = _parse_date_value(v)
+            if parsed is not None:
+                return k, parsed
+    # Value-based scan — any field whose value looks like a date.
+    for k, v in element.items():
+        parsed = _parse_date_value(v)
+        if parsed is not None:
+            return k, parsed
+    return None, None
+
+
+def _list_freshness_reject_reason(
+    items: list[Any], site_desc: str,
+) -> str | None:
+    """Return a ``rejected_stale`` reason if ``items[0]`` is
+    significantly older than ``items[-1]``; else ``None``.
+
+    Behaviour matrix:
+      - <2 elements or non-dict elements → skip (return None)
+      - no date-like field → skip (return None; fail-open)
+      - [-1] older than [0] by > SKEW_DAYS → newest-first → pass
+      - [-1] newer than [0] by > SKEW_DAYS → ascending, [0] is stale
+        → return reason string with both dates + element count
+      - within skew → pass (short arrays, same-day windows)
+    """
+    if len(items) < 2:
+        return None
+    first, last = items[0], items[-1]
+    if not isinstance(first, dict) or not isinstance(last, dict):
+        return None
+    field_name, first_dt = _find_date_field(first)
+    if field_name is None or first_dt is None:
+        return None
+    last_val = last.get(field_name)
+    last_dt = _parse_date_value(last_val)
+    if last_dt is None:
+        return None
+    delta_days = (last_dt - first_dt).total_seconds() / 86400.0
+    skew_days = _resolve_freshness_skew_days()
+    if delta_days > skew_days:
+        return (
+            f"extraction site {site_desc} holds the oldest element: "
+            f"[0].{field_name}={first_dt.date().isoformat()}, "
+            f"[-1].{field_name}={last_dt.date().isoformat()}, "
+            f"{len(items)} elements"
+        )
+    return None
+
+
+def _freshness_check(body: Any) -> str | None:
+    """Return a ``rejected_stale`` reason on chronological-ascending
+    list responses; ``None`` otherwise.
+
+    Dispatch:
+      - top-level list → check body[0] vs body[-1]
+      - top-level dict with ``data: [...]`` → check body["data"][0]
+        vs body["data"][-1]
+      - top-level dict (fields at root) → N/A, single snapshot has
+        no ordering to judge.
+    """
+    if isinstance(body, list):
+        return _list_freshness_reject_reason(body, "list[0] (top-level list)")
+    if isinstance(body, dict):
+        data = body.get("data")
+        if isinstance(data, list):
+            return _list_freshness_reject_reason(data, "data[0] (nested)")
+    return None
+
+
 def _shape_check(body: Any, digest_fields: list[str]) -> str | None:
     """Return None if every ``digest_field`` is extractable AND scalar
     at the template's chosen site; otherwise return a reason string.
@@ -1020,6 +1190,23 @@ async def _one_reflect_attempt(
             store, "rejected_shape", spec, reason, provider, retry_of,
         )
         return {"outcome": "rejected_shape", "reason": reason,
+                "proposal_id": pid, "pipeline_status": None, "spec": spec}
+
+    # Freshness — silent-staleness class caught here. Runs on
+    # list-shaped responses only (top-level list, or a nested
+    # ``data: [...]``). Ascending-chronological with skew above
+    # threshold → the extraction site holds the OLDEST element,
+    # which would silently poison every findings pass. The retry's
+    # lever is a different endpoint (current-value URL), not the
+    # template.
+    fresh_err = _freshness_check(body)
+    if fresh_err:
+        reason = f"freshness check on {smoke_target}: {fresh_err}"
+        log(f"outcome: rejected_stale — {fresh_err}")
+        pid = await _persist_pre_submit_reject(
+            store, "rejected_stale", spec, reason, provider, retry_of,
+        )
+        return {"outcome": "rejected_stale", "reason": reason,
                 "proposal_id": pid, "pipeline_status": None, "spec": spec}
 
     # Code assembly (deterministic template, repr-based).

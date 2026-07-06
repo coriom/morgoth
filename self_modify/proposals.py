@@ -37,6 +37,12 @@ Lifecycle
     rejected_shape    [terminal]  Body was JSON but the template's
                                   extraction site does not yield the
                                   proposed digest_fields as scalars.
+    rejected_stale    [terminal]  Body was a chronologically-ascending
+                                  array; the template's [0] extraction
+                                  site would return the OLDEST element
+                                  on every call — silent staleness. The
+                                  fix is a different endpoint, not the
+                                  template.
 
     These rows carry the rejected SPEC as ``content`` (JSON) so a
     later reflect run can render them back into its prompt as a
@@ -74,6 +80,7 @@ STATUS_REJECTED_NAME = "rejected_name"
 STATUS_REJECTED_ENDPOINT = "rejected_endpoint"
 STATUS_REJECTED_SMOKE = "rejected_smoke"
 STATUS_REJECTED_SHAPE = "rejected_shape"
+STATUS_REJECTED_STALE = "rejected_stale"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
 STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
@@ -90,6 +97,7 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_ENDPOINT,
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
+    STATUS_REJECTED_STALE,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
 )
@@ -104,6 +112,7 @@ NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_ENDPOINT,
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
+    STATUS_REJECTED_STALE,
 )
 
 # The statuses that ``submit_terminal`` is allowed to write. Anything
@@ -116,6 +125,7 @@ _PRE_SUBMIT_TERMINAL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_ENDPOINT,
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
+    STATUS_REJECTED_STALE,
 )
 
 
