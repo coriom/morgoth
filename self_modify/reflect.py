@@ -1271,6 +1271,23 @@ async def _one_reflect_attempt(
             )
             log(f"pending_approval note: {note}")
 
+        # Shadow Gate 2.5 — run LLM verifier, record verdict, DO NOT
+        # mutate proposal. Failure is non-fatal (recorded as ERROR
+        # verdict inside the shadow itself).
+        try:
+            from self_modify import shadow as _shadow
+            final_row = await store.get(proposal_id)
+            if final_row is not None:
+                v = await _shadow.run_shadow_verdict(
+                    proposal=final_row, config=config, pm=pm,
+                )
+                log(
+                    f"shadow verdict: {v.get('verdict')} "
+                    f"axes={v.get('axes')}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("reflect: shadow verdict failed (non-fatal): {}", exc)
+
     return {"outcome": "submitted", "reason": final_status,
             "proposal_id": proposal_id, "pipeline_status": final_status,
             "spec": spec}

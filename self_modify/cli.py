@@ -69,8 +69,45 @@ async def _cmd_show(store: P.ProposalStore, args: argparse.Namespace) -> int:
     print(f"status:        {row['status']}")
     print(f"status_reason: {row.get('status_reason') or ''}")
     print(f"rationale:     {row.get('rationale') or ''}")
+    # Shadow verdicts (Gate 2.5) — recorded, never enforced.
+    try:
+        verdicts = await store._pm.get_shadow_verdicts(str(row["proposal_id"]))  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        verdicts = []
+    if verdicts:
+        print("--- shadow verdicts (Gate 2.5, recorded not enforced) ---")
+        for v in verdicts:
+            print(
+                f"  {v.get('created_at')}  {v.get('verdict')}  "
+                f"engine={v.get('engine')}  prompt={v.get('prompt_version')}"
+            )
+            for axis, level in (v.get("axes") or {}).items():
+                print(f"    {axis:<26} {level}")
+            for r in (v.get("reasons") or []):
+                print(f"    - {r}")
     print("--- content ---")
     print(row.get("content") or "")
+    return 0
+
+
+async def _cmd_shadow(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Manually re-run the shadow verifier on any proposal."""
+    from self_modify import shadow as _shadow
+
+    row = await store.get(args.proposal_id)
+    if not row:
+        print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
+        return 1
+    config = await load_config()
+    v = await _shadow.run_shadow_verdict(
+        proposal=row, config=config, pm=store._pm,  # noqa: SLF001
+    )
+    print(f"shadow verdict: {v.get('verdict')}  engine={v.get('engine')}  "
+          f"prompt={v.get('prompt_version')}")
+    for axis, level in (v.get("axes") or {}).items():
+        print(f"  {axis:<26} {level}")
+    for r in (v.get("reasons") or []):
+        print(f"  - {r}")
     return 0
 
 
@@ -163,6 +200,13 @@ async def _main(argv: list[str]) -> int:
     )
     p_apply.add_argument("proposal_id")
     p_apply.set_defaults(_fn=_cmd_apply)
+
+    p_shadow = subparsers.add_parser(
+        "shadow",
+        help="manually re-run the Gate 2.5 shadow verifier on any proposal",
+    )
+    p_shadow.add_argument("proposal_id")
+    p_shadow.set_defaults(_fn=_cmd_shadow)
 
     args = parser.parse_args(argv)
 

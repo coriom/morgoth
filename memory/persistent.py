@@ -236,6 +236,35 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure self_modify_proposals table (non-fatal): {}", exc
                 )
+            # Shadow Gate 2.5 — LLM verifier verdicts on non-deterministic
+            # axes. RECORDED, NEVER ENFORCED. Blind by construction: the
+            # shadow input excludes proposal status/status_reason so the
+            # verifier can't cheat off the operator's own decision. Rows
+            # are append-only calibration data — the shadow never mutates
+            # the proposal.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS shadow_verdicts (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        proposal_id UUID NOT NULL,
+                        verdict TEXT NOT NULL,
+                        axes JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        engine TEXT NOT NULL,
+                        prompt_version TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS shadow_verdicts_proposal_idx "
+                    "ON shadow_verdicts (proposal_id);"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure shadow_verdicts table (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 
@@ -855,6 +884,65 @@ class PersistentMemory:
             limit,
         )
         return [dict(row) for row in rows]
+
+    async def record_shadow_verdict(
+        self,
+        *,
+        proposal_id: str,
+        verdict: str,
+        axes: dict[str, Any],
+        reasons: list[str],
+        engine: str,
+        prompt_version: str,
+    ) -> str:
+        """Persist one shadow verdict row and return its id.
+
+        Append-only calibration data — never updates or deletes. See
+        ``self_modify.shadow`` for the caller.
+        """
+        import uuid as _uuid
+        pool = self._require_pool()
+        verdict_id = str(_uuid.uuid4())
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO shadow_verdicts
+                    (id, proposal_id, verdict, axes, reasons, engine,
+                     prompt_version)
+                VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+                """,
+                _uuid.UUID(verdict_id),
+                _uuid.UUID(proposal_id),
+                verdict,
+                json.dumps(axes),
+                json.dumps(reasons),
+                engine,
+                prompt_version,
+            )
+        return verdict_id
+
+    async def get_shadow_verdicts(self, proposal_id: str) -> list[dict[str, Any]]:
+        """Return all shadow verdicts for a proposal, newest first."""
+        import uuid as _uuid
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM shadow_verdicts WHERE proposal_id = $1 "
+                "ORDER BY created_at DESC",
+                _uuid.UUID(proposal_id),
+            )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            for k in ("axes", "reasons"):
+                v = d.get(k)
+                if isinstance(v, str):
+                    try:
+                        d[k] = json.loads(v)
+                    except json.JSONDecodeError:
+                        pass
+            out.append(d)
+        return out
 
     def _require_pool(self) -> Pool:
         """Return the initialized pool or raise an error."""

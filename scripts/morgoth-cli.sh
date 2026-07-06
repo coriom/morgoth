@@ -161,6 +161,14 @@ cmd_apply() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli apply "$1")
 }
 
+cmd_shadow() {
+    if [[ $# -lt 1 ]]; then
+        _err "usage: morgoth shadow <proposal_id>"
+        return 2
+    fi
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli shadow "$1")
+}
+
 cmd_reflect() {
     # One-shot reflection cycle: Morgoth proposes a new green-zone tool.
     # Gated by can_self_modify in MORGOTH_PERMS.json. Extra args pass
@@ -204,6 +212,7 @@ Commands:
   approve ID      approve a pending_approval proposal
   reject ID       reject a proposal (--reason optional)
   apply ID        apply an approved proposal (writes live tree; the door)
+  shadow ID       manually re-run Gate 2.5 shadow verifier on a proposal
   reflect         run one reflection cycle (Morgoth proposes a new tool)
   focus [TEXT|--clear]  set / show / clear the operator focus directive
                         (steers objective-generation topic choice only)
@@ -223,6 +232,7 @@ case "${1:-help}" in
     approve)   shift; cmd_approve "$@";;
     reject)    shift; cmd_reject "$@";;
     apply)     shift; cmd_apply "$@";;
+    shadow)    shift; cmd_shadow "$@";;
     reflect)   shift; cmd_reflect "$@";;
     focus)     shift; cmd_focus "$@";;
     help|-h|--help) usage;;
