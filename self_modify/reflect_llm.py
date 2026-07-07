@@ -225,13 +225,22 @@ async def _anthropic_call(
 def _build_claude_cli_argv(prompt: str) -> list[str]:
     """Build the argv for headless single-shot invocation.
 
-    Order matters only for the subprocess module's parsing (it doesn't
-    — order is stable). Kept as a helper so tests can assert the exact
-    shape without spawning a real subprocess.
+    The prompt is delivered on stdin (see ``_run_claude_cli``), not in
+    argv. ``-p`` with no argument tells claude-cli to read stdin
+    single-shot. Passing the prompt via argv hit ``OSError [Errno 7]
+    Argument list too long`` on ~2MB-plus reflect prompts (registry
+    context + a large machine-terminal JSON spec). Delivering via
+    stdin removes the ARG_MAX ceiling UNCONDITIONALLY — thresholds
+    breed boundary bugs.
+
+    The ``prompt`` parameter is retained on the signature for the
+    tests that assert its ABSENCE from argv; callers must still pass
+    it so the accompanying ``_run_claude_cli`` receives it as stdin.
     """
+    _ = prompt  # deliberately unused — prompt goes to stdin
     argv: list[str] = [
         CLAUDE_CLI_BIN,
-        "-p", prompt,
+        "-p",
         "--output-format", "json",
         # --tools "" disables ALL tools. The reflect prompt is
         # spec-generation only; any tool call would be model-side prose.
@@ -245,11 +254,18 @@ def _build_claude_cli_argv(prompt: str) -> list[str]:
     return argv
 
 
-def _run_claude_cli(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+def _run_claude_cli(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
     """Blocking subprocess call. Kept as a module-level helper so tests
-    can patch it cleanly and the caller can drive it via to_thread."""
+    can patch it cleanly and the caller can drive it via to_thread.
+
+    The prompt reaches the CLI via stdin (``input=``) — never argv.
+    ``prompt`` defaults to empty for backward compatibility with test
+    fixtures that don't need to send one; production callers always
+    pass the assembled prompt.
+    """
     return subprocess.run(
         argv,
+        input=prompt,
         capture_output=True,
         text=True,
         timeout=CLAUDE_CLI_TIMEOUT_SECS,
@@ -285,7 +301,7 @@ def _parse_claude_cli_json(stdout: str) -> tuple[str, str, bool]:
 
 async def _claude_cli_call(
     prompt: str,
-    runner: Callable[[list[str], str], subprocess.CompletedProcess[str]] | None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None,
 ) -> tuple[str, dict[str, Any]]:
     """claude-cli branch. Neutral cwd is mandatory (see comment)."""
     if shutil.which(CLAUDE_CLI_BIN) is None and runner is None:
@@ -306,7 +322,11 @@ async def _claude_cli_call(
     run = runner or _run_claude_cli
     try:
         try:
-            completed = await asyncio.to_thread(run, argv, tmp_cwd)
+            # Prompt delivered via stdin — unconditional, removes
+            # ARG_MAX ceiling. runner signature accepts (argv, cwd,
+            # prompt); older test runners with (argv, cwd) still work
+            # thanks to the default arg on _run_claude_cli.
+            completed = await asyncio.to_thread(run, argv, tmp_cwd, prompt)
         except FileNotFoundError:
             # Subprocess couldn't spawn — binary vanished between the
             # PATH check and the exec call. Same operator instruction.

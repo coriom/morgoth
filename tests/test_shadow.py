@@ -299,7 +299,13 @@ def test_prompt_version_constant_defined() -> None:
 
 
 def test_prompt_version_is_v2() -> None:
-    """v2 semantics block landed — bump must be traceable per verdict."""
+    """v2 semantics block landed — bump must be traceable per verdict.
+
+    v3 was proposed and retro-tested but REJECTED at the adoption
+    gate: it produced false_APPROVE=1 (asymmetry gate FAIL) and
+    accord regressed 4→2 on the judgment cohort. v2 (+ hardening
+    from Phase B: JSON-spec extraction, dead-endpoint-as-material,
+    single re-ask) is the calibrated shadow."""
     assert S.PROMPT_VERSION == "v2"
 
 
@@ -408,16 +414,36 @@ async def test_double_llm_failure_preserves_error() -> None:
 
 def test_prompt_semantics_names_no_specific_tools() -> None:
     """Generality constraint: the semantics block references defect
-    classes only — never a specific past tool name or endpoint."""
+    classes only — never a specific past tool name or endpoint. Sentinel
+    extended at v3 to cover new proposals + operator-visible flags."""
     payload = {"proposal_id": "x", "spec_facts": {},
                "endpoint_sample": {}, "registry": [], "rationale": ""}
     prompt = S.build_prompt(payload)
     for banned in (
+        # v2 sentinels
         "cddda7fa", "42c43533", "get_bitcoin", "get_ethereum",
         "blockcypher", "blockchain.info", "miners_revenue_usd",
         "peer_count", "indexPrice",
+        # v3 additions — the defillama/dex probe rows
+        "fd8056a3", "742e7d5e", "defillama", "llama.fi",
+        "total24h", "futures", "premiumIndex",
     ):
         assert banned not in prompt, f"prompt overfits to {banned!r}"
+
+
+def test_prompt_does_not_contain_rejected_v3_rules() -> None:
+    """v3 was proposed and REJECTED at the adoption gate; the C1
+    (rolling-aggregate) and C2 (acceptable-duplication) blocks must
+    NOT ship in the v2 prompt. If either shows up here, the revert
+    was incomplete."""
+    payload = {"proposal_id": "x", "spec_facts": {},
+               "endpoint_sample": {}, "registry": [], "rationale": ""}
+    prompt = S.build_prompt(payload)
+    for banned in ("ROLLING-AGGREGATE", "ACCEPTABLE-DUPLICATION"):
+        assert banned not in prompt, (
+            f"v3 remnant in prompt: {banned!r} — v2h is the calibrated "
+            "shadow; the retro rejected these rules on the asymmetry gate"
+        )
 
 
 # ---------- prompt build sanity ---------------------------------------

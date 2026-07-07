@@ -56,8 +56,15 @@ def test_argv_zero_tools_and_json_by_default(monkeypatch: pytest.MonkeyPatch) ->
     argv = _build_claude_cli_argv("hello world")
     assert argv[0] == CLAUDE_CLI_BIN
     assert "-p" in argv
-    # prompt is a single argv element (never shell-split).
-    assert argv[argv.index("-p") + 1] == "hello world"
+    # Prompt is delivered on STDIN, never argv (removes ARG_MAX
+    # ceiling on ~2MB reflect prompts). ``-p`` with no arg tells
+    # claude-cli to read stdin single-shot.
+    assert "hello world" not in argv
+    # The token immediately after -p must be another flag, not the prompt.
+    p_idx = argv.index("-p")
+    assert argv[p_idx + 1].startswith("--"), (
+        f"argv[{p_idx+1}] should be a flag, got {argv[p_idx+1]!r}"
+    )
     assert "--output-format" in argv
     assert argv[argv.index("--output-format") + 1] == "json"
     assert "--tools" in argv
@@ -134,9 +141,10 @@ def _completed(stdout: str, rc: int = 0) -> subprocess.CompletedProcess[str]:
 async def test_claude_cli_happy_path_returns_result_text() -> None:
     captured: dict[str, Any] = {}
 
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         captured["argv"] = argv
         captured["cwd"] = cwd
+        captured["prompt"] = prompt
         return _completed(json.dumps(REAL_SHAPE))
 
     text, meta = await reflect_chat(
@@ -151,16 +159,17 @@ async def test_claude_cli_happy_path_returns_result_text() -> None:
     assert meta["prompt_len"] == len("the reflect prompt")
     assert meta["response_len"] == len("PROBE_OK")
     assert "latency_ms" in meta
-    # Prompt passed as ONE argv element (never shell-split).
+    # Prompt reaches CLI via STDIN, not argv (ARG_MAX-proof).
     argv = captured["argv"]
-    assert argv[argv.index("-p") + 1] == "the reflect prompt"
+    assert "the reflect prompt" not in argv
+    assert captured["prompt"] == "the reflect prompt"
 
 
 @pytest.mark.asyncio
 async def test_claude_cli_uses_neutral_tempdir_and_cleans_up() -> None:
     captured_cwd: list[str] = []
 
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         captured_cwd.append(cwd)
         # cwd must exist during the runner call
         assert Path(cwd).is_dir()
@@ -196,7 +205,7 @@ async def test_claude_cli_filenotfound_from_subprocess_also_clean() -> None:
     """The PATH check races the exec — cover the case where shutil.which
     passes but subprocess.run raises FileNotFoundError anyway."""
 
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError("claude")
 
     with pytest.raises(ReflectLLMError) as excinfo:
@@ -208,7 +217,7 @@ async def test_claude_cli_filenotfound_from_subprocess_also_clean() -> None:
 
 @pytest.mark.asyncio
 async def test_claude_cli_timeout_raises_clean_message() -> None:
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=argv, timeout=180)
 
     with pytest.raises(ReflectLLMError) as excinfo:
@@ -220,7 +229,7 @@ async def test_claude_cli_timeout_raises_clean_message() -> None:
 
 @pytest.mark.asyncio
 async def test_claude_cli_nonzero_returncode_raises_clean_message() -> None:
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         return _completed("some noise", rc=127)
 
     with pytest.raises(ReflectLLMError) as excinfo:
@@ -234,7 +243,7 @@ async def test_claude_cli_nonzero_returncode_raises_clean_message() -> None:
 async def test_claude_cli_is_error_true_raises_clean_message() -> None:
     body = dict(REAL_SHAPE, is_error=True, subtype="error", result="")
 
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         return _completed(json.dumps(body))
 
     with pytest.raises(ReflectLLMError) as excinfo:
@@ -255,7 +264,7 @@ async def test_claude_cli_stdout_never_appears_in_debug_logs() -> None:
     SENTINEL = "SESSION-4425dec7-dcad-4c15-b93b-DO-NOT-LOG"
     body = dict(REAL_SHAPE, session_id=SENTINEL, result="ok")
 
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         return _completed(json.dumps(body))
 
     buf = io.StringIO()
@@ -272,12 +281,54 @@ async def test_claude_cli_stdout_never_appears_in_debug_logs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_claude_cli_multi_megabyte_prompt_no_crash() -> None:
+    """Regression: the ARG_MAX fixture from the 6c21e5e3 retro failure.
+
+    A 3MB prompt used to raise ``OSError [Errno 7] Argument list too
+    long`` because the prompt was passed as an argv element. Stdin
+    delivery removes the ceiling entirely — the runner must receive
+    the huge prompt as its ``prompt`` kwarg with no truncation."""
+    huge = "X" * (3 * 1024 * 1024)  # 3 MB — above typical ARG_MAX (~2 MB)
+    captured: dict[str, Any] = {}
+
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
+        captured["argv_len"] = sum(len(a) for a in argv)
+        captured["prompt_len"] = len(prompt)
+        return _completed(json.dumps(REAL_SHAPE))
+
+    await reflect_chat(huge, SimpleNamespace(), "claude-cli",
+                       claude_cli_runner=_runner)
+    # argv stays small — no chance of hitting ARG_MAX regardless of
+    # prompt size.
+    assert captured["argv_len"] < 1024
+    # Prompt reaches the runner intact on stdin.
+    assert captured["prompt_len"] == len(huge)
+
+
+def test_run_claude_cli_passes_prompt_via_stdin() -> None:
+    """Direct check on the module-level runner: subprocess.run must
+    be called with ``input=<prompt>``, not the prompt in argv."""
+    from unittest.mock import patch as _patch
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    with _patch.object(reflect_llm.subprocess, "run", return_value=fake) as m:
+        reflect_llm._run_claude_cli(
+            ["claude", "-p", "--output-format", "json"],
+            "/tmp/x",
+            "the whole reflect prompt",
+        )
+    kwargs = m.call_args.kwargs
+    assert kwargs.get("input") == "the whole reflect prompt"
+    argv = m.call_args.args[0]
+    assert "the whole reflect prompt" not in argv
+
+
+@pytest.mark.asyncio
 async def test_claude_cli_nonzero_stdout_never_appears_in_error_logs() -> None:
     """On nonzero returncode we must NOT log the stdout — it may
     contain prompt fragments or session ids."""
     SENTINEL = "STDOUT-SESSION-FRAGMENT-LEAK-CANARY"
 
-    def _runner(argv: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    def _runner(argv: list[str], cwd: str, prompt: str = "") -> subprocess.CompletedProcess[str]:
         return _completed(SENTINEL, rc=1)
 
     buf = io.StringIO()
