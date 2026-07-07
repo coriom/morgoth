@@ -279,6 +279,40 @@ def test_prompt_version_constant_defined() -> None:
     assert S.PROMPT_VERSION and isinstance(S.PROMPT_VERSION, str)
 
 
+def test_prompt_version_is_v2() -> None:
+    """v2 semantics block landed — bump must be traceable per verdict."""
+    assert S.PROMPT_VERSION == "v2"
+
+
+def test_prompt_contains_verdict_semantics_block() -> None:
+    """v2 decision-function block must reach the model.
+
+    Grep-level so a refactor that quietly drops the semantics
+    section can't silently regress the retro's agreement rate.
+    """
+    payload = {"proposal_id": "x", "spec_facts": {},
+               "endpoint_sample": {}, "registry": [], "rationale": ""}
+    prompt = S.build_prompt(payload)
+    assert "VERDICT SEMANTICS" in prompt
+    # The four defect classes / three verdict semantics anchors.
+    for anchor in ("BLOCKING", "FLAG", "APPROVE", "reserves", "core datum"):
+        assert anchor in prompt, f"missing anchor: {anchor!r}"
+
+
+def test_prompt_semantics_names_no_specific_tools() -> None:
+    """Generality constraint: the semantics block references defect
+    classes only — never a specific past tool name or endpoint."""
+    payload = {"proposal_id": "x", "spec_facts": {},
+               "endpoint_sample": {}, "registry": [], "rationale": ""}
+    prompt = S.build_prompt(payload)
+    for banned in (
+        "cddda7fa", "42c43533", "get_bitcoin", "get_ethereum",
+        "blockcypher", "blockchain.info", "miners_revenue_usd",
+        "peer_count", "indexPrice",
+    ):
+        assert banned not in prompt, f"prompt overfits to {banned!r}"
+
+
 # ---------- prompt build sanity ---------------------------------------
 
 def test_build_prompt_includes_axes_instructions() -> None:

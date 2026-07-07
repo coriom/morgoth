@@ -49,7 +49,18 @@ from memory.persistent import PersistentMemory
 from self_modify import reflect_llm
 
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
+
+# Matching rule for retro-runs and future calibration. Frozen so a
+# prompt-version bump can't inflate the accord metric by silently
+# widening what counts as a match:
+#   match = (op==APPROVE ∧ shadow==APPROVE)
+#         ∨ (op==REJECT  ∧ shadow ∈ {REJECT, FLAG})
+# FLAG counts toward accord on a REJECT because FLAG means "operator
+# please look" — a rejected proposal that the shadow flagged is not
+# a miss, it's a caution that landed on the right row. APPROVE-side
+# is strict — the dangerous direction (shadow-APPROVE where operator
+# rejected) must never inflate accord.
 _ENGINE = "claude-cli"
 _SAMPLE_GAP_SECS = 60
 _SAMPLE_TIMEOUT_SECS = 15.0
@@ -317,6 +328,36 @@ AXES
 - rationale_truth: does the rationale make claims the sampled evidence
   contradicts? (e.g. rationale says "USD volume" but the field is 0.)
 
+VERDICT SEMANTICS — the decision function is separate from perception.
+A correct read of an axis does not by itself determine the verdict;
+the verdict encodes whether the flaw is BLOCKING or ACCEPTABLE. The
+operator's historical bar is: does the core datum work and does the
+tool fill a real gap — not is the spec flawless.
+
+REJECT — reserve for BLOCKING defect classes only:
+- Dead / static-zero on the CORE declared digest field (the datum
+  the tool's name and rationale center on).
+- Endpoint-wide staleness or a dead API (all live-controls frozen).
+- Duplication of another registered tool's CORE datum on a
+  same-family endpoint (not a shared secondary field).
+- Name/content lie: the class name promises data class X but the
+  endpoint returns class Y.
+
+FLAG — notable imperfections that warrant operator attention but
+do not block adoption:
+- Partial semantic overlap on a SECONDARY field (a shared minor
+  metric with an existing tool, when the primary datum is novel).
+- Rationale imprecision or an unsupported side-claim while the
+  central claim holds against the sampled evidence.
+- Marginal-value fields alongside a working core datum (a
+  static-zero AUXILIARY field with a live core field).
+FLAG is a caution, not a soft REJECT.
+
+APPROVE — viable tool: the core datum is live, the tool fills a
+gap, and residual concerns are recoverable. RESERVES (imperfections
+you noticed) are LISTED in reasons — an imperfect-but-useful tool
+is APPROVE with reserves, not FLAG.
+
 OUTPUT — strict JSON, no prose, no code fence:
 {
   "verdict": "APPROVE" | "FLAG" | "REJECT",
@@ -327,7 +368,8 @@ OUTPUT — strict JSON, no prose, no code fence:
     "name_content_coherence": "PASS" | "WARN" | "FAIL",
     "rationale_truth": "PASS" | "WARN" | "FAIL"
   },
-  "reasons": ["one-line reason per axis, in axis order"]
+  "reasons": ["one-line reason per axis, in axis order — include any
+              APPROVE reserves here"]
 }
 """
 
