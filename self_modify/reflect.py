@@ -56,6 +56,7 @@ from core.config import AppConfig
 from core.llm_client import ChatMessage, OllamaLLMClient
 from memory.persistent import PersistentMemory
 from self_modify import gates
+from self_modify import liveness
 from self_modify import proposals as P
 from self_modify.reflect_llm import ReflectLLMError, reflect_chat, resolve_provider
 from self_modify.zones import classify_proposal
@@ -78,6 +79,7 @@ CORRECTIVE_RETRIES: int = 1
 _RETRY_ELIGIBLE_OUTCOMES: tuple[str, ...] = (
     "malformed", "rejected_name", "rejected_endpoint",
     "rejected_smoke", "rejected_shape", "rejected_stale",
+    "rejected_static",
 )
 _OUTCOME_TO_STATUS: dict[str, str] = {
     "malformed": P.STATUS_MALFORMED,
@@ -86,6 +88,7 @@ _OUTCOME_TO_STATUS: dict[str, str] = {
     "rejected_smoke": P.STATUS_REJECTED_SMOKE,
     "rejected_shape": P.STATUS_REJECTED_SHAPE,
     "rejected_stale": P.STATUS_REJECTED_STALE,
+    "rejected_static": P.STATUS_REJECTED_STATIC,
 }
 
 # ---------- name/content coherence -----------------------------------------
@@ -1032,6 +1035,27 @@ def _target_path_for_reject(spec: dict[str, Any] | None) -> str:
     return f"tools/data_feeds/{tn}.py"
 
 
+def _liveness_probe_summary(
+    probe: dict[str, Any] | None,
+    digest_fields: list[str],
+    max_per_field: int = 4,
+) -> str:
+    """Compact per-field values for the retry corrective prompt.
+
+    The model's lever after rejected_static is a DIFFERENT endpoint —
+    the summary names the frozen/dead fields with their observed
+    values so the retry prompt can quote them verbatim.
+    """
+    if not probe or not probe.get("hits"):
+        return "probe: (no hits captured)"
+    parts: list[str] = []
+    for f in (digest_fields or [])[:8]:
+        vals = [hit.get("vals", {}).get(f) for hit in probe["hits"]][:max_per_field]
+        vals_str = ",".join(repr(v) for v in vals)
+        parts.append(f"{f}=[{vals_str}]")
+    return "probe hits: " + "  ".join(parts)
+
+
 async def _persist_pre_submit_reject(
     store: P.ProposalStore,
     outcome: str,
@@ -1209,6 +1233,16 @@ async def _one_reflect_attempt(
         return {"outcome": "rejected_stale", "reason": reason,
                 "proposal_id": pid, "pipeline_status": None, "spec": spec}
 
+    # Field-liveness probe — 4 GETs over 7.5 min running CONCURRENTLY
+    # with gate_tests below (sandbox ~547s under xdist, probe window
+    # 450s — nests cleanly). Started here so it's already in flight
+    # when the sandbox spins up. See self_modify.liveness for rules.
+    import asyncio as _asyncio
+    probe_task = _asyncio.create_task(liveness.run_liveness_probe(
+        smoke_target, list(spec["digest_fields"]),
+    ))
+    log(f"liveness probe launched (concurrent with gate_tests): {smoke_target}")
+
     # Code assembly (deterministic template, repr-based).
     tool_name = spec["tool_name"]
     class_name = _snake_to_class_name(tool_name)
@@ -1250,6 +1284,43 @@ async def _one_reflect_attempt(
     final_status = await gates.run_pipeline(store, row)
     log(f"outcome: submitted — id={proposal_id[:8]} status={final_status}")
 
+    # Await the concurrent liveness probe (may be already done, or we
+    # wait 0–450s depending on how long gate_tests took). Correctness
+    # over wall time: if the sandbox finished first, we still wait for
+    # the four hits before making the field-liveness decision.
+    try:
+        probe = await probe_task
+        verdict = liveness.classify_probe(probe, list(spec["digest_fields"]))
+        log(
+            f"liveness gate: {verdict['outcome']} rule={verdict.get('rule')} "
+            f"reason={verdict['reason']}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Probe crash is non-fatal — record but proceed. A dead scheduler
+        # must not stall the reflect job; the LLM shadow catches most of
+        # what a broken probe would have caught.
+        logger.warning("liveness probe crashed (non-fatal): {}", exc)
+        verdict = {"outcome": "pass", "rule": None,
+                   "reason": f"probe crashed: {exc!r}"}
+        probe = None  # noqa: F841 -- placeholder for the retry material
+
+    # (a)/(b): reject — override to rejected_static. The row was
+    # already submitted (probe ran concurrent with sandbox), so we
+    # convert via update_status. Behavior downstream (negative list,
+    # retry) matches the pre-submit terminals.
+    if verdict["outcome"] == "reject":
+        static_reason = (
+            verdict["reason"] + " | " +
+            _liveness_probe_summary(probe, spec.get("digest_fields") or [])
+        )
+        await store.update_status(
+            proposal_id, P.STATUS_REJECTED_STATIC, static_reason[:2000],
+        )
+        log(f"outcome: rejected_static — {verdict['reason']}")
+        return {"outcome": "rejected_static", "reason": verdict["reason"],
+                "proposal_id": proposal_id, "pipeline_status": None,
+                "spec": spec, "probe": probe}
+
     # Field-overlap advisory (gate-3 note, NOT a reject). If the spec
     # reaches pending_approval and its digest_fields exact-match any
     # currently-registered digest field name, append a note to the
@@ -1258,6 +1329,16 @@ async def _one_reflect_attempt(
     # narrow class of duplication (the historical market_price_usd
     # case doesn't fire — get_crypto_price surfaces ``price`` not
     # ``market_price_usd``). Semantic dedup is gate-2.5 territory.
+    # (c) non-rolling static → warn appended to status_reason.
+    if verdict["outcome"] == "warn" and final_status == P.STATUS_PENDING_APPROVAL:
+        final_row = await store.get(proposal_id)
+        existing = (final_row or {}).get("status_reason") or ""
+        combined = (existing + " | " + verdict["reason"]).strip(" |") \
+            if existing else verdict["reason"]
+        await store.update_status(
+            proposal_id, P.STATUS_PENDING_APPROVAL, combined[:2000],
+        )
+
     if final_status == P.STATUS_PENDING_APPROVAL:
         registered_field_names = _registered_digest_fields(config, pm)
         overlap = sorted(set(spec["digest_fields"]) & registered_field_names)

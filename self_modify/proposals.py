@@ -81,6 +81,13 @@ STATUS_REJECTED_ENDPOINT = "rejected_endpoint"
 STATUS_REJECTED_SMOKE = "rejected_smoke"
 STATUS_REJECTED_SHAPE = "rejected_shape"
 STATUS_REJECTED_STALE = "rejected_stale"
+# Field-liveness gate — 4 GETs over 7.5 min, three rules (see
+# self_modify.liveness). Written via update_status because the probe
+# runs CONCURRENTLY with gate_tests (sandbox pytest) and the row is
+# already submitted by the time the probe verdict lands. Still counts
+# as a pre-submit-terminal for calibration purposes: carries the spec
+# and lands on the negative list.
+STATUS_REJECTED_STATIC = "rejected_static"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
 STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
@@ -98,6 +105,7 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
     STATUS_REJECTED_STALE,
+    STATUS_REJECTED_STATIC,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
 )
@@ -113,6 +121,7 @@ NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
     STATUS_REJECTED_STALE,
+    STATUS_REJECTED_STATIC,
 )
 
 # The statuses that ``submit_terminal`` is allowed to write. Anything

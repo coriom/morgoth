@@ -280,7 +280,12 @@ async def _run_reflect_with_body(body: Any) -> dict[str, Any]:
          )), \
          patch.object(reflect.httpx, "AsyncClient", return_value=fake_client), \
          patch("self_modify.reflect.gates.run_pipeline",
-               AsyncMock(return_value="pending_approval")):
+               AsyncMock(return_value="pending_approval")), \
+         patch("self_modify.reflect.liveness.run_liveness_probe",
+               AsyncMock(return_value={
+                   "url": "x", "hits": [], "n_hits": 0,
+                   "digest_fields": [],
+               })):
         return await reflect.run_reflection(
             _fake_config(), pm, _fake_llm(_json.dumps(VALID_SPEC))
         )
