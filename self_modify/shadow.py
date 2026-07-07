@@ -7,6 +7,20 @@ returns. It has ZERO authority over proposal status — enforced by a
 runtime assert (this module never imports the ProposalStore's
 ``update_status``) AND by a test (``no-status-mutation invariant``).
 
+Delegation invariant
+--------------------
+Shadow verdicts are advisory downstream of deterministic gates; an
+APPROVE never overrides a gate rejection — relational properties
+(endpoint/field duplication, zone classification, sandbox test
+outcome) are gate territory, invisible to per-spec evaluation. The
+shadow sees ONE proposal at a time and reasons about its intrinsic
+properties; the gates see the full registry and repository state.
+Import direction is fixed: ``shadow`` may import ``proposals`` (for
+row shapes) but ``gates`` MUST NOT import ``shadow`` — the gate
+pipeline is complete without the shadow, and the shadow attaches
+after gates as an advisory annotation. This is grep-locked in
+tests/test_shadow_delegation.py.
+
 Blindness contract
 ------------------
 The shadow input MUST NOT contain the operator's decision. We

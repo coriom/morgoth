@@ -16,9 +16,12 @@ from self_modify import gates as gates_mod
 
 def test_default_derives_from_measured_with_headroom() -> None:
     """Default = ceil(measured × 2.5 / 60) × 60. Locked so a
-    silent shrink to the old 180s cannot land unnoticed."""
+    silent shrink to the old 180s cannot land unnoticed. Post-xdist
+    the measured value dropped to ~547s (12-core parallel); the
+    lower bound is set well above 180s but low enough to accept the
+    xdist speedup."""
     assert gates_mod._SANDBOX_HEADROOM >= 2.0
-    assert gates_mod._SANDBOX_MEASURED_SECS >= 1000  # not the old 180
+    assert gates_mod._SANDBOX_MEASURED_SECS > 400  # not the old 180
     import math
     expected = int(math.ceil(
         gates_mod._SANDBOX_MEASURED_SECS * gates_mod._SANDBOX_HEADROOM / 60
@@ -55,3 +58,28 @@ def test_subset_run_alternative_rejected_in_docstring() -> None:
     import inspect
     src = inspect.getsource(gates_mod)
     assert "Subset-run alternative is REJECTED" in src
+
+
+def test_xdist_wired_into_isolated_argv() -> None:
+    """``-n auto`` must appear in the isolated pytest argv — the
+    xdist speedup is the reason the timeout could drop from 6780s to
+    1380s. Removing it silently would push suite time back to ~2701s
+    and risk timeouts."""
+    from pathlib import Path
+    argv = gates_mod._build_pytest_argv(Path("/tmp/sbx"), isolated=True)
+    # The isolated form packs the pytest call into a shell string —
+    # check the inline command carries -n auto.
+    joined = " ".join(argv)
+    assert "-n auto" in joined, (
+        f"isolated argv missing '-n auto': {joined!r}"
+    )
+
+
+def test_xdist_wired_into_nonisolated_argv() -> None:
+    """Same wiring on the fallback path — pytest-xdist is not
+    conditional on isolation posture."""
+    from pathlib import Path
+    argv = gates_mod._build_pytest_argv(Path("/tmp/sbx"), isolated=False)
+    assert "-n" in argv and "auto" in argv, (
+        f"non-isolated argv missing xdist flag: {argv!r}"
+    )

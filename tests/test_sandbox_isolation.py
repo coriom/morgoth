@@ -75,7 +75,8 @@ def test_argv_isolated_wraps_in_unshare() -> None:
 def test_argv_non_isolated_is_plain_pytest() -> None:
     argv = gates._build_pytest_argv(Path("/tmp/sbx/x"), isolated=False)
     assert argv[0] == gates._VENV_PYTHON
-    assert argv[1:] == ["-m", "pytest", "-q"]
+    # pytest-xdist ``-n auto`` was wired at the timeout-fix commit.
+    assert argv[1:] == ["-m", "pytest", "-q", "-n", "auto"]
     assert "unshare" not in argv
 
 
@@ -105,7 +106,7 @@ def test_run_pytest_in_sandbox_falls_open_when_isolation_unavailable() -> None:
         result = gates._run_pytest_in_sandbox(Path("/tmp/sbx/x"))
     argv = m.call_args.args[0]
     assert argv[0] == gates._VENV_PYTHON
-    assert argv[1:] == ["-m", "pytest", "-q"]
+    assert argv[1:] == ["-m", "pytest", "-q", "-n", "auto"]
     assert m.call_args.kwargs["cwd"] == "/tmp/sbx/x"
     # Warning fires loudly.
     warn_mock.assert_called_once()

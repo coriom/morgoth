@@ -60,21 +60,21 @@ _VENV_PYTHON = "/home/corio/Morgoth/morgoth/.venv/bin/python"
 # suite is a failure, not an outage.
 #
 # Sizing rationale (adaptive budget):
-#   The FULL suite runs inside the ``unshare --user --map-root-user
-#   --net`` wrapper — namespace setup + no-DNS behavior pushes suite
-#   wall time far above the host baseline. Measured at commit
-#   c780263 (584 tests): 2701s under the wrapper (host baseline ~143s;
-#   the 18× multiplier is namespace + network-loss cost, not per-test
-#   slowness). Budget = ceil(measured × 2.5 / 60) × 60 = 6780s, which
-#   defers the next raise by roughly a year of deliverables at the
-#   current growth rate. Env-overridable via SANDBOX_TIMEOUT_SECONDS
-#   for one-off operator triage without editing the constant.
+#   Measured under the exact gate_tests invocation (unshare
+#   --user --map-root-user --net + venv interpreter + pytest -n auto
+#   on a 12-core host, 593 tests): 547s on two consecutive stability
+#   runs (variance <0.1%), a 4.94× speedup over the serial 2701s
+#   baseline. xdist parallelizes clean because the suite is fully
+#   DB-mocked. Budget = ceil(measured × 2.5 / 60) × 60 = 1380s.
+#   Env-overridable via SANDBOX_TIMEOUT_SECONDS for one-off operator
+#   triage without editing the constant.
 #
 # Subset-run alternative is REJECTED: gate_tests must prove the
 # proposal doesn't break ANYTHING (a proposal only proving it doesn't
 # break its own module has not proved integration safety). A slower
-# gate is preferable to a weaker gate.
-_SANDBOX_MEASURED_SECS: int = 2701
+# gate is preferable to a weaker gate — pytest-xdist is the correct
+# lever because it preserves full-suite coverage.
+_SANDBOX_MEASURED_SECS: int = 547
 _SANDBOX_HEADROOM: float = 2.5
 _SANDBOX_DEFAULT_TIMEOUT_SECS: int = int(math.ceil(
     _SANDBOX_MEASURED_SECS * _SANDBOX_HEADROOM / 60
@@ -166,21 +166,27 @@ async def gate_zone(
 def _build_pytest_argv(sandbox: Path, *, isolated: bool) -> list[str]:
     """Return the argv used to invoke pytest inside ``sandbox``.
 
+    ``-n auto`` distributes tests across CPU cores (pytest-xdist),
+    dropping the sandbox suite wall time from ~2701s serial to ~547s
+    parallel on a 12-core host. Suite is fully DB-mocked so xdist
+    parallelizes clean; the two consecutive stability runs at wiring
+    time produced identical 593/593 passes.
+
     Isolated form wraps the invocation in ``unshare --user
     --map-root-user --net sh -c "ip link set lo up; cd <sandbox> &&
-    exec <venv-python> -m pytest -q"`` so the sandbox has loopback
-    reachable (needed by any test that binds to 127.0.0.1) but no
-    route to the outside world. Non-isolated form is the plain call
-    the sandbox always used.
+    exec <venv-python> -m pytest -q -n auto"`` so the sandbox has
+    loopback reachable (needed by any test that binds to 127.0.0.1)
+    but no route to the outside world. Non-isolated form is the plain
+    call the sandbox always used.
     """
     if isolated:
         inner = (
             f"ip link set lo up; cd {sandbox} && "
-            f"exec {_VENV_PYTHON} -m pytest -q"
+            f"exec {_VENV_PYTHON} -m pytest -q -n auto"
         )
         return ["unshare", "--user", "--map-root-user", "--net",
                 "sh", "-c", inner]
-    return [_VENV_PYTHON, "-m", "pytest", "-q"]
+    return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"]
 
 
 def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
