@@ -115,6 +115,25 @@ def test_extract_spec_facts_missing_fields() -> None:
     assert f["class_name"] == "Foo"
 
 
+def test_extract_spec_facts_from_json_spec() -> None:
+    """Machine-terminal rows carry the rejected spec as JSON. The
+    shadow must extract from JSON too — otherwise it renders no
+    verdict on 40% of the machine cohort."""
+    json_content = json.dumps({
+        "tool_name": "get_defi_dex_volume",
+        "api_base_url": "https://api.llama.fi",
+        "endpoint_path": "/overview/dexs",
+        "digest_fields": ["total24h", "total7d"],
+        "description": "DEX volume.",
+    })
+    f = S.extract_spec_facts(json_content)
+    assert f["base_url"] == "https://api.llama.fi"
+    assert f["endpoint_path"] == "/overview/dexs"
+    assert f["digest_fields"] == ["total24h", "total7d"]
+    assert f["description"] == "DEX volume."
+    assert f["class_name"] == "GetDefiDexVolumeTool"
+
+
 # ---------- blindness assertion ---------------------------------------
 
 def test_assemble_shadow_input_strips_status() -> None:
@@ -297,6 +316,94 @@ def test_prompt_contains_verdict_semantics_block() -> None:
     # The four defect classes / three verdict semantics anchors.
     for anchor in ("BLOCKING", "FLAG", "APPROVE", "reserves", "core datum"):
         assert anchor in prompt, f"missing anchor: {anchor!r}"
+
+
+@pytest.mark.asyncio
+async def test_dead_endpoint_produces_material_not_crash() -> None:
+    """A GET that raises must land as evidence in ``hit1.error`` —
+    the LLM sees "endpoint returned HTTP 401" and can render
+    api_liveness=FAIL rather than the shadow degrading to ERROR."""
+    async def _dying(url: str) -> dict[str, Any]:
+        return {"ok": False, "status_code": 401, "error": "non-2xx"}
+
+    async def _no_sleep(_secs: int) -> None:
+        return None
+
+    with patch.object(S, "_one_get", _dying):
+        out = await S.sample_endpoint(
+            "https://api.example.com", "/v1/stats",
+            gap_secs=0, digest_fields=["a"], now_sleep=_no_sleep,
+        )
+    assert out["hit1"]["error"] == "non-2xx"
+    assert out["hit2"]["error"] == "non-2xx"
+    # Downstream LLM sees a well-formed slim payload with errors,
+    # not a missing sample.
+    assert "url" in out
+
+
+@pytest.mark.asyncio
+async def test_missing_url_yields_per_hit_error_uniform_shape() -> None:
+    """Missing base_url/endpoint_path must return the same shape a
+    normal sample would — hit-style errors — so the LLM handles it
+    uniformly."""
+    out = await S.sample_endpoint("", "", gap_secs=0)
+    assert not out["hit1"]["ok"] and "missing_url" in out["hit1"]["error"]
+    assert not out["hit2"]["ok"] and "missing_url" in out["hit2"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_llm_output_triggers_one_reask() -> None:
+    """Same pattern as the reflect retry loop — one corrective
+    re-ask before recording ERROR."""
+    pm = _FakePM()
+    calls: list[str] = []
+
+    async def _caller(prompt: str, config: Any, engine: str) -> tuple[str, dict[str, Any]]:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return ("this is not json at all sorry", {})
+        return (_good_json(), {})
+
+    sampler = AsyncMock(return_value={"url": "x", "hit1": {"ok": True},
+                                       "hit2": {"ok": True},
+                                       "digest_values_hit1": {},
+                                       "digest_values_hit2": {}})
+    with patch.object(S, "collect_registry_context", return_value=[]):
+        out = await S.run_shadow_verdict(
+            proposal={
+                "proposal_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "content": _SAMPLE_CONTENT, "rationale": "",
+                "target_path": "tools/data_feeds/x.py",
+            },
+            config=MagicMock(), pm=pm,  # type: ignore[arg-type]
+            endpoint_sampler=sampler, llm_caller=_caller,
+        )
+    assert out["verdict"] == "APPROVE", (out, calls)
+    assert len(calls) == 2
+    assert "REJECTION" in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_double_llm_failure_preserves_error() -> None:
+    """If both the first response and the re-ask are unparseable,
+    the ERROR verdict stays."""
+    pm = _FakePM()
+    caller = AsyncMock(return_value=("still not json", {}))
+    sampler = AsyncMock(return_value={"url": "x", "hit1": {}, "hit2": {},
+                                       "digest_values_hit1": {},
+                                       "digest_values_hit2": {}})
+    with patch.object(S, "collect_registry_context", return_value=[]):
+        out = await S.run_shadow_verdict(
+            proposal={
+                "proposal_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                "content": _SAMPLE_CONTENT, "rationale": "",
+                "target_path": "tools/data_feeds/x.py",
+            },
+            config=MagicMock(), pm=pm,  # type: ignore[arg-type]
+            endpoint_sampler=sampler, llm_caller=caller,
+        )
+    assert out["verdict"] == "ERROR"
+    assert caller.await_count == 2
 
 
 def test_prompt_semantics_names_no_specific_tools() -> None:

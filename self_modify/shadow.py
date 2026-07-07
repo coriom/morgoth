@@ -97,12 +97,19 @@ _RE_CLASS = re.compile(r"^class\s+(\w+)\s*\(", re.MULTILINE)
 
 
 def extract_spec_facts(content: str) -> dict[str, Any]:
-    """Pull spec facts out of a rendered tool file.
+    """Pull spec facts out of a rendered tool file OR a rejected JSON spec.
+
+    Two content shapes are supported:
+      1. Rendered Python: ``_BASE_URL = '...'`` module constants.
+      2. JSON spec blob: machine-terminal rows (malformed, rejected_smoke,
+         rejected_shape, rejected_stale, rejected_endpoint,
+         rejected_name) store the rejected SPEC as JSON in ``content``.
+         Extracting from the JSON directly lets the shadow evaluate the
+         underlying candidate, not an empty rendered surface.
 
     Returns a dict with keys ``base_url``, ``endpoint_path``,
     ``digest_fields``, ``description``, ``class_name``. Missing keys
-    map to None / empty. Never raises — a partial extraction is better
-    than a crash (the shadow still runs and records what it has).
+    map to None / empty. Never raises.
     """
     facts: dict[str, Any] = {
         "base_url": None,
@@ -113,6 +120,9 @@ def extract_spec_facts(content: str) -> dict[str, Any]:
     }
     if not content:
         return facts
+
+    # Rendered-Python path first — matches every applied tool + every
+    # pending_approval / approved_pending_apply row.
     m = _RE_BASE_URL.search(content)
     if m:
         facts["base_url"] = m.group(2)
@@ -131,7 +141,32 @@ def extract_spec_facts(content: str) -> dict[str, Any]:
             facts["digest_fields"] = list(json.loads(m.group(1).replace("'", '"')))
         except json.JSONDecodeError:
             facts["digest_fields"] = []
+
+    # JSON-spec fallback for machine-terminal rows. Only overwrite
+    # fields still missing so a partially-rendered file's real values
+    # win over a spec's proposed ones.
+    stripped = content.strip()
+    if stripped.startswith("{"):
+        try:
+            spec = json.loads(stripped)
+        except json.JSONDecodeError:
+            spec = None
+        if isinstance(spec, dict):
+            if facts["base_url"] is None and isinstance(spec.get("api_base_url"), str):
+                facts["base_url"] = spec["api_base_url"]
+            if facts["endpoint_path"] is None and isinstance(spec.get("endpoint_path"), str):
+                facts["endpoint_path"] = spec["endpoint_path"]
+            if facts["description"] is None and isinstance(spec.get("description"), str):
+                facts["description"] = spec["description"]
+            if not facts["digest_fields"] and isinstance(spec.get("digest_fields"), list):
+                facts["digest_fields"] = list(spec["digest_fields"])
+            if facts["class_name"] is None and isinstance(spec.get("tool_name"), str):
+                facts["class_name"] = _snake_to_class(spec["tool_name"])
     return facts
+
+
+def _snake_to_class(snake: str) -> str:
+    return "".join(part.title() for part in (snake or "").split("_")) + "Tool"
 
 
 # ---------------------------------------------------------------------------
@@ -177,13 +212,22 @@ async def sample_endpoint(
     """Two GETs, ~gap apart. Returns the material the LLM needs to
     reason about field liveness (zero/static across hits).
 
-    Body is deliberately dropped from the output — only the
-    top-level key list and the projected digest values ship to the
-    prompt. Keeps the shadow input compact and PII-safe.
+    A dead endpoint is EVIDENCE, not a crash — per-hit errors are
+    surfaced verbatim as ``hit1.error`` / ``hit2.error`` so the LLM
+    can render api_liveness=FAIL rather than the shadow degrading to
+    ERROR. The missing-URL case (spec-fact extraction returned no
+    URL) yields the same shape — an ``error`` field on each hit — so
+    downstream handling is uniform.
     """
     digest_fields = digest_fields or []
     if not base_url or not endpoint_path:
-        return {"ok": False, "error": "missing base_url or endpoint_path"}
+        err = {"ok": False, "error": "missing_url: shadow could not "
+               "extract base_url/endpoint_path from proposal content"}
+        return {
+            "url": None,
+            "hit1": err, "hit2": err,
+            "digest_values_hit1": {}, "digest_values_hit2": {},
+        }
     url = base_url.rstrip("/") + endpoint_path
     hit1 = await _one_get(url)
     await now_sleep(gap_secs)
@@ -491,6 +535,25 @@ async def run_shadow_verdict(
     try:
         text, _meta = await caller(prompt, config, engine)
         result = parse_verdict(text)
+        # One corrective re-ask on parse failure — same pattern the
+        # reflect retry loop uses. Only fires when the model returned
+        # SOMETHING but the parser rejected it; a call-level exception
+        # falls to the except branches unchanged.
+        if result["verdict"] == "ERROR" and result["reasons"] and \
+                "unparseable" in result["reasons"][0]:
+            reask = (
+                prompt + "\n---REJECTION---\n"
+                "Your previous response was not valid JSON. Output ONLY "
+                "the JSON object described above — no prose, no code "
+                "fence. Try again.\n"
+            )
+            try:
+                text2, _meta2 = await caller(reask, config, engine)
+                second = parse_verdict(text2)
+                if second["verdict"] != "ERROR":
+                    result = second
+            except Exception:  # noqa: BLE001
+                pass  # keep original ERROR
     except reflect_llm.ReflectLLMError as exc:
         result = _error_verdict(f"llm error: {exc}")
     except Exception as exc:  # noqa: BLE001

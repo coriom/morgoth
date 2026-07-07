@@ -26,6 +26,8 @@ Notes
 from __future__ import annotations
 
 import asyncio
+import math
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -56,7 +58,44 @@ _VENV_PYTHON = "/home/corio/Morgoth/morgoth/.venv/bin/python"
 
 # Hard timeout for pytest under the sandbox — a proposal that hangs the
 # suite is a failure, not an outage.
-_PYTEST_TIMEOUT_SECS = 180
+#
+# Sizing rationale (adaptive budget):
+#   The FULL suite runs inside the ``unshare --user --map-root-user
+#   --net`` wrapper — namespace setup + no-DNS behavior pushes suite
+#   wall time far above the host baseline. Measured at commit
+#   c780263 (584 tests): 2701s under the wrapper (host baseline ~143s;
+#   the 18× multiplier is namespace + network-loss cost, not per-test
+#   slowness). Budget = ceil(measured × 2.5 / 60) × 60 = 6780s, which
+#   defers the next raise by roughly a year of deliverables at the
+#   current growth rate. Env-overridable via SANDBOX_TIMEOUT_SECONDS
+#   for one-off operator triage without editing the constant.
+#
+# Subset-run alternative is REJECTED: gate_tests must prove the
+# proposal doesn't break ANYTHING (a proposal only proving it doesn't
+# break its own module has not proved integration safety). A slower
+# gate is preferable to a weaker gate.
+_SANDBOX_MEASURED_SECS: int = 2701
+_SANDBOX_HEADROOM: float = 2.5
+_SANDBOX_DEFAULT_TIMEOUT_SECS: int = int(math.ceil(
+    _SANDBOX_MEASURED_SECS * _SANDBOX_HEADROOM / 60
+) * 60)
+
+
+def _resolve_sandbox_timeout() -> int:
+    """Env override > default. Non-positive/non-int env → default."""
+    raw = os.environ.get("SANDBOX_TIMEOUT_SECONDS", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return _SANDBOX_DEFAULT_TIMEOUT_SECS
+
+
+SANDBOX_TIMEOUT_SECONDS: int = _resolve_sandbox_timeout()
+_PYTEST_TIMEOUT_SECS = SANDBOX_TIMEOUT_SECONDS
 
 # Cached feasibility probe for user+net namespace isolation. The probe
 # tries to enter a user+net ns and immediately exit; anything non-zero
