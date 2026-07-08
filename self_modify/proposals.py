@@ -322,6 +322,60 @@ class ProposalStore:
             )
         return [dict(r) for r in rows]
 
+    async def resolve_id(self, ref: str) -> str:
+        """Resolve a proposal reference (full UUID or hex prefix ≥4)
+        to the full UUID string.
+
+        The CLI displays 8-char short IDs (``morgoth proposals``).
+        Every ID-consuming subcommand used to pass the operator's
+        input verbatim to ``uuid.UUID(...)``, which raised
+        ``ValueError`` on any short form — six sessions of stalled
+        verdicts trace to this. The resolver accepts any hex prefix
+        ≥4 chars and disambiguates against the current DB.
+
+        Contract:
+          - 0 rows          → ``LookupError("no proposal matching <ref>")``
+          - >1 rows         → ``LookupError("ambiguous: <id1>, <id2>, ...")``
+          - 1 row           → return the full UUID string
+          - <4-char prefix  → ``ValueError`` (too short — an ambiguity
+                              risk that grows with the DB)
+          - full UUID (36)  → return unchanged (no DB roundtrip needed)
+
+        Uppercase / mixed-case input is normalized to lowercase, and
+        surrounding whitespace is stripped, so operator paste from
+        the ``morgoth proposals`` table Just Works.
+        """
+        cleaned = (ref or "").strip().lower()
+        if not cleaned:
+            raise ValueError("proposal id is empty")
+        if len(cleaned) == 36 and cleaned.count("-") == 4:
+            return cleaned  # already a full UUID
+        # Bare-hex short form.
+        if len(cleaned) < 4:
+            raise ValueError(
+                f"proposal id prefix must be ≥4 hex chars (got {cleaned!r})"
+            )
+        # Only hex digits + dashes allowed.
+        for c in cleaned:
+            if c not in "0123456789abcdef-":
+                raise ValueError(
+                    f"proposal id must be hex/dash (got {cleaned!r})"
+                )
+        pool = self._pm._require_pool()  # noqa: SLF001
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT proposal_id::text AS pid FROM self_modify_proposals "
+                "WHERE proposal_id::text LIKE $1 ORDER BY created_at DESC",
+                cleaned + "%",
+            )
+        if not rows:
+            raise LookupError(f"no proposal matching {ref!r}")
+        if len(rows) > 1:
+            ids = ", ".join(r["pid"][:8] for r in rows[:6])
+            more = "" if len(rows) <= 6 else f", ... (+{len(rows) - 6} more)"
+            raise LookupError(f"ambiguous: {ids}{more}")
+        return rows[0]["pid"]
+
     async def update_status(
         self,
         proposal_id: str,

@@ -56,8 +56,29 @@ async def _cmd_list(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _resolve_or_bail(
+    store: P.ProposalStore, ref: str,
+) -> tuple[str | None, int]:
+    """Resolve a short or full ID; on failure print a clean one-liner
+    and return (None, exit_code). Success returns (full_uuid, 0).
+
+    Every ID-consuming subcommand routes through this — replaces the
+    raw uuid.UUID(...) ValueError tracebacks with the reflect_llm
+    hygiene pattern (message + exit 2 on operator-input errors).
+    """
+    try:
+        pid = await store.resolve_id(ref)
+    except (LookupError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return None, 2
+    return pid, 0
+
+
 async def _cmd_show(store: P.ProposalStore, args: argparse.Namespace) -> int:
-    row = await store.get(args.proposal_id)
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
     if not row:
         print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
         return 1
@@ -94,7 +115,10 @@ async def _cmd_shadow(store: P.ProposalStore, args: argparse.Namespace) -> int:
     """Manually re-run the shadow verifier on any proposal."""
     from self_modify import shadow as _shadow
 
-    row = await store.get(args.proposal_id)
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
     if not row:
         print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
         return 1
@@ -112,7 +136,10 @@ async def _cmd_shadow(store: P.ProposalStore, args: argparse.Namespace) -> int:
 
 
 async def _cmd_approve(store: P.ProposalStore, args: argparse.Namespace) -> int:
-    row = await store.get(args.proposal_id)
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
     if not row:
         print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
         return 1
@@ -124,12 +151,11 @@ async def _cmd_approve(store: P.ProposalStore, args: argparse.Namespace) -> int:
         )
         return 1
     await store.update_status(
-        args.proposal_id,
-        P.STATUS_APPROVED_PENDING_APPLY,
+        pid, P.STATUS_APPROVED_PENDING_APPLY,
         "approved via morgoth cli",
     )
-    print(f"proposal {args.proposal_id} → approved_pending_apply")
-    print(f"Next: `morgoth apply {args.proposal_id}` to write the file, run")
+    print(f"proposal {pid} → approved_pending_apply")
+    print(f"Next: `morgoth apply {pid[:8]}` to write the file, run")
     print("the live pytest, commit locally, restart, and verify.")
     return 0
 
@@ -142,13 +168,16 @@ async def _cmd_apply(store: P.ProposalStore, args: argparse.Namespace) -> int:
     """
     from self_modify import apply as apply_mod
 
-    row = await store.get(args.proposal_id)
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
     if not row:
         print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
         return 1
-    print(f"applying proposal {args.proposal_id} …")
-    final = await apply_mod.apply_proposal(store, args.proposal_id)
-    after = await store.get(args.proposal_id)
+    print(f"applying proposal {pid} …")
+    final = await apply_mod.apply_proposal(store, pid)
+    after = await store.get(pid)
     print(f"final status: {final}")
     if after:
         print(f"reason:       {after.get('status_reason') or ''}")
@@ -156,16 +185,18 @@ async def _cmd_apply(store: P.ProposalStore, args: argparse.Namespace) -> int:
 
 
 async def _cmd_reject(store: P.ProposalStore, args: argparse.Namespace) -> int:
-    row = await store.get(args.proposal_id)
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
     if not row:
         print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
         return 1
     await store.update_status(
-        args.proposal_id,
-        P.STATUS_REJECTED,
+        pid, P.STATUS_REJECTED,
         args.reason or "rejected via morgoth cli",
     )
-    print(f"proposal {args.proposal_id} → rejected")
+    print(f"proposal {pid} → rejected")
     return 0
 
 
