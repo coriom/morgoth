@@ -244,6 +244,129 @@ def test_rejected_static_wired_into_retry_eligibility() -> None:
     assert R._OUTCOME_TO_STATUS.get("rejected_static") == "rejected_static"
 
 
+@pytest.mark.asyncio
+async def test_list_shaped_body_with_frozen_rolling_field_now_rejects() -> None:
+    """RETRO FIXTURE — the 1182ee96 hole.
+
+    Before Phase C, the probe read fields directly off ``body`` and
+    a list-shaped body (fapi.binance.com returns a list-of-dicts)
+    yielded ``body.get(field) → None`` on every hit. The probe
+    reported all fields as ``error:HTTP 200`` and the classifier
+    fail-open discipline concluded PASS.
+
+    Post-fix: extraction goes through the shared template contract,
+    so ``list[0]`` is unwrapped and the rolling field's frozen value
+    surfaces as a rule-(a) reject.
+    """
+    async def _one_hit(url: str, timeout: float = 15.0) -> dict[str, Any]:
+        return {"ok": True, "status": 200, "body": [
+            {"symbol": "BTCUSDT", "longShortRatio": "1.42",
+             "volume_24h": 6565792268, "timestamp": 1720000000},
+        ]}
+
+    async def _no_sleep(_secs: float) -> None:
+        return None
+
+    with patch.object(L, "_one_hit", _one_hit):
+        probe = await L.run_liveness_probe(
+            "https://api.example.com/list",
+            ["symbol", "longShortRatio", "volume_24h", "timestamp"],
+            hits=4, gap_secs=0, sleep_fn=_no_sleep,
+        )
+    # The extraction contract unwrapped list[0] on each hit — values
+    # are now visible.
+    for hit in probe["hits"]:
+        assert hit["vals"]["volume_24h"] == 6565792268
+        assert hit["vals"]["longShortRatio"] == "1.42"
+
+    v = L.classify_probe(probe, ["symbol", "longShortRatio",
+                                  "volume_24h", "timestamp"])
+    assert v["outcome"] == "reject"
+    assert v["rule"] == "a"
+    assert "volume_24h" in v["frozen_fields"]
+
+
+@pytest.mark.asyncio
+async def test_list_shaped_body_with_live_moving_fields_passes() -> None:
+    """Symmetric fixture — a list-shaped endpoint whose fields DO
+    move across hits must still pass. Locks the fix's fail-open
+    discipline: unwrap the shape, but only reject on real freeze."""
+    hits_bodies = [
+        [{"volume_24h": 100, "longShortRatio": "1.20"}],
+        [{"volume_24h": 105, "longShortRatio": "1.22"}],
+        [{"volume_24h": 108, "longShortRatio": "1.19"}],
+        [{"volume_24h": 110, "longShortRatio": "1.25"}],
+    ]
+    call_i = [0]
+
+    async def _one_hit(url: str, timeout: float = 15.0) -> dict[str, Any]:
+        b = hits_bodies[call_i[0]]
+        call_i[0] += 1
+        return {"ok": True, "status": 200, "body": b}
+
+    async def _no_sleep(_secs: float) -> None:
+        return None
+
+    with patch.object(L, "_one_hit", _one_hit):
+        probe = await L.run_liveness_probe(
+            "https://api.example.com/list",
+            ["volume_24h", "longShortRatio"],
+            hits=4, gap_secs=0, sleep_fn=_no_sleep,
+        )
+    v = L.classify_probe(probe, ["volume_24h", "longShortRatio"])
+    assert v["outcome"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_nested_data_wrapper_extraction_reaches_probe() -> None:
+    """``{"data": [{...}]}`` fallback in the extraction contract —
+    the probe reaches ``data[0]`` fields."""
+    async def _one_hit(url: str, timeout: float = 15.0) -> dict[str, Any]:
+        return {"ok": True, "status": 200, "body": {
+            "data": [{"total24h": 0, "n_tx": 42}],
+        }}
+
+    async def _no_sleep(_secs: float) -> None:
+        return None
+
+    with patch.object(L, "_one_hit", _one_hit):
+        probe = await L.run_liveness_probe(
+            "https://api.example.com/nested",
+            ["total24h", "n_tx"],
+            hits=4, gap_secs=0, sleep_fn=_no_sleep,
+        )
+    # total24h is 0 across all hits → rule (b) dead field
+    v = L.classify_probe(probe, ["total24h", "n_tx"])
+    assert v["outcome"] == "reject"
+    assert v["rule"] == "b"
+    assert "total24h" in v["dead_fields"]
+
+
+@pytest.mark.asyncio
+async def test_extraction_failure_marks_hit_as_error_unknown() -> None:
+    """Body was JSON but neither dict-with-fields nor list-of-dicts —
+    the fail-open discipline treats it as unknown (per-field error
+    marker); classifier PASSes because no observation supports
+    frozen/dead judgment."""
+    async def _one_hit(url: str, timeout: float = 15.0) -> dict[str, Any]:
+        # Body is a JSON scalar — neither dict nor list.
+        return {"ok": True, "status": 200, "body": 42}
+
+    async def _no_sleep(_secs: float) -> None:
+        return None
+
+    with patch.object(L, "_one_hit", _one_hit):
+        probe = await L.run_liveness_probe(
+            "https://api.example.com/scalar",
+            ["x"], hits=4, gap_secs=0, sleep_fn=_no_sleep,
+        )
+    for hit in probe["hits"]:
+        v = hit["vals"]["x"]
+        assert isinstance(v, str) and v.startswith("error:")
+    result = L.classify_probe(probe, ["x"])
+    assert result["outcome"] == "pass"
+
+
 def test_liveness_probe_summary_helper() -> None:
     """The retry corrective prompt renders the observed hit values —
     the model's lever is a different endpoint."""

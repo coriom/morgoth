@@ -99,16 +99,36 @@ async def run_liveness_probe(
     string as the value (per user spec: "value, or the HTTP error AS
     the value"). Downstream classification treats an error-string as
     "not observed as movement" but does not raise.
+
+    Field extraction goes through
+    ``self_modify.extraction.template_extraction_site`` — the SAME
+    contract the shape gate uses and the template will use at runtime.
+    List-shaped bodies unwrap to ``list[0]``; nested ``{"data": [...]}``
+    unwraps to ``data[0]``; top-level dict returns as-is. The 1182ee96
+    hole (probe blind on list-shaped bodies) was a divergence between
+    the probe and the template — closed by single-sourcing.
     """
+    from self_modify.extraction import template_extraction_site
+
     per_hit: list[dict[str, Any]] = []
     for i in range(hits):
         t0 = now_fn()
         h = await _one_hit(url, timeout=hit_timeout)
         vals: dict[str, Any] = {}
-        if h.get("ok") and isinstance(h.get("body"), dict):
-            body = h["body"]
-            for f in digest_fields:
-                vals[f] = body.get(f)
+        if h.get("ok"):
+            site, _label = template_extraction_site(
+                h.get("body"), list(digest_fields),
+            )
+            if isinstance(site, dict):
+                for f in digest_fields:
+                    vals[f] = site.get(f)
+            else:
+                # Body was well-formed JSON but no extraction site
+                # matched — the template would find nothing either.
+                # Mark as extraction-error so classifier keeps the
+                # fail-open discipline (unknown, not frozen).
+                for f in digest_fields:
+                    vals[f] = "error:extraction-failed"
         else:
             err = h.get("error") or f"HTTP {h.get('status')}"
             for f in digest_fields:

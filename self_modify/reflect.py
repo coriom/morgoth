@@ -579,43 +579,28 @@ _SHAPE_KEYS_SHOWN = 15
 def _template_extraction_site(
     body: Any, digest_fields: list[str],
 ) -> tuple[dict[str, Any] | None, str]:
-    """Mirror the template's extraction logic — return the dict the
-    template will read fields from, plus a human-readable site label.
+    """Thin wrapper: delegate to the shared extraction contract and
+    enrich the ``None`` reason with the observed dict's key list so
+    the shape gate's error message stays informative.
 
-    Returns ``(None, reason)`` if the body's overall shape is
-    unusable (neither a dict with matching top-level keys nor a
-    ``{"data": [...]}`` fallback nor a top-level list-of-dicts).
-
-    Kept BYTE-ALIGNED with ``TOOL_TEMPLATE``'s ``execute`` method:
-    top-level dict first; if no field matches, ``data[0]`` fallback;
-    else top-level list first element. Any drift between the two
-    will surface as a false accept or false reject — the injection
-    audit tests both extraction sites.
+    The extraction contract itself is single-sourced in
+    ``self_modify.extraction.template_extraction_site`` — both this
+    site and the liveness probe read from there so the two gates
+    cannot drift from each other or from the template.
     """
-    if isinstance(body, dict):
-        if any(f in body for f in digest_fields):
-            return body, "top-level dict"
-        data = body.get("data")
-        if isinstance(data, list) and data and isinstance(data[0], dict):
-            return data[0], "data[0] (nested)"
+    from self_modify.extraction import template_extraction_site
+    site, label = template_extraction_site(body, digest_fields)
+    if site is None and isinstance(body, dict):
         keys = list(body.keys())
         keys_shown = keys[:_SHAPE_KEYS_SHOWN]
-        more = f", …(+{len(keys) - _SHAPE_KEYS_SHOWN} more)" if len(keys) > _SHAPE_KEYS_SHOWN else ""
+        more = (f", …(+{len(keys) - _SHAPE_KEYS_SHOWN} more)"
+                if len(keys) > _SHAPE_KEYS_SHOWN else "")
         return None, (
             f"missing at top-level: {digest_fields} — response is a dict "
             f"but no digest field matches and there is no `data`: "
             f"[<dict>] fallback; real keys: [{', '.join(keys_shown)}{more}]"
         )
-    if isinstance(body, list):
-        if not body:
-            return None, "response is an empty list"
-        if not isinstance(body[0], dict):
-            return None, (
-                f"response is a list but its first element is a "
-                f"{type(body[0]).__name__}, not a dict"
-            )
-        return body[0], "list[0] (top-level list)"
-    return None, f"response is neither dict nor list (got {type(body).__name__})"
+    return site, label
 
 
 # ---------- freshness gate --------------------------------------------
