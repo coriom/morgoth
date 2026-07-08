@@ -123,9 +123,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Morgoth", lifespan=lifespan)
+# Local-only dashboard: the front-end port is operator-chosen (Next
+# auto-shifts to 3001/3002 when 3000 is squatted, alt Vite dashboards
+# land on 5173, dev shells often pick 8080/8081). The port carries
+# NO security boundary here — it's a local process on the same host.
+# We accept any localhost/127.0.0.1 origin regardless of port.
+#
+# This is NOT ``allow_origins=["*"]``: (a) non-local origins remain
+# blocked (evil.com gets no ACAO header, browser blocks the response);
+# (b) wildcard is incompatible with ``allow_credentials=True`` — the
+# regex approach preserves credential mode for the wiki reader's
+# cookie-authenticated calls.
+#
+# Regex is anchored (^...$) so ``https://localhost.evil.com`` is a
+# distinct origin and rejected.
+_LOCAL_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origin_regex=_LOCAL_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
