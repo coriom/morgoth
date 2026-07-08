@@ -234,6 +234,7 @@ async def test_cli_approve_refuses_wrong_lifecycle() -> None:
     from self_modify.cli import _cmd_approve
 
     store = MagicMock()
+    store.resolve_id = AsyncMock(return_value="id-7")
     store.get = AsyncMock(
         return_value={"proposal_id": "id-7", "status": P.STATUS_SUBMITTED}
     )
@@ -251,6 +252,7 @@ async def test_cli_approve_transitions_pending_to_approved() -> None:
     from self_modify.cli import _cmd_approve
 
     store = MagicMock()
+    store.resolve_id = AsyncMock(return_value="id-8")
     store.get = AsyncMock(
         return_value={"proposal_id": "id-8", "status": P.STATUS_PENDING_APPROVAL}
     )
@@ -269,6 +271,7 @@ async def test_cli_reject_marks_rejected() -> None:
     from self_modify.cli import _cmd_reject
 
     store = MagicMock()
+    store.resolve_id = AsyncMock(return_value="id-9")
     store.get = AsyncMock(
         return_value={"proposal_id": "id-9", "status": P.STATUS_PENDING_APPROVAL}
     )

@@ -59,26 +59,41 @@ _VENV_PYTHON = "/home/corio/Morgoth/morgoth/.venv/bin/python"
 # Hard timeout for pytest under the sandbox — a proposal that hangs the
 # suite is a failure, not an outage.
 #
-# Sizing rationale (adaptive budget):
-#   Measured under the exact gate_tests invocation (unshare
-#   --user --map-root-user --net + venv interpreter + pytest -n auto
-#   on a 12-core host, 593 tests): 547s on two consecutive stability
-#   runs (variance <0.1%), a 4.94× speedup over the serial 2701s
-#   baseline. xdist parallelizes clean because the suite is fully
-#   DB-mocked. Budget = ceil(measured × 2.5 / 60) × 60 = 1380s.
-#   Env-overridable via SANDBOX_TIMEOUT_SECONDS for one-off operator
-#   triage without editing the constant.
+# Sizing rationale (adaptive budget, floor-guarded):
+#   Under the xdist wrapper, gate_tests replays the full suite AND
+#   the reflect flow waits for the concurrent 450s liveness probe on
+#   gate exit ("correctness over wall time"). A 2.5× headroom on the
+#   test wall time alone under-covers when tests ≈ probe window: a
+#   valid proposal whose sandbox completed near the headroom edge
+#   would still miss the probe window. The floor formula covers this:
+#
+#     _SANDBOX_DEFAULT_TIMEOUT_SECS = max(
+#         ceil(measured × 2.5 / 60) × 60,
+#         PROBE_WINDOW_SECS + measured + 300,
+#     )
+#
+#   The first term is the classic headroom on the tests. The second
+#   term guarantees budget ≥ tests + probe + variance regardless of
+#   how the headroom multiplier lands. Whichever is larger wins.
+#
+#   Measured under the exact gate_tests invocation (unshare --user
+#   --map-root-user --net + venv interpreter + pytest -n auto,
+#   631-test suite): 2672s. PROBE_WINDOW_SECS = 450s (4 hits × 150s
+#   gap, see self_modify.liveness). Env override unchanged.
 #
 # Subset-run alternative is REJECTED: gate_tests must prove the
-# proposal doesn't break ANYTHING (a proposal only proving it doesn't
-# break its own module has not proved integration safety). A slower
-# gate is preferable to a weaker gate — pytest-xdist is the correct
-# lever because it preserves full-suite coverage.
-_SANDBOX_MEASURED_SECS: int = 547
+# proposal doesn't break ANYTHING. A slower gate is preferable to a
+# weaker gate — pytest-xdist is the correct lever because it
+# preserves full-suite coverage.
+_SANDBOX_MEASURED_SECS: int = 2672
 _SANDBOX_HEADROOM: float = 2.5
-_SANDBOX_DEFAULT_TIMEOUT_SECS: int = int(math.ceil(
-    _SANDBOX_MEASURED_SECS * _SANDBOX_HEADROOM / 60
-) * 60)
+_PROBE_WINDOW_SECS: int = 450  # 4 hits × 150s gap (self_modify.liveness)
+_PROBE_VARIANCE_MARGIN_SECS: int = 300  # tolerate probe-side + gate-exit slop
+
+_SANDBOX_DEFAULT_TIMEOUT_SECS: int = max(
+    int(math.ceil(_SANDBOX_MEASURED_SECS * _SANDBOX_HEADROOM / 60) * 60),
+    _PROBE_WINDOW_SECS + _SANDBOX_MEASURED_SECS + _PROBE_VARIANCE_MARGIN_SECS,
+)
 
 
 def _resolve_sandbox_timeout() -> int:

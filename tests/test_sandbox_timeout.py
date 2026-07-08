@@ -14,22 +14,45 @@ from unittest.mock import patch
 from self_modify import gates as gates_mod
 
 
-def test_default_derives_from_measured_with_headroom() -> None:
-    """Default = ceil(measured × 2.5 / 60) × 60. Locked so a
-    silent shrink to the old 180s cannot land unnoticed. Post-xdist
-    the measured value dropped to ~547s (12-core parallel); the
-    lower bound is set well above 180s but low enough to accept the
-    xdist speedup."""
-    assert gates_mod._SANDBOX_HEADROOM >= 2.0
-    assert gates_mod._SANDBOX_MEASURED_SECS > 400  # not the old 180
+def test_default_derives_from_measured_with_headroom_and_probe_floor() -> None:
+    """Default =
+      max(ceil(measured × 2.5 / 60) × 60,
+          PROBE_WINDOW_SECS + measured + variance_margin)
+
+    Floor guard covers the case where the tests-headroom alone
+    under-budgets the concurrent probe (reflect waits for probe on
+    gate exit). Locked so a silent revert to the tests-only formula
+    would fail here."""
     import math
-    expected = int(math.ceil(
+    assert gates_mod._SANDBOX_HEADROOM >= 2.0
+    assert gates_mod._SANDBOX_MEASURED_SECS > 400
+    assert gates_mod._PROBE_WINDOW_SECS >= 450   # 4 × 150s
+    assert gates_mod._PROBE_VARIANCE_MARGIN_SECS >= 300
+
+    headroom_term = int(math.ceil(
         gates_mod._SANDBOX_MEASURED_SECS * gates_mod._SANDBOX_HEADROOM / 60
     ) * 60)
+    floor_term = (
+        gates_mod._PROBE_WINDOW_SECS
+        + gates_mod._SANDBOX_MEASURED_SECS
+        + gates_mod._PROBE_VARIANCE_MARGIN_SECS
+    )
+    expected = max(headroom_term, floor_term)
     assert gates_mod._SANDBOX_DEFAULT_TIMEOUT_SECS == expected
-    # ≥ 2× measured — the anti-regression contract.
+    # ≥ tests + probe — the anti-regression contract that the
+    # 1380s tests-only budget failed to meet.
     assert (gates_mod._SANDBOX_DEFAULT_TIMEOUT_SECS
-            >= 2 * gates_mod._SANDBOX_MEASURED_SECS)
+            >= gates_mod._SANDBOX_MEASURED_SECS + gates_mod._PROBE_WINDOW_SECS)
+
+
+def test_floor_formula_documented_in_docstring() -> None:
+    """The floor formula is documented in-place so a future refactor
+    can't silently drop it — the reader sees the rationale."""
+    import inspect
+    src = inspect.getsource(gates_mod)
+    assert "PROBE_WINDOW_SECS + measured + 300" in src or \
+           "PROBE_WINDOW_SECS + measured + variance" in src or \
+           ("_PROBE_WINDOW_SECS" in src and "_PROBE_VARIANCE_MARGIN_SECS" in src)
 
 
 def test_env_override_respected() -> None:
