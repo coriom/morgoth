@@ -1035,6 +1035,34 @@ def _target_path_for_reject(spec: dict[str, Any] | None) -> str:
     return f"tools/data_feeds/{tn}.py"
 
 
+# ---------- delegation hook: read flag + format reason ---------------
+
+def _delegation_enabled() -> bool:
+    """Read the SHADOW_DELEGATION env flag (default OFF).
+
+    Truthy values: "1", "true", "on", "yes" (case-insensitive).
+    Anything else — empty, "off", typo — keeps the shadow inert.
+    The default MUST stay off so an unpatched deployment behaves
+    byte-identically to the pre-delegation regime.
+    """
+    raw = (os.environ.get("SHADOW_DELEGATION") or "").strip().lower()
+    return raw in ("1", "true", "on", "yes")
+
+
+def _format_delegation_reason(verdict: dict[str, Any]) -> str:
+    """Compact one-line reason for status_reason on shadow_rejected.
+
+    The ``[shadow]`` prefix is what negative-list rendering keys off:
+    it distinguishes a shadow-auto-reject from an operator reject in
+    the calibration axis.
+    """
+    axes = verdict.get("axes") or {}
+    axes_str = " ".join(f"{a}={l}" for a, l in axes.items())
+    reasons = verdict.get("reasons") or []
+    reason_str = " | ".join(str(r) for r in reasons[:3])
+    return f"[shadow] verdict=REJECT ({axes_str}) reasons: {reason_str}"
+
+
 def _liveness_probe_summary(
     probe: dict[str, Any] | None,
     digest_fields: list[str],
@@ -1352,22 +1380,44 @@ async def _one_reflect_attempt(
             )
             log(f"pending_approval note: {note}")
 
-        # Shadow Gate 2.5 — run LLM verifier, record verdict, DO NOT
-        # mutate proposal. Failure is non-fatal (recorded as ERROR
-        # verdict inside the shadow itself).
+        # Shadow Gate 2.5 — run LLM verifier, record verdict. Under
+        # the DEFAULT posture (SHADOW_DELEGATION off) the shadow has
+        # ZERO authority — verdict is recorded and returned, proposal
+        # status is untouched. Under DELEGATION ON, a REJECT verdict
+        # (and REJECT alone — NEVER APPROVE) flips the proposal to
+        # shadow_rejected via the delegation hook below. APPROVE/FLAG
+        # continue to the operator queue as before — the dangerous
+        # direction stays 100% human.
+        shadow_verdict: dict[str, Any] | None = None
         try:
             from self_modify import shadow as _shadow
             final_row = await store.get(proposal_id)
             if final_row is not None:
-                v = await _shadow.run_shadow_verdict(
+                shadow_verdict = await _shadow.run_shadow_verdict(
                     proposal=final_row, config=config, pm=pm,
                 )
                 log(
-                    f"shadow verdict: {v.get('verdict')} "
-                    f"axes={v.get('axes')}"
+                    f"shadow verdict: {shadow_verdict.get('verdict')} "
+                    f"axes={shadow_verdict.get('axes')}"
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("reflect: shadow verdict failed (non-fatal): {}", exc)
+
+        # Delegation hook — the ONLY code path that writes
+        # STATUS_SHADOW_REJECTED. Grep-locked in tests. Requires:
+        # (1) the delegation flag is on, (2) the verdict is REJECT.
+        # APPROVE and FLAG never trigger the flip — the dangerous
+        # direction stays 100% human.
+        if (_delegation_enabled()
+                and shadow_verdict is not None
+                and shadow_verdict.get("verdict") == "REJECT"):
+            reason = _format_delegation_reason(shadow_verdict)
+            await store.update_status(
+                proposal_id, P.STATUS_SHADOW_REJECTED, reason[:2000],
+            )
+            final_status = P.STATUS_SHADOW_REJECTED
+            log(f"delegation: shadow REJECT → {proposal_id[:8]} "
+                f"flipped to shadow_rejected (recorded axes+reasons)")
 
     return {"outcome": "submitted", "reason": final_status,
             "proposal_id": proposal_id, "pipeline_status": final_status,

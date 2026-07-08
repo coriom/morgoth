@@ -49,6 +49,14 @@ def _print_table(rows: list[dict[str, Any]], header: str) -> None:
 async def _cmd_list(store: P.ProposalStore, args: argparse.Namespace) -> int:
     pending = await store.list_pending(limit=args.limit)
     _print_table(pending, "pending approval")
+    if getattr(args, "all", False):
+        shadow = await store.list_shadow_rejected(limit=args.limit)
+        # Tag each row with [shadow] in the target_path column so the
+        # operator sees the source at a glance in the compact table.
+        for row in shadow:
+            row["target_path"] = "[shadow] " + (row.get("target_path") or "")
+        print()
+        _print_table(shadow, f"shadow_rejected ({len(shadow)}) — audit")
     if args.recent:
         recent = await store.list_recent(limit=args.limit)
         print()
@@ -210,6 +218,10 @@ async def _main(argv: list[str]) -> int:
     p_list = subparsers.add_parser("list", help="list pending + recent proposals")
     p_list.add_argument("--limit", type=int, default=20)
     p_list.add_argument("--recent", action="store_true", help="also show recent history")
+    p_list.add_argument(
+        "--all", action="store_true",
+        help="also show shadow_rejected rows (audit surface)",
+    )
     p_list.set_defaults(_fn=_cmd_list)
 
     p_show = subparsers.add_parser("show", help="show one proposal in full")

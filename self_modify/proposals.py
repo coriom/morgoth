@@ -88,6 +88,14 @@ STATUS_REJECTED_STALE = "rejected_stale"
 # as a pre-submit-terminal for calibration purposes: carries the spec
 # and lands on the negative list.
 STATUS_REJECTED_STATIC = "rejected_static"
+# Delegation regime — SHADOW authority WITH a mechanical trapdoor.
+# The shadow verifier can auto-classify a proposal into
+# shadow_rejected ONLY when the delegation flag is on AND ONLY on
+# a REJECT verdict. APPROVE/FLAG stays in the operator queue (the
+# dangerous direction remains 100% human). shadow_rejected is
+# terminal and distinct from operator-rejected so the calibration
+# axis stays intact.
+STATUS_SHADOW_REJECTED = "shadow_rejected"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
 STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
@@ -106,6 +114,7 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_SHAPE,
     STATUS_REJECTED_STALE,
     STATUS_REJECTED_STATIC,
+    STATUS_SHADOW_REJECTED,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
 )
@@ -122,6 +131,7 @@ NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_SHAPE,
     STATUS_REJECTED_STALE,
     STATUS_REJECTED_STATIC,
+    STATUS_SHADOW_REJECTED,
 )
 
 # The statuses that ``submit_terminal`` is allowed to write. Anything
@@ -308,6 +318,20 @@ class ProposalStore:
                 "SELECT * FROM self_modify_proposals "
                 "WHERE status = $1 ORDER BY created_at DESC LIMIT $2",
                 STATUS_PENDING_APPROVAL,
+                limit,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_shadow_rejected(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Rows the delegation hook auto-rejected — audit-only view.
+        The default ``morgoth proposals`` view excludes these; the
+        ``--all`` flag surfaces them tagged ``[shadow]``."""
+        pool = self._pm._require_pool()  # noqa: SLF001
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM self_modify_proposals "
+                "WHERE status = $1 ORDER BY created_at DESC LIMIT $2",
+                STATUS_SHADOW_REJECTED,
                 limit,
             )
         return [dict(r) for r in rows]
