@@ -111,6 +111,18 @@ def _resolve_sandbox_timeout() -> int:
 
 SANDBOX_TIMEOUT_SECONDS: int = _resolve_sandbox_timeout()
 _PYTEST_TIMEOUT_SECS = SANDBOX_TIMEOUT_SECONDS
+# Single source of truth for every pytest-invoking subprocess in
+# self_modify/. Both gate_tests (sandbox suite) and apply's
+# _run_live_pytest (live-tree suite) consume this — divergent budgets
+# were the bug class:
+#   - 180s sandbox limit → 4/? proposals died tests_failed (742e7d5e).
+#   - 1380s sandbox limit → 1/? died (acdba238).
+#   - 300s apply limit    → 1182ee96 (liveness PASS, shadow APPROVE,
+#                            operator-approved) died apply_failed on
+#                            infrastructure (first live rollback of
+#                            the project — rollback itself worked).
+# Env override SANDBOX_TIMEOUT_SECONDS propagates to BOTH sites.
+PYTEST_BUDGET_SECS: int = SANDBOX_TIMEOUT_SECONDS
 
 # Cached feasibility probe for user+net namespace isolation. The probe
 # tries to enter a user+net ns and immediately exit; anything non-zero

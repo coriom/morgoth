@@ -47,6 +47,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from self_modify import gates as _gates
 from self_modify import proposals as P
 from self_modify import zones
 
@@ -58,7 +59,12 @@ _SYSTEMCTL = "/usr/bin/systemctl"
 _SERVICE = "morgoth.service"
 _API_BASE = "http://localhost:8000"
 _HEALTH_WAIT_SECS = 90
-_PYTEST_TIMEOUT_SECS = 300
+# Single source of truth — apply and gate_tests hit the same live suite
+# through different entry points; a divergent budget was the bug that
+# killed 1182ee96 (liveness PASS, shadow APPROVE, operator-approved) on
+# a 300s hardcoded timeout while the suite runs ~2700s under load.
+# See gates.PYTEST_BUDGET_SECS docstring.
+_PYTEST_TIMEOUT_SECS = _gates.PYTEST_BUDGET_SECS
 
 # Re-export from proposals for a shorter local reference.
 STATUS_APPLIED = P.STATUS_APPLIED
@@ -133,8 +139,15 @@ async def _wait_for_ready_and_tool(tool_name: str | None) -> bool:
 # --- subprocess wrappers ----------------------------------------------------
 
 def _run_live_pytest(repo: Path) -> subprocess.CompletedProcess[str]:
+    """Live-tree pytest — same suite the sandbox ran, same budget.
+
+    ``-n auto`` matches the sandbox invocation so the live budget's
+    variance envelope matches the measured value (a live serial run
+    at ~2700s wall time would routinely exceed even the sandbox
+    xdist budget).
+    """
     return subprocess.run(
-        [str(_VENV_PYTHON), "-m", "pytest", "-q"],
+        [str(_VENV_PYTHON), "-m", "pytest", "-q", "-n", "auto"],
         cwd=str(repo),
         capture_output=True,
         text=True,
