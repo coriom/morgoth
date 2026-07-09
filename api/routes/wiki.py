@@ -3,6 +3,7 @@
 POST /api/wiki/compile   → rebuild the vault (delegates to scripts/compile_wiki).
 GET  /api/wiki/manifest  → list of all .md pages with section + compiled_at.
 GET  /api/wiki/page      → raw markdown content for one page.
+GET  /api/wiki/graph     → nodes + edges of the wikilink graph.
 
 The vault (``~/Morgoth/vault``) is the single source of truth for the wiki.
 Obsidian keeps working directly against these files; this API just exposes
@@ -19,6 +20,7 @@ share the SAME 404 response — no oracle.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,12 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from loguru import logger
 
 from scripts.compile_wiki import VAULT_DIR, compile_wiki
+
+
+# Matches Obsidian-style ``[[target]]`` and ``[[target|label]]`` — the
+# SAME regex the frontend uses (lib/wikilinks.ts). Kept byte-aligned so
+# the graph endpoint and the client renderer agree on what a link is.
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]|]+?)(?:\|([^\[\]]+?))?\]\]")
 
 
 router = APIRouter(prefix="/api/wiki", tags=["wiki"])
@@ -195,3 +203,129 @@ async def wiki_page(
         "content": content,
         "mtime": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
     }
+
+
+# ---------- graph: wikilink network ------------------------------------
+
+
+def _extract_wikilink_targets(text: str) -> list[str]:
+    """Return the ``target`` slugs referenced by ``[[target]]`` /
+    ``[[target|label]]`` in ``text``, in encounter order and
+    normalized the same way the frontend transform does: strip
+    ``.md`` (case-insensitive), trim, drop empty."""
+    targets: list[str] = []
+    for m in _WIKILINK_RE.finditer(text):
+        raw = (m.group(1) or "").strip()
+        if not raw:
+            continue
+        # Strip trailing .md (case-insensitive) — the model sometimes
+        # emits it, sometimes doesn't; the URL form has neither.
+        if raw.lower().endswith(".md"):
+            raw = raw[:-3]
+        raw = raw.strip()
+        if raw:
+            targets.append(raw)
+    return targets
+
+
+@router.get("/graph")
+async def wiki_graph() -> dict[str, Any]:
+    """Nodes + edges of the vault's wikilink graph.
+
+    Response shape::
+
+        {
+          "nodes": [
+            {"id": "entities/btc-short-term-price",
+             "title": "BTC short-term price",
+             "section": "root" | "entities" | "system" | ...,
+             "degree": 12},
+            {"id": "system/dangling",
+             "title": "dangling",
+             "section": "missing",
+             "degree": 3},
+            ...
+          ],
+          "edges": [
+            {"source": "root/_index",
+             "target": "entities/btc-short-term-price"},
+            ...
+          ]
+        }
+
+    Sections mirror /manifest (``root`` / ``entities`` / ``system`` /
+    any other top-level dir). Nodes referenced by a wikilink but
+    without a matching vault page get ``section: "missing"`` — a
+    dangling link is information, not noise. Edges are deduped so a
+    page referencing the same target twice contributes ONE edge.
+
+    No path parameter; the walk is bounded by VAULT_DIR — read-only,
+    same posture as /manifest. No oracle.
+    """
+    vault_root = VAULT_DIR.resolve()
+    if not vault_root.exists():
+        return {"nodes": [], "edges": []}
+
+    # First pass: collect every page under VAULT_DIR keyed by its
+    # frontend-style id (rel path sans .md). This becomes the set of
+    # "real" nodes — targets not in it are "missing".
+    real_pages: dict[str, dict[str, str]] = {}
+    for md_path in sorted(vault_root.rglob("*.md")):
+        try:
+            rel = md_path.resolve().relative_to(vault_root)
+        except ValueError:
+            continue
+        node_id = rel.with_suffix("").as_posix()
+        real_pages[node_id] = {
+            "id": node_id,
+            "title": _title_for(md_path, rel),
+            "section": _section_for(rel),
+            "_path": str(md_path),  # internal only, popped before return
+        }
+
+    # Second pass: parse wikilinks. Edges dedupe via a set keyed by
+    # (source, target). Missing targets accumulate into a separate
+    # dict so we can render them dimmed on the frontend without
+    # losing their titles (fallback to the last path segment).
+    edges: set[tuple[str, str]] = set()
+    missing: dict[str, dict[str, str]] = {}
+    for node_id, page in real_pages.items():
+        try:
+            text = Path(page["_path"]).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for target in _extract_wikilink_targets(text):
+            if target == node_id:
+                continue  # self-links do not form an edge
+            edges.add((node_id, target))
+            if target not in real_pages:
+                # Derive a display title from the last path segment;
+                # section is a synthetic "missing" bucket.
+                if target not in missing:
+                    slug = target.split("/")[-1] or target
+                    missing[target] = {
+                        "id": target,
+                        "title": slug.replace("-", " ").replace("_", " "),
+                        "section": "missing",
+                    }
+
+    # Compute degree (undirected: incoming + outgoing) for node sizing
+    # on the frontend force graph.
+    degree: dict[str, int] = {}
+    for src, tgt in edges:
+        degree[src] = degree.get(src, 0) + 1
+        degree[tgt] = degree.get(tgt, 0) + 1
+
+    nodes: list[dict[str, Any]] = []
+    for page in real_pages.values():
+        page.pop("_path", None)
+        page = dict(page)
+        page["degree"] = degree.get(page["id"], 0)
+        nodes.append(page)
+    for miss in missing.values():
+        miss = dict(miss)
+        miss["degree"] = degree.get(miss["id"], 0)
+        nodes.append(miss)
+
+    edge_list = [{"source": s, "target": t} for s, t in sorted(edges)]
+    return {"nodes": nodes, "edges": edge_list}
