@@ -49,6 +49,63 @@ CONTRADICTION_WINDOW_HOURS: float = float(
 )
 
 
+# Per-class window for price-direction subjects.
+#
+# Baseline verdict on 19 live pairs: 16/19 (84%) were price-direction
+# subjects with 1–4h gaps — both readings TRUE at their moment, not a
+# real disagreement. The 6h window is wider than that subject class's
+# own volatility, so it treats extraction variance as contradiction.
+# Tighter window (2h) matches the class's actual timescale; the 3
+# analytical pairs (mining difficulty adjustment, mining profitability)
+# stay open because their subjects are not price-class.
+#
+# Same env-override pattern as the flat constant:
+#   CONTRADICTION_WINDOW_HOURS_PRICE=2.0
+CONTRADICTION_WINDOW_HOURS_PRICE: float = float(
+    os.environ.get("CONTRADICTION_WINDOW_HOURS_PRICE", "2.0")
+)
+
+
+# Price-class subject tokens — same shape as SHORT_TERM_TOKENS, same
+# substring/case-insensitive matching. "price", "change", "trend",
+# "volume" are the recurring intraday-metric keywords in the live
+# subject distribution. If a subject carries a long-term qualifier
+# (weekly/monthly/yearly), the long-timeframe path already keeps it
+# in its own bucket via subjects_timeframe_conflict — this classifier
+# does not need to re-check that.
+PRICE_CLASS_TOKENS: frozenset[str] = frozenset({
+    "price",
+    "change",
+    "trend",
+    "volume",
+})
+
+
+def subject_is_price_class(subject: str) -> bool:
+    """True iff ``subject`` contains a price-class token.
+
+    Substring match, case-insensitive — mirrors the timeframe-guard
+    normalization so the two classifiers behave the same way on
+    hyphenated / compound wording.
+    """
+    if not isinstance(subject, str) or not subject:
+        return False
+    low = subject.lower()
+    return any(tok in low for tok in PRICE_CLASS_TOKENS)
+
+
+def window_for(subject_a: str, subject_b: str) -> float:
+    """Return the contradiction window (hours) for a subject pair.
+
+    Conservative: a MIXED pair (one price-class, one not) takes the
+    TIGHTER window (2h). Extraction variance on the price-class side
+    would otherwise leak through the wider window.
+    """
+    if subject_is_price_class(subject_a) or subject_is_price_class(subject_b):
+        return CONTRADICTION_WINDOW_HOURS_PRICE
+    return CONTRADICTION_WINDOW_HOURS
+
+
 # Timeframe qualifiers that make two subjects NON-COMPARABLE regardless of
 # what the embedding says. "long-term price trends" vs "short-term price
 # trend" are semantically similar in embedding space (both mention "price

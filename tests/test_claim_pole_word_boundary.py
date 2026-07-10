@@ -107,17 +107,21 @@ def test_remediation_voids_pole_fix_pair() -> None:
 
 
 def test_remediation_keeps_genuine_opposing_pair() -> None:
-    """A same-window pair with real opposition is still ``kept``."""
+    """A same-window pair with real opposition is still ``kept``.
+
+    Uses "Mining profitability" (non-price-class) with a 3h gap so
+    the 6h default window governs — this test exercises the pole-
+    detection classifier path, not the per-class window boundary
+    (see tests/test_contradiction_priceclass for that)."""
     from scripts.remediate_contradictions import _classify
 
-    window_seconds = 6.0 * 3600.0
     now = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
     pair = {
-        "subject_a": "BTC short-term price",
-        "subject_b": "BTC short-term price",
+        "subject_a": "Mining profitability",
+        "subject_b": "Mining profitability",
         "claim_a": "declining",
         "claim_b": "increasing",
         "created_at_a": now,
         "created_at_b": now - timedelta(hours=3),
     }
-    assert _classify(pair, window_seconds) == "kept"
+    assert _classify(pair, 0.0) == "kept"

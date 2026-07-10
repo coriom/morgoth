@@ -22,6 +22,7 @@ from core.contradictions import (
     claims_oppose,
     group_theses_by_subject,
     subjects_timeframe_conflict,
+    window_for,
 )
 from core.llm_client import ChatMessage, OllamaLLMClient
 from core.scheduler import Scheduler, Task, TaskPriority, TaskType
@@ -992,7 +993,10 @@ class Brain:
             self._feed_append("ERROR", f"contradiction grouping failed: {type(exc).__name__}")
             return []
 
-        window_seconds = CONTRADICTION_WINDOW_HOURS * 3600.0
+        # Per-pair window resolved inside the loop (window_for takes
+        # both subjects). CONTRADICTION_WINDOW_HOURS retained as the
+        # non-price default; window_for tightens to
+        # CONTRADICTION_WINDOW_HOURS_PRICE for price-class pairs.
         found: list[dict[str, Any]] = []
         flipped: set[str] = set()          # IDs already flipped to contradicted this pass
         superseded_ids: set[str] = set()   # IDs already flipped to superseded this pass
@@ -1029,10 +1033,16 @@ class Brain:
 
                     # Guard 2: temporal window — cross-window pairs are
                     # supersessions on a rolling metric, not contradictions.
+                    # Per-subject-class window: price-class pairs get
+                    # the tighter 2h window; others keep 6h.
                     ca, cb = _created_at(ta), _created_at(tb)
                     if ca is not None and cb is not None:
                         # Both timestamps are timezone-aware in the schema.
                         gap = abs((ca - cb).total_seconds())
+                        window_hours = window_for(
+                            ta.get("subject", ""), tb.get("subject", ""),
+                        )
+                        window_seconds = window_hours * 3600.0
                         if gap >= window_seconds:
                             # Older → superseded, newer → untouched.
                             if ca <= cb:
@@ -1057,7 +1067,7 @@ class Brain:
                                 "detect_contradictions: supersession — {} superseded by {} "
                                 "(gap {:.1f}h ≥ window {:.1f}h)",
                                 older_id[:8], newer_id[:8],
-                                gap / 3600.0, CONTRADICTION_WINDOW_HOURS,
+                                gap / 3600.0, window_hours,
                             )
                             continue
 

@@ -42,34 +42,45 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.config import load_config  # noqa: E402
 from core.contradictions import (  # noqa: E402
     CONTRADICTION_WINDOW_HOURS,
+    CONTRADICTION_WINDOW_HOURS_PRICE,
     claims_oppose,
+    subject_is_price_class,
     subjects_timeframe_conflict,
+    window_for,
 )
 from memory.persistent import PersistentMemory  # noqa: E402
 
 
-def _classify(pair: dict[str, Any], window_seconds: float) -> str:
+def _classify(pair: dict[str, Any], _window_seconds_ignored: float) -> str:
     """Classify an unresolved pair under the current rules.
 
     Order matters. The pole re-validation runs FIRST — a pair whose claims
     no longer oppose under the fixed word-boundary lexicon is void
     regardless of timeframe or gap (the recorded pair was a false positive
     from the substring-collision era). Then the earlier rules apply.
+
+    Window is per-pair now: ``window_for(subject_a, subject_b)`` — 2h for
+    price-class pairs, 6h otherwise. A pair reclassified specifically by
+    the tighter price-class window carries a distinct resolution string
+    (``reclassified_supersession_priceclass``) so the operator can slice
+    the retro action by class.
     """
+    subject_a = pair.get("subject_a") or ""
+    subject_b = pair.get("subject_b") or ""
     if not claims_oppose(
         pair.get("claim_a") or "",
         pair.get("claim_b") or "",
     ):
         return "voided_pole_fix"
-    if subjects_timeframe_conflict(
-        pair.get("subject_a") or "",
-        pair.get("subject_b") or "",
-    ):
+    if subjects_timeframe_conflict(subject_a, subject_b):
         return "voided_timeframe_guard"
     ca, cb = pair.get("created_at_a"), pair.get("created_at_b")
     if isinstance(ca, datetime) and isinstance(cb, datetime):
         gap = abs((ca - cb).total_seconds())
-        if gap >= window_seconds:
+        window_hours = window_for(subject_a, subject_b)
+        if gap >= window_hours * 3600.0:
+            if window_hours < CONTRADICTION_WINDOW_HOURS:
+                return "reclassified_supersession_priceclass"
             return "reclassified_supersession"
     return "kept"
 
@@ -130,7 +141,10 @@ async def main() -> None:
             elif action == "voided_timeframe_guard":
                 restoration_candidates.add(id_a)
                 restoration_candidates.add(id_b)
-            elif action == "reclassified_supersession":
+            elif action in (
+                "reclassified_supersession",
+                "reclassified_supersession_priceclass",
+            ):
                 older = _older_id(p)
                 newer = _newer_id(p)
                 superseded_older[older] = newer
@@ -152,10 +166,11 @@ async def main() -> None:
         # ---- REPORT --------------------------------------------------------
         mode = "APPLY" if args.apply else "DRY RUN"
         print(f"== Contradiction remediation [{mode}] ==")
-        print(f"window: {CONTRADICTION_WINDOW_HOURS}h")
+        print(f"window default: {CONTRADICTION_WINDOW_HOURS}h  "
+              f"price-class: {CONTRADICTION_WINDOW_HOURS_PRICE}h")
         print(f"unresolved pairs found: {len(pair_actions)}\n")
-        print(f"{'pair (id_a·id_b)':22}  {'gap_h':>6}  action")
-        print("-" * 78)
+        print(f"{'pair (id_a·id_b)':22}  {'class':6}  {'gap_h':>6}  action")
+        print("-" * 90)
         for p, action in pair_actions:
             ca, cb = p.get("created_at_a"), p.get("created_at_b")
             gap_h = 0.0
@@ -163,7 +178,11 @@ async def main() -> None:
                 gap_h = abs((ca - cb).total_seconds()) / 3600.0
             a_short = str(p["thesis_id_a"])[:8]
             b_short = str(p["thesis_id_b"])[:8]
-            print(f"{a_short}·{b_short}      {gap_h:>6.1f}  {action}")
+            cls = "price" if (
+                subject_is_price_class(p.get("subject_a") or "")
+                or subject_is_price_class(p.get("subject_b") or "")
+            ) else "other"
+            print(f"{a_short}·{b_short}      {cls:6}  {gap_h:>6.1f}  {action}")
         print()
         print(f"pairs classified:")
         counts: dict[str, int] = {}

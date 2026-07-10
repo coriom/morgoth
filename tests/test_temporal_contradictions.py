@@ -94,10 +94,14 @@ def _make_brain(active_theses: list[dict[str, Any]]) -> tuple[Any, MagicMock]:
 
 @pytest.mark.asyncio
 async def test_gap_below_window_records_contradiction() -> None:
-    """5.9h gap → contradiction path (both flipped, row recorded)."""
+    """5.9h gap on a non-price-class subject → contradiction path
+    (both flipped, row recorded). Uses "Mining profitability" which
+    the per-class classifier tags non-price so the default 6h window
+    applies. See tests/test_contradiction_priceclass.py for the
+    price-class boundary."""
     now = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
-    ta = _thesis("BTC short-term price", "declining", now)
-    tb = _thesis("BTC short-term price", "increasing", now - timedelta(hours=5, minutes=54))
+    ta = _thesis("Mining profitability", "declining", now)
+    tb = _thesis("Mining profitability", "increasing", now - timedelta(hours=5, minutes=54))
     brain, pm = _make_brain([ta, tb])
 
     found = await brain.detect_contradictions()
@@ -109,14 +113,16 @@ async def test_gap_below_window_records_contradiction() -> None:
 
 @pytest.mark.asyncio
 async def test_gap_above_window_marks_supersession() -> None:
-    """6.1h gap → supersession path (older flipped, no contradiction row)."""
+    """6.1h gap on a non-price subject → supersession path (older
+    flipped, no contradiction row). Non-price so the default 6h
+    window still governs — the boundary the test is exercising."""
     now = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
     ta = _thesis(
-        "BTC short-term price", "declining", now - timedelta(hours=6, minutes=6),
+        "Mining profitability", "declining", now - timedelta(hours=6, minutes=6),
         thesis_id="00000000-0000-0000-0000-00000000000a",
     )
     tb = _thesis(
-        "BTC short-term price", "increasing", now,
+        "Mining profitability", "increasing", now,
         thesis_id="00000000-0000-0000-0000-00000000000b",
     )
     brain, pm = _make_brain([ta, tb])
@@ -153,7 +159,9 @@ async def test_same_timeframe_short_short_still_pairs() -> None:
 
     Uses identical subject strings so the semantic grouper (real embedding)
     definitely places them in the same group — the branch under test is
-    the timeframe guard, not the grouping threshold.
+    the timeframe guard, not the grouping threshold. 1h gap sits under
+    both windows (2h price-class + 6h default) so the contradiction
+    path fires regardless of subject classification.
     """
     now = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
     ta = _thesis("BTC short-term price", "declining", now)
@@ -161,21 +169,47 @@ async def test_same_timeframe_short_short_still_pairs() -> None:
     brain, _ = _make_brain([ta, tb])
 
     found = await brain.detect_contradictions()
-    # Same-window (1h < 6h), same timeframe class → normal contradiction path.
+    # 1h < 2h price-class window → normal contradiction path.
     assert len(found) == 1
 
 
 # ---------- remediation logic (isolated from the DB) -----------------------
 
 def test_remediation_classify_matrix() -> None:
-    """Direct test of the classifier used by the remediation script."""
+    """Direct test of the classifier used by the remediation script.
+
+    Per-class window: price-class subjects take 2h, others take 6h.
+    The classifier's window argument is retained for signature-
+    compatibility but is ignored — window_for takes precedence.
+    """
     from scripts.remediate_contradictions import _classify
 
-    window_seconds = 6.0 * 3600.0
     now = datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc)
 
-    # kept: same timeframe, gap < window, claims genuinely oppose
-    same_window = {
+    # kept (non-price, gap < 6h)
+    kept_nonprice = {
+        "subject_a": "Mining profitability",
+        "subject_b": "Mining profitability",
+        "claim_a": "declining",
+        "claim_b": "increasing",
+        "created_at_a": now,
+        "created_at_b": now - timedelta(hours=3),
+    }
+    assert _classify(kept_nonprice, 0.0) == "kept"
+
+    # kept (price, gap < 2h)
+    kept_price = {
+        "subject_a": "BTC short-term price",
+        "subject_b": "BTC short-term price",
+        "claim_a": "declining",
+        "claim_b": "increasing",
+        "created_at_a": now,
+        "created_at_b": now - timedelta(hours=1, minutes=30),
+    }
+    assert _classify(kept_price, 0.0) == "kept"
+
+    # reclassified_supersession_priceclass: price-class, gap in (2h, 6h)
+    priceclass_super = {
         "subject_a": "BTC short-term price",
         "subject_b": "BTC short-term price",
         "claim_a": "declining",
@@ -183,18 +217,21 @@ def test_remediation_classify_matrix() -> None:
         "created_at_a": now,
         "created_at_b": now - timedelta(hours=3),
     }
-    assert _classify(same_window, window_seconds) == "kept"
+    assert (
+        _classify(priceclass_super, 0.0)
+        == "reclassified_supersession_priceclass"
+    )
 
-    # reclassified_supersession: same timeframe, gap ≥ window
-    cross_window = {
-        "subject_a": "BTC short-term price",
-        "subject_b": "BTC short-term price",
+    # reclassified_supersession: non-price, gap ≥ 6h
+    default_super = {
+        "subject_a": "Mining profitability",
+        "subject_b": "Mining profitability",
         "claim_a": "declining",
         "claim_b": "increasing",
         "created_at_a": now,
         "created_at_b": now - timedelta(hours=7),
     }
-    assert _classify(cross_window, window_seconds) == "reclassified_supersession"
+    assert _classify(default_super, 0.0) == "reclassified_supersession"
 
     # voided_timeframe_guard: long vs short (regardless of gap)
     timeframe_conflict = {
@@ -205,7 +242,7 @@ def test_remediation_classify_matrix() -> None:
         "created_at_a": now,
         "created_at_b": now - timedelta(hours=1),
     }
-    assert _classify(timeframe_conflict, window_seconds) == "voided_timeframe_guard"
+    assert _classify(timeframe_conflict, 0.0) == "voided_timeframe_guard"
 
 
 def test_remediation_older_newer_selection() -> None:
