@@ -46,16 +46,29 @@ ANTHROPIC_URL: str = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION: str = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS: int = 1024
-ANTHROPIC_TIMEOUT_SECS: float = 60.0
 
 VALID_PROVIDERS: tuple[str, ...] = ("ollama", "anthropic", "claude-cli")
 
-# claude-cli branch. --tools "" disables all tools (documented in the CLI
-# help; stable across versions). No --max-turns on 2.1.x — `-p` is
-# single-shot by default. Timeout is generous because the CLI's initial
-# cache warmup on cold cache can take tens of seconds.
 CLAUDE_CLI_BIN: str = "claude"
-CLAUDE_CLI_TIMEOUT_SECS: int = 180
+
+# Single-source LLM call budget for BOTH claude-cli and anthropic
+# branches. Fourth instance of the hardcoded-budget class:
+# proposal 9e94f77e died rejected_shape when its RETRY (carrying a
+# longer corrective prompt + rejected-spec context) hit the 180s
+# claude-cli ceiling on a loaded host. The first call in that flow
+# took 86s; retries carry ~30% more prompt weight; loaded hosts push
+# latency variance up another 3-5×. 600s = observed × ~7 covers the
+# variance envelope. Env-overridable via REFLECT_LLM_TIMEOUT_SECONDS
+# for one-off operator triage.
+#
+# Anthropic branch used 60s (an HTTP-request timeout) — same class,
+# same fix: a single-source budget so retries don't hit a tighter
+# ceiling than first calls.
+REFLECT_LLM_TIMEOUT_SECONDS: int = int(
+    os.environ.get("REFLECT_LLM_TIMEOUT_SECONDS") or 600
+)
+CLAUDE_CLI_TIMEOUT_SECS: int = REFLECT_LLM_TIMEOUT_SECONDS
+ANTHROPIC_TIMEOUT_SECS: float = float(REFLECT_LLM_TIMEOUT_SECONDS)
 
 
 class ReflectLLMError(RuntimeError):
