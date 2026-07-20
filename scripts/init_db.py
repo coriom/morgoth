@@ -43,6 +43,23 @@ EXTRA_TABLE_STATEMENTS: Sequence[str] = (
         user_id VARCHAR(100) NOT NULL DEFAULT 'default'
     );
     """,
+    # Scout leads from the public-apis catalog. See self_modify/scout.py
+    # for the contract; the module also ensures this table at run time
+    # so a bare install works without a manual init_db.
+    """
+    CREATE TABLE IF NOT EXISTS api_leads (
+        lead_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(80) NOT NULL,
+        domain VARCHAR(255) NOT NULL UNIQUE,
+        url TEXT NOT NULL,
+        category VARCHAR(80) NOT NULL,
+        description VARCHAR(160) NOT NULL DEFAULT '',
+        probe_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        probed_at TIMESTAMPTZ,
+        source VARCHAR(255) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
 )
 
 

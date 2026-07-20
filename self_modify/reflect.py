@@ -505,30 +505,45 @@ def tool_name_collides(
     return tool_name in existing
 
 
-def _host_is_public(host: str) -> bool:
-    """Reject localhost, IP literals, private/reserved ranges."""
-    if not host or host.lower() in {"localhost"}:
-        return False
-    # IP literal? Reject — the smoke gate accepts DNS hostnames only.
+def _host_public_reason(host: str) -> str | None:
+    """Return None when the host is a public DNS name.
+
+    Distinguishes three failure modes so the caller can produce an
+    accurate message: an IP literal (operator error), a DNS resolve
+    failure (transient / host retired / typo), and a resolved-to-
+    private address (a real SSRF attempt). The pre-fix collapsed all
+    three into 'not a public DNS host', which mislabelled bitnodes.io
+    (a legit public host that had a transient resolve failure) — the
+    operator chased the wrong hypothesis.
+    """
+    if not host or host.lower() == "localhost":
+        return "localhost is not public"
     try:
         ipaddress.ip_address(host)
-        return False
+        return "url uses an IP literal, not a DNS host"
     except ValueError:
         pass
-    # Resolve and check each address falls in a public range.
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        return False
+        return "dns resolve failed"
     for info in infos:
         addr = info[4][0]
         try:
             ip = ipaddress.ip_address(addr)
         except ValueError:
-            return False
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            return False
-    return True
+            return f"unparseable resolved address {addr!r}"
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast
+        ):
+            return f"resolves to non-public address {addr}"
+    return None
+
+
+def _host_is_public(host: str) -> bool:
+    """Legacy predicate; kept for API compatibility with the tests."""
+    return _host_public_reason(host) is None
 
 
 def _url_passes_gate(url: str) -> str | None:
@@ -538,8 +553,9 @@ def _url_passes_gate(url: str) -> str | None:
         return f"scheme must be https, got {parsed.scheme!r}"
     if not parsed.hostname:
         return "no hostname"
-    if not _host_is_public(parsed.hostname):
-        return f"host {parsed.hostname!r} is not a public DNS host"
+    reason = _host_public_reason(parsed.hostname)
+    if reason is not None:
+        return f"host {parsed.hostname!r} rejected: {reason}"
     return None
 
 
@@ -928,11 +944,23 @@ async def _build_context(pm: PersistentMemory, config: AppConfig) -> dict[str, A
         rej_rows = []
     rejections_block = _rejections_block(rej_rows)
 
+    # Free-API scout leads (unverified endpoints) — populated by
+    # `morgoth scout`. Empty string when the table has no alive rows,
+    # in which case the prompt stays byte-identical to the pre-scout
+    # version. See tests/test_reflect_leads_context.
+    try:
+        from self_modify.scout import leads_block_for_reflect
+        leads_block = await leads_block_for_reflect(pm)
+    except Exception as exc:
+        logger.warning("reflect: leads-block load failed (non-fatal): {}", exc)
+        leads_block = ""
+
     return {
         "tools_block": "\n".join(tool_lines) if tool_lines else "(none)",
         "objectives_block": "\n".join(obj_lines) if obj_lines else "(none)",
         "theses_block": "\n".join(thesis_lines) if thesis_lines else "(none)",
         "rejections_block": rejections_block,
+        "leads_block": leads_block,
     }
 
 
@@ -944,12 +972,29 @@ def _reflection_prompt(ctx: dict[str, Any]) -> str:
     negative-list version. This is the non-regression contract: a
     fresh install (no rejections in the DB) sees the same prompt it
     would have seen before this feature landed.
+
+    The FREE-API LEADS block follows the same byte-identical contract:
+    empty ``leads_block`` (scout has never run, or the catalog was
+    empty for the allowed categories) → no LEADS section, no extra
+    TASK sentence. Only present when leads exist.
     """
     negative_list_section = ""
     if ctx.get("rejections_block"):
         negative_list_section = (
             f"\n\nALREADY REJECTED — do NOT re-propose these or trivial variants:\n"
             f"{ctx['rejections_block']}"
+        )
+    leads_section = ""
+    leads_task_line = ""
+    if ctx.get("leads_block"):
+        leads_section = (
+            f"\n\nFREE-API LEADS (live catalog, unverified endpoints):\n"
+            f"{ctx['leads_block']}"
+        )
+        leads_task_line = (
+            " Your spec MAY target a lead's domain — real docs are discoverable"
+            " via the catalog url — but MUST still declare an exact endpoint_path"
+            " and digest_fields; the pre-submit gates verify both as always."
         )
     return f"""You are proposing ONE new data-feed tool for Morgoth to add.
 
@@ -960,12 +1005,12 @@ RECENT OBJECTIVE TOPICS (newest first):
 {ctx['objectives_block']}
 
 RECENT ACTIVE THESIS SUBJECTS:
-{ctx['theses_block']}{negative_list_section}
+{ctx['theses_block']}{negative_list_section}{leads_section}
 
 TASK: Suggest EXACTLY ONE new tool under tools/data_feeds/ that fills a
 gap the context above shows. The API must be FREE, require NO API key,
 and speak HTTPS. If no clear gap justifies a new tool, respond with the
-literal word NONE — that is a fully acceptable answer.
+literal word NONE — that is a fully acceptable answer.{leads_task_line}
 
 OUTPUT FORMAT — a single JSON object OR the word NONE. Nothing else.
 {{

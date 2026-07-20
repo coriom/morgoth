@@ -178,6 +178,14 @@ cmd_reflect() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.reflect "$@")
 }
 
+cmd_scout() {
+    # Refresh the free-API leads table from the live public-apis
+    # catalog. This is prompt enrichment for `morgoth reflect`, not
+    # an endpoint verifier — reflect's 14 gates still guard the tool
+    # spec. Args pass through — supports `morgoth scout --limit 30`.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.scout "$@")
+}
+
 cmd_focus() {
     # Three shapes:
     #   morgoth focus              → show
@@ -214,6 +222,8 @@ Commands:
   apply ID        apply an approved proposal (writes live tree; the door)
   shadow ID       manually re-run Gate 2.5 shadow verifier on a proposal
   reflect         run one reflection cycle (Morgoth proposes a new tool)
+  scout [--limit N]     refresh the free-API leads table from public-apis
+                        (docs-page liveness only; reflect gates still guard specs)
   focus [TEXT|--clear]  set / show / clear the operator focus directive
                         (steers objective-generation topic choice only)
   help            print this message
@@ -234,6 +244,7 @@ case "${1:-help}" in
     apply)     shift; cmd_apply "$@";;
     shadow)    shift; cmd_shadow "$@";;
     reflect)   shift; cmd_reflect "$@";;
+    scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;
     help|-h|--help) usage;;
     *)
