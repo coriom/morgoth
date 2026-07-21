@@ -39,8 +39,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import os
 import re
+import socket
 import sys
 import uuid
 from collections.abc import Iterable, Sequence
@@ -238,10 +240,13 @@ def _host_looks_public(host: str) -> str | None:
     a legit host with a temporary DNS glitch. Kept conservative: any
     private / loopback / link-local / reserved / multicast address on
     ANY resolved record still rejects.
-    """
-    import ipaddress
-    import socket
 
+    ``socket`` and ``ipaddress`` are imported at module scope so tests
+    can patch ``self_modify.scout.socket.getaddrinfo`` without
+    replacing the real resolver globally — required because the
+    reflect sandbox runs under ``unshare --net``, where a live-DNS
+    check false-fails and rejects every proposal regardless of merit.
+    """
     if not host or host.lower() == "localhost":
         return "localhost is not public"
     # IP literal — reject regardless of range so operator error surfaces.

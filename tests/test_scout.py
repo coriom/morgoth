@@ -414,8 +414,19 @@ def test_host_public_reason_rejects_localhost() -> None:
 
 
 def test_host_public_reason_accepts_public_host() -> None:
-    """A live public host resolves; guard returns None."""
-    reason = scout._host_looks_public("example.com")
+    """A DNS-resolving host with a public IP passes the guard.
+
+    Uses a mocked resolver so the test does not depend on the network
+    (the reflect sandbox runs under ``unshare --net`` — a live-DNS
+    test here reports 'dns resolve failed' and false-fails gate_tests
+    on every reflect walk, killing every proposal at the sandbox
+    stage regardless of merit).
+    """
+    import socket as _socket
+    fake_infos = [(_socket.AF_INET, _socket.SOCK_STREAM, 0, "",
+                   ("104.16.0.1", 0))]
+    with patch.object(scout.socket, "getaddrinfo", return_value=fake_infos):
+        reason = scout._host_looks_public("example.com")
     assert reason is None
 
 
