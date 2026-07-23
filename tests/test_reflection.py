@@ -362,6 +362,11 @@ async def test_reflect_submits_valid_spec_with_proposed_by_morgoth() -> None:
          patch.object(reflect.httpx, "AsyncClient", return_value=fake_client), \
          patch("self_modify.reflect.gates.run_pipeline",
                AsyncMock(return_value="pending_approval")), \
+         patch("self_modify.shadow.run_shadow_verdict",
+               AsyncMock(return_value={
+                   "verdict": "APPROVE", "axes": {}, "reasons": [],
+                   "engine": "test", "prompt_version": "test",
+               })), \
          patch("self_modify.reflect.liveness.run_liveness_probe",
                AsyncMock(return_value={
                    "url": "x", "hits": [], "n_hits": 0,

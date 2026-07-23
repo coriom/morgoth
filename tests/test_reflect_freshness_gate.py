@@ -363,7 +363,12 @@ async def _drive(
          )), \
          patch.object(reflect.httpx, "AsyncClient", return_value=_http_stack(bodies)), \
          patch("self_modify.reflect.gates.run_pipeline",
-               AsyncMock(return_value="pending_approval")):
+               AsyncMock(return_value="pending_approval")), \
+         patch("self_modify.shadow.run_shadow_verdict",
+               AsyncMock(return_value={
+                   "verdict": "APPROVE", "axes": {}, "reasons": [],
+                   "engine": "test", "prompt_version": "test",
+               })):
         result = await reflect.run_reflection(
             _fake_config(), pm, MagicMock(), provider="claude-cli",
         )
