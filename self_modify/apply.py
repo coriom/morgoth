@@ -188,19 +188,28 @@ async def apply_proposal(
         logger.info("apply[{}] {}: {}", proposal_id[:8], step, msg)
 
     # ---- 1. preconditions --------------------------------------------------
+    #
+    # PURE READ CONTRACT: refusal must NOT mutate the row. A second-launch
+    # `morgoth apply <id>` on an already-terminal proposal used to overwrite
+    # the row's status_reason with the refusal message, destroying the
+    # historical outcome. Two casualties: 1735f617 (original failure
+    # reason destroyed 07-24, "unknown cause" traced back to this) and
+    # 580d247c (real state 'applied' 07-24 20:20 clobbered to
+    # 'apply_failed_rolled_back' 07-25). A refusal is diagnostic
+    # information for the operator; it is not a state transition.
+    # Grep-lock: this branch and the four below must never carry an
+    # update_status call.
     if row["status"] != P.STATUS_APPROVED_PENDING_APPLY:
         reason = (
             f"apply refused: status is {row['status']!r}, "
             f"must be {P.STATUS_APPROVED_PENDING_APPLY!r}"
         )
         _log("precheck", reason)
-        await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
         return STATUS_APPLY_FAILED_ROLLED_BACK
 
     if row["change_type"] != "new_file":
         reason = f"apply refused: change_type is {row['change_type']!r}, only new_file supported"
         _log("precheck", reason)
-        await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
         return STATUS_APPLY_FAILED_ROLLED_BACK
 
     zone_now = zones.classify_proposal(row["target_path"], row["change_type"])
@@ -210,20 +219,17 @@ async def apply_proposal(
             f"only green proposals may apply (defense in depth)"
         )
         _log("precheck", reason)
-        await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
         return STATUS_APPLY_FAILED_ROLLED_BACK
 
     target = repo_root / row["target_path"]
     if target.exists():
         reason = f"apply refused: target path {row['target_path']!r} already exists in live tree"
         _log("precheck", reason)
-        await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
         return STATUS_APPLY_FAILED_ROLLED_BACK
 
     if not _git_tree_is_clean(repo_root):
         reason = "apply refused: live git tree is not clean (uncommitted changes present)"
         _log("precheck", reason)
-        await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
         return STATUS_APPLY_FAILED_ROLLED_BACK
 
     _log("precheck", "OK — all preconditions pass")

@@ -73,8 +73,8 @@ async def test_apply_refuses_wrong_status(tmp_path: Path) -> None:
         store, row["proposal_id"], repo_root=tmp_path
     )
     assert result == apply_mod.STATUS_APPLY_FAILED_ROLLED_BACK
-    reason = store.update_status.await_args.args[2]
-    assert "apply refused: status is" in reason
+    # PURE-READ contract: refusal must NOT mutate the row.
+    assert store.update_status.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -91,7 +91,7 @@ async def test_apply_refuses_target_already_exists(tmp_path: Path) -> None:
     store = _fake_store_with_row(row)
     result = await apply_mod.apply_proposal(store, row["proposal_id"], repo_root=tmp_path)
     assert result == apply_mod.STATUS_APPLY_FAILED_ROLLED_BACK
-    assert "already exists" in store.update_status.await_args.args[2]
+    assert store.update_status.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -107,7 +107,7 @@ async def test_apply_refuses_reclassified_red(tmp_path: Path) -> None:
     store = _fake_store_with_row(row)
     result = await apply_mod.apply_proposal(store, row["proposal_id"], repo_root=tmp_path)
     assert result == apply_mod.STATUS_APPLY_FAILED_ROLLED_BACK
-    assert "re-classify at apply time" in store.update_status.await_args.args[2]
+    assert store.update_status.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,64 @@ async def test_apply_refuses_dirty_tree(tmp_path: Path) -> None:
     store = _fake_store_with_row(row)
     result = await apply_mod.apply_proposal(store, row["proposal_id"], repo_root=tmp_path)
     assert result == apply_mod.STATUS_APPLY_FAILED_ROLLED_BACK
-    assert "not clean" in store.update_status.await_args.args[2]
+    assert store.update_status.await_count == 0
+
+
+# --- pure-read contract: refusal on terminal rows leaves them byte-identical
+
+@pytest.mark.asyncio
+async def test_refusal_on_applied_row_is_byte_identical(tmp_path: Path) -> None:
+    """The bug that destroyed 580d247c: a second ``morgoth apply`` on an
+    already-applied row overwrote its status_reason with the refusal
+    string. The row must be byte-identical after refusal."""
+    row = {
+        "proposal_id": "00000000-0000-0000-0000-000000000901",
+        "status": P.STATUS_APPLIED,
+        "change_type": "new_file",
+        "target_path": "tools/data_feeds/live.py",
+        "content": "already applied\n",
+    }
+    store = _fake_store_with_row(row)
+    result = await apply_mod.apply_proposal(store, row["proposal_id"], repo_root=tmp_path)
+    assert result == apply_mod.STATUS_APPLY_FAILED_ROLLED_BACK
+    assert store.update_status.await_count == 0, (
+        "refusal must NOT write to the row — this is the pure-read contract "
+        "that closes the 580d247c/1735f617 data-destruction class"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refusal_on_rejected_row_is_byte_identical(tmp_path: Path) -> None:
+    """Same class, other terminal: a rejected proposal's audit trail
+    (rejection reason + timestamp) survives a stray ``morgoth apply``."""
+    row = {
+        "proposal_id": "00000000-0000-0000-0000-000000000902",
+        "status": P.STATUS_REJECTED,
+        "change_type": "new_file",
+        "target_path": "tools/data_feeds/nope.py",
+        "content": "rejected\n",
+    }
+    store = _fake_store_with_row(row)
+    result = await apply_mod.apply_proposal(store, row["proposal_id"], repo_root=tmp_path)
+    assert result == apply_mod.STATUS_APPLY_FAILED_ROLLED_BACK
+    assert store.update_status.await_count == 0
+
+
+def test_grep_lock_no_update_status_in_precheck_branch() -> None:
+    """Structural guard: apply.py's precheck section must have ZERO
+    update_status calls. A future edit that reintroduces a write on the
+    refusal branch fails here before it can destroy another proposal."""
+    import inspect
+    src = inspect.getsource(apply_mod)
+    lo = src.index("# ---- 1. preconditions")
+    hi = src.index("# ---- 2. write")
+    precheck_block = src[lo:hi]
+    # Match the CALL, not the word (the section header/docstring
+    # mentions update_status when explaining why it is banned here).
+    assert "store.update_status(" not in precheck_block, (
+        "precheck refusal branch must be pure-read; found store.update_status "
+        "call inside the block that runs BEFORE apply has started"
+    )
 
 
 # --- pytest-fail rollback (file removed, no commit) -------------------------
