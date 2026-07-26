@@ -178,6 +178,9 @@ def test_template_render_contains_all_load_bearing_fields() -> None:
         description_repr=repr(VALID_SPEC["description"]),
         source_label_repr=repr("api.coingecko.com"),
         endpoint_declaration_repr=repr(endpoint_declaration),
+        requires_key_env_repr=repr(None),
+        key_in_repr=repr(None),
+        key_param_repr=repr(None),
     )
     assert f"class {class_name}(BaseTool):" in rendered
     assert 'is_data_source = True' in rendered

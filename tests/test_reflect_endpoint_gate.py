@@ -283,6 +283,9 @@ def test_tool_template_renders_api_endpoints_classvar() -> None:
         description_repr=repr("Fetch OK."),
         source_label_repr=repr("api.example.com"),
         endpoint_declaration_repr=repr(endpoint),
+        requires_key_env_repr=repr(None),
+        key_in_repr=repr(None),
+        key_param_repr=repr(None),
     )
     assert "api_endpoints = ('api.example.com/v1/thing',)" in rendered
     assert "digest_fields = tuple(_DIGEST_FIELDS)" in rendered
