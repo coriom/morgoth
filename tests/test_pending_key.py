@@ -25,6 +25,21 @@ from self_modify import proposals as P
 from self_modify import reflect
 
 
+@pytest.fixture(autouse=True)
+def _mock_dns() -> Any:
+    """Mock socket.getaddrinfo module-wide so spec validation reaches
+    the key_in / key_param checks even under ``unshare --net`` (the
+    reflect sandbox posture). Every KEYED_SPEC in this file uses
+    beaconcha.in as its signup_url, which _url_passes_gate would
+    otherwise fail on 'dns resolve failed' — masking the checks
+    downstream. Matches the discipline established at b09a301."""
+    fake_infos = [(None, None, None, None, ("104.16.0.1", 0))]
+    with patch.object(reflect, "socket", MagicMock(
+        getaddrinfo=MagicMock(return_value=fake_infos)
+    )):
+        yield
+
+
 BASE_SPEC = {
     "tool_name": "get_beacon_epoch_stats",
     "api_base_url": "https://beaconcha.in",
