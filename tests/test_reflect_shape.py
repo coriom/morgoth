@@ -195,7 +195,7 @@ async def test_smoke_get_non_json_body_is_rejected() -> None:
     fake_client.__aexit__ = AsyncMock(return_value=None)
     fake_client.get = AsyncMock(return_value=fake_resp)
     with patch.object(reflect.httpx, "AsyncClient", return_value=fake_client):
-        err, body = await reflect._smoke_get("https://example.com/x")
+        err, body, _status = await reflect._smoke_get("https://example.com/x")
     assert err == "response is not JSON"
     assert body is None
 
@@ -211,7 +211,7 @@ async def test_smoke_get_json_body_returned_on_2xx() -> None:
     fake_client.__aexit__ = AsyncMock(return_value=None)
     fake_client.get = AsyncMock(return_value=fake_resp)
     with patch.object(reflect.httpx, "AsyncClient", return_value=fake_client):
-        err, body = await reflect._smoke_get("https://example.com/x")
+        err, body, _status = await reflect._smoke_get("https://example.com/x")
     assert err is None
     assert body == {"a": 1, "b": 2}
 

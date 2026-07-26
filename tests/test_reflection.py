@@ -135,7 +135,7 @@ async def test_smoke_get_reports_non_2xx() -> None:
     fake_client.__aexit__ = AsyncMock(return_value=None)
     fake_client.get = AsyncMock(return_value=SimpleNamespace(status_code=404))
     with patch.object(reflect.httpx, "AsyncClient", return_value=fake_client):
-        err, body = await reflect._smoke_get("https://example.com/x")
+        err, body, _status = await reflect._smoke_get("https://example.com/x")
     assert err is not None and "404" in err
     assert body is None
 
@@ -149,7 +149,7 @@ async def test_smoke_get_reports_network_error() -> None:
     fake_client.__aexit__ = AsyncMock(return_value=None)
     fake_client.get = AsyncMock(side_effect=httpx.ConnectError("boom"))
     with patch.object(reflect.httpx, "AsyncClient", return_value=fake_client):
-        err, body = await reflect._smoke_get("https://example.com/x")
+        err, body, _status = await reflect._smoke_get("https://example.com/x")
     assert err is not None and "ConnectError" in err
     assert body is None
 
