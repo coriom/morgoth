@@ -96,6 +96,13 @@ STATUS_REJECTED_STATIC = "rejected_static"
 # terminal and distinct from operator-rejected so the calibration
 # axis stays intact.
 STATUS_SHADOW_REJECTED = "shadow_rejected"
+# Pending-key: keyed free APIs that answered 401/403 at smoke while
+# the spec declared a required env var. NON-TERMINAL — parked for
+# operator provisioning via `morgoth provision <id>`, which re-drives
+# the full walk from smoke once the env var is present. Kept
+# distinct from the 3-pending cap: has its own PENDING_KEY_CAP so
+# the park lot cannot grow unbounded.
+STATUS_PENDING_KEY = "pending_key"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
 STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
@@ -115,13 +122,16 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_STALE,
     STATUS_REJECTED_STATIC,
     STATUS_SHADOW_REJECTED,
+    STATUS_PENDING_KEY,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
 )
 
 # The statuses the reflect negative-list loader considers. Gate-3
 # rejects (rejected) plus the pre-submit terminals that carry a
-# rejected spec.
+# rejected spec. pending_key is INTENTIONALLY EXCLUDED — a keyed
+# proposal parked for provisioning is not a defect and re-proposing
+# it in a future reflect would waste an LLM call.
 NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED,
     STATUS_MALFORMED,
@@ -137,7 +147,8 @@ NEGATIVE_LIST_STATUSES: tuple[str, ...] = (
 # The statuses that ``submit_terminal`` is allowed to write. Anything
 # outside this set MUST transit ``submitted`` and go through the normal
 # pipeline — the guard keeps ``submit_terminal`` from being repurposed
-# to short-circuit gates it was never meant to bypass.
+# to short-circuit gates it was never meant to bypass. pending_key is
+# permitted here: it is a park state written directly at smoke time.
 _PRE_SUBMIT_TERMINAL_STATUSES: tuple[str, ...] = (
     STATUS_MALFORMED,
     STATUS_REJECTED_NAME,
@@ -145,6 +156,7 @@ _PRE_SUBMIT_TERMINAL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_SMOKE,
     STATUS_REJECTED_SHAPE,
     STATUS_REJECTED_STALE,
+    STATUS_PENDING_KEY,
 )
 
 
@@ -342,6 +354,20 @@ class ProposalStore:
             rows = await conn.fetch(
                 "SELECT * FROM self_modify_proposals "
                 "ORDER BY created_at DESC LIMIT $1",
+                limit,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_by_status(self, status: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Rows in the given status, newest first. Used by the CLI's
+        pending_key park view and by anything else that needs a
+        status-scoped list without a bespoke method per status."""
+        pool = self._pm._require_pool()  # noqa: SLF001
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM self_modify_proposals "
+                "WHERE status = $1 ORDER BY created_at DESC LIMIT $2",
+                status,
                 limit,
             )
         return [dict(r) for r in rows]

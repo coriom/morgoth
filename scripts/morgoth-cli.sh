@@ -169,6 +169,17 @@ cmd_shadow() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli shadow "$1")
 }
 
+cmd_provision() {
+    # Re-drive a pending_key proposal once the operator has set the
+    # env var it declares. Checks env-var PRESENCE only; the value is
+    # never read, printed, or logged by this command.
+    if [[ $# -lt 1 ]]; then
+        _err "usage: morgoth provision <proposal_id>"
+        return 2
+    fi
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli provision "$1")
+}
+
 cmd_reflect() {
     # One-shot reflection cycle: Morgoth proposes a new green-zone tool.
     # Gated by can_self_modify in MORGOTH_PERMS.json. Extra args pass
@@ -221,6 +232,7 @@ Commands:
   reject ID       reject a proposal (--reason optional)
   apply ID        apply an approved proposal (writes live tree; the door)
   shadow ID       manually re-run Gate 2.5 shadow verifier on a proposal
+  provision ID    re-drive a pending_key proposal (checks env-var PRESENCE only)
   reflect         run one reflection cycle (Morgoth proposes a new tool)
   scout [--limit N]     refresh the free-API leads table from public-apis
                         (docs-page liveness only; reflect gates still guard specs)
@@ -243,6 +255,7 @@ case "${1:-help}" in
     reject)    shift; cmd_reject "$@";;
     apply)     shift; cmd_apply "$@";;
     shadow)    shift; cmd_shadow "$@";;
+    provision) shift; cmd_provision "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;

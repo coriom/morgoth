@@ -63,6 +63,11 @@ from self_modify.zones import classify_proposal
 
 
 REFLECTION_PENDING_CAP: int = 3
+# Separate cap for pending_key proposals — parked at smoke awaiting an
+# operator-provisioned env var. The park lot must not grow unbounded;
+# 2 keeps the operator's attention list short and forces provisioning
+# (or morgoth reject) before more keyed specs land.
+PENDING_KEY_CAP: int = 2
 SMOKE_TIMEOUT_SECS: float = 10.0
 # Negative list — how many recent rejections to render in the reflect
 # prompt so the model stops re-proposing already-judged specs.
@@ -279,6 +284,18 @@ def _name_coherence_check(
 # lives in tests/test_reflect_injection.py.
 SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]{2,49}$")
 DIGEST_FIELD_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,39}$")
+# Injection discipline for env_var names in requires_key: must be
+# UPPER_SNAKE, 4-41 chars total. Anchored so a name like ``FOO;rm``
+# cannot ride through — the value is repr'd at render but the CLI
+# also uses it to look up an env value via os.getenv, and env-var
+# names should be strict identifiers regardless.
+ENV_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]{3,40}$")
+# HTTP header names + query param names — allow the common families:
+# letters, digits, dash for headers (X-API-Key), underscore for query
+# params (api_key). Anchored, capped at 40 chars.
+KEY_PARAM_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+# Where the key is placed in the request. Two supported placements.
+KEY_IN_VALUES: frozenset[str] = frozenset({"query", "header"})
 
 # RFC 3986 unreserved + reserved + pct-encoded characters. Anything
 # outside this set (quotes, whitespace, backslash, newline, backtick,
@@ -311,6 +328,7 @@ self_modify_proposals for the proposal row (proposed_by='morgoth').
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -325,6 +343,13 @@ _ENDPOINT_PATH = {endpoint_path_repr}
 _SOURCE_LABEL = {source_label_repr}
 _TOOL_DESCRIPTION = {description_repr}
 _DIGEST_FIELDS = {digest_fields_repr}
+# Keyed-API block: populated when the spec declared a requires_key.
+# The env var NAME is baked into the module; the VALUE is fetched
+# via os.getenv AT RUNTIME so a key rotation needs no redeploy and
+# the value never appears in git, logs, or LLM context.
+_REQUIRES_KEY_ENV = {requires_key_env_repr}   # None if the tool is keyless
+_KEY_IN = {key_in_repr}                       # "query" | "header" | None
+_KEY_PARAM = {key_param_repr}                 # e.g. "api_key" or "X-API-Key" | None
 
 
 class {class_name}(BaseTool):
@@ -352,16 +377,43 @@ class {class_name}(BaseTool):
     async def close(self) -> None:
         await self._client.aclose()
 
+    def _key_kwargs(self) -> tuple[dict[str, Any], str | None]:
+        """Build the params/headers kwargs for the request. Returns
+        ({{params_or_headers_kwargs}}, key_value) so the caller can
+        scrub the key from any error message before returning it.
+        Empty dict + None for keyless tools."""
+        if not _REQUIRES_KEY_ENV:
+            return {{}}, None
+        key = os.getenv(_REQUIRES_KEY_ENV, "").strip()
+        if not key:
+            return {{}}, ""  # sentinel: env var declared but not set
+        if _KEY_IN == "query":
+            return {{"params": {{_KEY_PARAM: key}}}}, key
+        return {{"headers": {{_KEY_PARAM: key}}}}, key
+
     async def execute(self, **_kwargs: Any) -> dict[str, Any]:
         if not self._config.permissions.permissions.can_access_internet:
             raise PermissionDeniedError("Internet access is disabled by permissions")
 
+        req_kwargs, key_val = self._key_kwargs()
+        if _REQUIRES_KEY_ENV and key_val == "":
+            return self.failure(
+                f"env var {{_REQUIRES_KEY_ENV}} is required but not set",
+                source=_SOURCE_LABEL,
+            )
+
         try:
-            resp = await self._client.get(_BASE_URL + _ENDPOINT_PATH)
+            resp = await self._client.get(_BASE_URL + _ENDPOINT_PATH, **req_kwargs)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
+            msg = str(exc)
+            if key_val:
+                # Redact the key from any surfaced error string. httpx's
+                # HTTPStatusError embeds request.url which includes query
+                # params; the key must never appear in logs.
+                msg = msg.replace(key_val, "***REDACTED***")
             return self.failure(
-                f"{{_SOURCE_LABEL}} request failed: {{exc}}",
+                f"{{_SOURCE_LABEL}} request failed: {{msg}}",
                 source=_SOURCE_LABEL,
             )
 
@@ -482,6 +534,39 @@ def _spec_is_well_formed(spec: dict[str, Any]) -> str | None:
         return "description too short"
     if not isinstance(spec.get("rationale"), str):
         return "rationale missing"
+    # requires_key block — OPTIONAL. When present, validate strictly.
+    # Custody stays with the operator: Morgoth handles the env var NAME
+    # only; the value is fetched at tool-runtime via os.getenv and never
+    # crosses the LLM boundary.
+    rk = spec.get("requires_key")
+    if rk is not None:
+        rk_err = _validate_requires_key(rk)
+        if rk_err:
+            return rk_err
+        # When requires_key is declared, the placement fields are required.
+        key_in = spec.get("key_in")
+        if key_in not in KEY_IN_VALUES:
+            return f"key_in must be one of {sorted(KEY_IN_VALUES)} when requires_key is set"
+        kp = spec.get("key_param")
+        if not (isinstance(kp, str) and KEY_PARAM_NAME_RE.match(kp)):
+            return f"key_param must match {KEY_PARAM_NAME_RE.pattern} when requires_key is set"
+    return None
+
+
+def _validate_requires_key(rk: Any) -> str | None:
+    """Validate the shape of the requires_key dict. Returns error or None."""
+    if not isinstance(rk, dict):
+        return "requires_key must be a dict"
+    env_var = rk.get("env_var")
+    if not (isinstance(env_var, str) and ENV_VAR_RE.match(env_var)):
+        return f"requires_key.env_var must match {ENV_VAR_RE.pattern}"
+    signup = rk.get("signup_url")
+    if not (isinstance(signup, str) and signup):
+        return "requires_key.signup_url missing"
+    # Reuse the reflect URL/host gate for the signup URL: https + public
+    # DNS. A signup URL that isn't reachable is useless to the operator.
+    if _url_passes_gate(signup) is not None:
+        return "requires_key.signup_url fails the URL / public-host gate"
     return None
 
 
@@ -559,29 +644,28 @@ def _url_passes_gate(url: str) -> str | None:
     return None
 
 
-async def _smoke_get(url: str) -> tuple[str | None, Any]:
-    """Return ``(error, body)`` — body is the JSON-parsed response on
-    2xx, otherwise ``None``.
+async def _smoke_get(url: str) -> tuple[str | None, Any, int | None]:
+    """Return ``(error, body, status_code)`` — body is the JSON-parsed
+    response on 2xx, otherwise ``None``. status_code is None on a
+    network-level failure (no response ever received).
 
-    The old smoke gate stopped at 2xx and never looked at the body.
-    Two proposals (cec526ec fee_histogram array, ccb623d1 pools-list
-    top-level) passed 2xx while being structurally unusable at the
-    template's extraction site. The shape gate (``_shape_check``)
-    consumes the returned body; keeping the fetch here means one HTTP
-    call, not two.
+    The status_code is surfaced separately so the caller can route
+    401/403 to ``pending_key`` when the spec declared a required key
+    (beaconcha.in died twice classified 'dead' when the real cause
+    was an unprovisioned key).
     """
     try:
         async with httpx.AsyncClient(timeout=SMOKE_TIMEOUT_SECS) as client:
             resp = await client.get(url)
     except httpx.HTTPError as exc:
-        return f"network error: {type(exc).__name__}: {exc}", None
+        return f"network error: {type(exc).__name__}: {exc}", None, None
     if not 200 <= resp.status_code < 300:
-        return f"non-2xx status {resp.status_code}", None
+        return f"non-2xx status {resp.status_code}", None, resp.status_code
     try:
         body = resp.json()
     except (ValueError, json.JSONDecodeError):
-        return "response is not JSON", None
-    return None, body
+        return "response is not JSON", None, resp.status_code
+    return None, body, resp.status_code
 
 
 # ---------- shape gate -----------------------------------------------------
@@ -1008,9 +1092,13 @@ RECENT ACTIVE THESIS SUBJECTS:
 {ctx['theses_block']}{negative_list_section}{leads_section}
 
 TASK: Suggest EXACTLY ONE new tool under tools/data_feeds/ that fills a
-gap the context above shows. The API must be FREE, require NO API key,
-and speak HTTPS. If no clear gap justifies a new tool, respond with the
-literal word NONE — that is a fully acceptable answer.{leads_task_line}
+gap the context above shows. Prefer FREE keyless HTTPS APIs. Keyed
+free APIs (free with signup) are ALSO acceptable when you declare a
+requires_key block naming the env-var Morgoth should read at runtime
+and where to send the key (query or header). Never invent, request,
+or embed a key VALUE; you only propose the env-var NAME.
+If no clear gap justifies a new tool, respond with the literal word
+NONE — that is a fully acceptable answer.{leads_task_line}
 
 OUTPUT FORMAT — a single JSON object OR the word NONE. Nothing else.
 {{
@@ -1019,7 +1107,10 @@ OUTPUT FORMAT — a single JSON object OR the word NONE. Nothing else.
   "endpoint_path": "<path>",
   "digest_fields": ["<snake_case_field>", ...],  // 3-6 items expected in the JSON response
   "description": "<one sentence, what the tool fetches and why it matters>",
-  "rationale": "<one sentence, what gap in the current tools this fills>"
+  "rationale": "<one sentence, what gap in the current tools this fills>",
+  "requires_key": {{ "env_var": "<UPPER_SNAKE>", "signup_url": "https://<host>/signup" }},  // OPTIONAL, omit for keyless
+  "key_in": "query"|"header",       // REQUIRED iff requires_key set
+  "key_param": "api_key"|"X-API-Key"  // REQUIRED iff requires_key set
 }}"""
 
 
@@ -1150,6 +1241,39 @@ async def _persist_pre_submit_reject(
         return None
 
 
+async def _persist_pending_key(
+    store: P.ProposalStore,
+    spec: dict[str, Any],
+    reason: str,
+    provider: str,
+    retry_of: str | None,
+) -> str | None:
+    """Write a pending_key row via submit_terminal.
+
+    The row carries the full spec as JSON content so ``morgoth provision``
+    can re-drive the walk without re-asking the LLM. The spec's
+    ``requires_key.env_var`` is what the operator provisions.
+    """
+    payload = json.dumps(spec, indent=2)
+    try:
+        return await store.submit_terminal(
+            target_path=_target_path_for_reject(spec),
+            change_type="new_file",
+            content=payload,
+            rationale=spec.get("rationale") if isinstance(spec, dict) else None,
+            status=P.STATUS_PENDING_KEY,
+            status_reason=reason,
+            proposed_by="morgoth",
+            engine=provider,
+            retry_of=retry_of,
+        )
+    except Exception as exc:
+        logger.warning(
+            "reflect: could not persist pending_key row (non-fatal): {}", exc,
+        )
+        return None
+
+
 async def _one_reflect_attempt(
     config: AppConfig,
     pm: PersistentMemory,
@@ -1254,8 +1378,28 @@ async def _one_reflect_attempt(
         log(f"outcome: rejected_url — {url_err}")
         return {"outcome": "rejected_url", "reason": url_err,
                 "proposal_id": None, "pipeline_status": None, "spec": spec}
-    smoke_err, body = await _smoke_get(smoke_target)
+    smoke_err, body, smoke_status = await _smoke_get(smoke_target)
     if smoke_err:
+        # Keyed-park routing: 401/403 WITH a declared requires_key is
+        # NOT a smoke reject — the endpoint plausibly works given a
+        # provisioned key. Park as pending_key for operator provisioning
+        # instead of killing the proposal.
+        if (
+            smoke_status in (401, 403)
+            and isinstance(spec.get("requires_key"), dict)
+            and _spec_is_well_formed(spec) is None
+        ):
+            rk = spec["requires_key"]
+            reason = (
+                f"pending_key: smoke returned {smoke_status} on {smoke_target}; "
+                f"declared env_var={rk['env_var']}, signup_url={rk['signup_url']}"
+            )
+            log(f"outcome: pending_key — {smoke_status} on {smoke_target}, env_var={rk['env_var']}")
+            pid = await _persist_pending_key(
+                store, spec, reason, provider, retry_of,
+            )
+            return {"outcome": "pending_key", "reason": reason,
+                    "proposal_id": pid, "pipeline_status": None, "spec": spec}
         reason = f"smoke test on {smoke_target}: {smoke_err}"
         log(f"outcome: rejected_smoke — {smoke_err}")
         pid = await _persist_pre_submit_reject(
@@ -1308,6 +1452,14 @@ async def _one_reflect_attempt(
     endpoint_declaration = _normalize_endpoint(
         spec["api_base_url"], spec["endpoint_path"],
     )
+    # Keyed-API render: pull optional requires_key fields. Absent →
+    # all three constants render as repr(None), which the template's
+    # runtime check reads as "keyless tool" (no env lookup, no key
+    # header/query, identical behaviour to the pre-key era).
+    _rk = spec.get("requires_key") if isinstance(spec.get("requires_key"), dict) else None
+    _env = (_rk or {}).get("env_var") if _rk else None
+    _key_in = spec.get("key_in") if _rk else None
+    _key_param = spec.get("key_param") if _rk else None
     content = TOOL_TEMPLATE.format(
         tool_name=tool_name,
         class_name=class_name,
@@ -1318,6 +1470,9 @@ async def _one_reflect_attempt(
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
         endpoint_declaration_repr=repr(endpoint_declaration),
+        requires_key_env_repr=repr(_env),
+        key_in_repr=repr(_key_in),
+        key_param_repr=repr(_key_param),
     )
     log(f"code assembled: {len(content)} bytes")
 
@@ -1505,6 +1660,23 @@ async def run_reflection(
         reason = (
             f"pending queue full ({n_pending}/{REFLECTION_PENDING_CAP} "
             "morgoth-authored pending); review existing proposals first"
+        )
+        log(f"refused — {reason}")
+        return {"outcome": "refused_cap", "reason": reason,
+                "proposal_id": None, "pipeline_status": None, "spec": None,
+                "first_attempt": None, "retried": False}
+
+    # Separate park-lot cap: pending_key rows are non-terminal but
+    # non-actionable without an operator-provisioned env var. Cap them
+    # so the queue can't accumulate stale keyed specs (see PENDING_KEY_CAP).
+    n_pending_key = await store.count_by_status_and_author(
+        status=P.STATUS_PENDING_KEY, proposed_by="morgoth"
+    )
+    if n_pending_key >= PENDING_KEY_CAP:
+        reason = (
+            f"pending_key park full ({n_pending_key}/{PENDING_KEY_CAP} "
+            "morgoth-authored parked); provision or reject existing keyed "
+            "proposals via `morgoth provision <id>` first"
         )
         log(f"refused — {reason}")
         return {"outcome": "refused_cap", "reason": reason,

@@ -49,6 +49,29 @@ def _print_table(rows: list[dict[str, Any]], header: str) -> None:
 async def _cmd_list(store: P.ProposalStore, args: argparse.Namespace) -> int:
     pending = await store.list_pending(limit=args.limit)
     _print_table(pending, "pending approval")
+
+    # Keyed park lot — non-terminal, awaiting operator provisioning.
+    # Always shown so the operator doesn't lose track of the park.
+    try:
+        parked = await store.list_by_status(P.STATUS_PENDING_KEY, limit=args.limit)
+    except Exception:  # noqa: BLE001
+        parked = []
+    if parked:
+        print()
+        _print_table(parked, f"pending key ({len(parked)}) — needs provisioning")
+        for row in parked:
+            import json as _json
+            try:
+                spec = _json.loads(row.get("content") or "{}")
+            except Exception:  # noqa: BLE001
+                spec = {}
+            rk = spec.get("requires_key") if isinstance(spec, dict) else None
+            if isinstance(rk, dict):
+                print(
+                    f"  {str(row['proposal_id'])[:8]}: env_var={rk.get('env_var')}"
+                    f"  signup={rk.get('signup_url')}"
+                )
+
     if getattr(args, "all", False):
         shadow = await store.list_shadow_rejected(limit=args.limit)
         # Tag each row with [shadow] in the target_path column so the
@@ -192,6 +215,115 @@ async def _cmd_apply(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0 if final == apply_mod.STATUS_APPLIED else 1
 
 
+async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Re-drive a pending_key proposal once the operator has set the env var.
+
+    KEY-VALUE HYGIENE: this command inspects env-var PRESENCE only.
+    It never reads, prints, logs, or otherwise surfaces the value.
+    The env var must be set in the process environment (e.g. in .env
+    which the systemd unit sources, or exported before the CLI call).
+    """
+    import json as _json
+    import os as _os
+
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
+    if not row:
+        print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
+        return 1
+    if row["status"] != P.STATUS_PENDING_KEY:
+        print(
+            f"proposal is {row['status']!r}, not {P.STATUS_PENDING_KEY!r}; "
+            "only pending_key rows can be provisioned",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        spec = _json.loads(row.get("content") or "{}")
+    except Exception:  # noqa: BLE001
+        print("could not parse spec from row.content", file=sys.stderr)
+        return 1
+    rk = spec.get("requires_key") if isinstance(spec, dict) else None
+    if not isinstance(rk, dict) or not rk.get("env_var"):
+        print("row has no requires_key.env_var; nothing to provision", file=sys.stderr)
+        return 1
+    env_var = rk["env_var"]
+    # PRESENCE-only check. The value itself is not read by this code
+    # path — comparing len > 0 doesn't require the value to appear on
+    # any stack frame we log.
+    present = bool(_os.environ.get(env_var, "").strip())
+    if not present:
+        print(
+            f"provision refused: env var {env_var} is not set in the process "
+            f"environment. Add it to .env (or export it) then restart the "
+            f"service and re-run `morgoth provision {pid[:8]}`.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"provision: env var {env_var} present; re-driving walk from smoke …")
+
+    # Import lazily so `morgoth provision` doesn't pay the reflect
+    # import cost when the env var isn't set.
+    from self_modify import gates as _gates
+    from self_modify import liveness as _liveness
+    from self_modify import reflect as _reflect
+
+    config = await load_config()
+    smoke_target = spec["api_base_url"].rstrip("/") + spec["endpoint_path"]
+    # Re-render content from the current (possibly newer) TOOL_TEMPLATE
+    # so a template improvement lands on provisioning too.
+    tool_name = spec["tool_name"]
+    class_name = _reflect._snake_to_class_name(tool_name)
+    from urllib.parse import urlparse as _urlparse
+    source_label = _urlparse(spec["api_base_url"]).hostname or ""
+    endpoint_declaration = _reflect._normalize_endpoint(
+        spec["api_base_url"], spec["endpoint_path"],
+    )
+    _key_in = spec.get("key_in")
+    _key_param = spec.get("key_param")
+    content = _reflect.TOOL_TEMPLATE.format(
+        tool_name=tool_name,
+        class_name=class_name,
+        tool_name_repr=repr(tool_name),
+        base_url_repr=repr(spec["api_base_url"]),
+        endpoint_path_repr=repr(spec["endpoint_path"]),
+        digest_fields_repr=repr(list(spec["digest_fields"])),
+        description_repr=repr(spec["description"]),
+        source_label_repr=repr(source_label),
+        endpoint_declaration_repr=repr(endpoint_declaration),
+        requires_key_env_repr=repr(env_var),
+        key_in_repr=repr(_key_in),
+        key_param_repr=repr(_key_param),
+    )
+    target_path = f"tools/data_feeds/{tool_name}.py"
+    new_id = await store.submit(
+        target_path=target_path,
+        change_type="new_file",
+        content=content,
+        rationale=spec.get("rationale") or "",
+        proposed_by="morgoth",
+        engine=(row.get("engine") or "claude-cli"),
+        retry_of=str(row["proposal_id"]),
+    )
+    print(f"provision: new proposal {new_id} (retry_of={pid[:8]})")
+    new_row = await store.get(new_id)
+    import asyncio as _asyncio
+    probe_task = _asyncio.create_task(_liveness.run_liveness_probe(
+        smoke_target, list(spec["digest_fields"]),
+    ))
+    pipeline_status = await _gates.run_pipeline(store, new_row)
+    print(f"provision: pipeline final_status={pipeline_status}")
+    try:
+        probe = await probe_task
+        verdict = _liveness.classify_probe(probe, list(spec["digest_fields"]))
+        print(f"provision: liveness outcome={verdict['outcome']} rule={verdict.get('rule')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"provision: liveness probe error: {exc!r}")
+    return 0 if pipeline_status == P.STATUS_PENDING_APPROVAL else 1
+
+
 async def _cmd_reject(store: P.ProposalStore, args: argparse.Namespace) -> int:
     pid, rc = await _resolve_or_bail(store, args.proposal_id)
     if pid is None:
@@ -250,6 +382,16 @@ async def _main(argv: list[str]) -> int:
     )
     p_shadow.add_argument("proposal_id")
     p_shadow.set_defaults(_fn=_cmd_shadow)
+
+    p_provision = subparsers.add_parser(
+        "provision",
+        help=(
+            "re-drive a pending_key proposal once the env var is set "
+            "(checks PRESENCE only; the value is never read or logged)"
+        ),
+    )
+    p_provision.add_argument("proposal_id")
+    p_provision.set_defaults(_fn=_cmd_provision)
 
     args = parser.parse_args(argv)
 

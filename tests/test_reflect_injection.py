@@ -47,6 +47,7 @@ def _render(spec: dict[str, Any]) -> str:
     endpoint_declaration = reflect._normalize_endpoint(
         spec["api_base_url"], spec["endpoint_path"],
     )
+    _rk = spec.get("requires_key") if isinstance(spec.get("requires_key"), dict) else None
     return reflect.TOOL_TEMPLATE.format(
         tool_name=tool_name,
         class_name=class_name,
@@ -57,6 +58,9 @@ def _render(spec: dict[str, Any]) -> str:
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
         endpoint_declaration_repr=repr(endpoint_declaration),
+        requires_key_env_repr=repr(_rk.get("env_var") if _rk else None),
+        key_in_repr=repr(spec.get("key_in") if _rk else None),
+        key_param_repr=repr(spec.get("key_param") if _rk else None),
     )
 
 
