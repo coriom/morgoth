@@ -15,6 +15,23 @@ from tools.base_tool import BaseTool
 FRED_BASE_URL = "https://api.stlouisfed.org/fred"
 
 
+def _key_safe_status_error(response: httpx.Response, api_key: str) -> str | None:
+    """Return a sanitized error string on non-2xx, else None.
+
+    httpx's ``response.raise_for_status()`` embeds ``response.request.url``
+    (with the ``api_key=...`` query string) in the exception message. That
+    exception would flow to the framework's logger, printing the secret.
+    Build the error text ourselves so the ONLY things we surface are the
+    HTTP status and a URL with the key redacted.
+    """
+    if 200 <= response.status_code < 300:
+        return None
+    url = str(response.url)
+    if api_key:
+        url = url.replace(api_key, "***REDACTED***")
+    return f"fred HTTP {response.status_code} on {url}"
+
+
 class FredSeriesSummary(BaseModel):
     """Normalized FRED series search result."""
 
@@ -79,7 +96,9 @@ class FredSeriesSearchTool(BaseTool):
                 "limit": limit,
             },
         )
-        response.raise_for_status()
+        err = _key_safe_status_error(response, api_key)
+        if err is not None:
+            return self.failure(err, source="fred")
         payload = response.json()
         items = [self._normalize_series(item).model_dump() for item in payload.get("seriess", [])[:limit]]
         return self.success(items, source="fred", query=query)
@@ -166,7 +185,9 @@ class FredSeriesObservationsTool(BaseTool):
                 params[key] = kwargs[key]
 
         response = await self._client.get(f"{FRED_BASE_URL}/series/observations", params=params)
-        response.raise_for_status()
+        err = _key_safe_status_error(response, api_key)
+        if err is not None:
+            return self.failure(err, source="fred")
         payload = response.json()
         observations = [self._normalize_observation(item).model_dump() for item in payload.get("observations", [])]
         observations.reverse()

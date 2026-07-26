@@ -151,10 +151,10 @@ async def test_data_source_tools_membership() -> None:
     across every host + UA, 0 objectives / 0 theses used it); the
     baseline dropped from five to four.
 
-    fred_series_observations is intentionally NOT included: without a
-    FRED_API_KEY in .env the tool always fails, so counting it as a
-    source-rail option only wastes cycle slots. Re-add it if/when a key
-    is provisioned.
+    fred_series_observations joined the rail 07-25 once a working
+    FRED_API_KEY was provisioned and live-verified against CPIAUCSL.
+    Source joining/leaving is a named policy change; the reddit
+    precedent is what dictates the pre-join live-verification.
     """
 
     baseline = frozenset({
@@ -162,6 +162,7 @@ async def test_data_source_tools_membership() -> None:
         "get_bitcoin_onchain",
         "get_news",
         "web_search",
+        "fred_series_observations",
     })
     missing = baseline - DATA_SOURCE_TOOLS
     assert not missing, f"DATA_SOURCE_TOOLS lost baseline sources: {missing!r}"
@@ -171,7 +172,6 @@ async def test_data_source_tools_membership() -> None:
         "technical_analysis",
         "create_objective",
         "update_objective",
-        "fred_series_observations",
     ):
         assert excluded not in DATA_SOURCE_TOOLS, (
             f"{excluded!r} must not count toward the source rail"

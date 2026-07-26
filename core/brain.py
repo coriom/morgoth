@@ -85,6 +85,10 @@ def _resolve_stale_days() -> float:
 # valid sources in the multi-source rail. Kept as an explicit constant.
 _STATIC_DATA_SOURCES: frozenset[str] = frozenset({
     "web_search",
+    # FRED joins the source rail (07-25). Live-verified against CPIAUCSL
+    # before the join — the reddit_search precedent (source rail slot
+    # burned for months on a dead API) is the reason for that gate.
+    "fred_series_observations",
 })
 
 # Non-data_feeds chat-schema tools: the LLM sees these on every turn.
@@ -93,6 +97,9 @@ _STATIC_DATA_SOURCES: frozenset[str] = frozenset({
 _STATIC_CHAT_TOOL_NAMES: tuple[str, ...] = (
     "web_search",
     "fred_series_observations",
+    # Symbol discovery for the FRED source: observations without search
+    # forces the model to guess series IDs.
+    "fred_series_search",
     "technical_analysis",
     "remember",
     "recall",
