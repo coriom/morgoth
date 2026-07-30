@@ -124,6 +124,10 @@ cmd_wiki() {
 # runs in the repo root using the venv Python so imports resolve.
 REPO_DIR="/home/corio/Morgoth/morgoth"
 VENV_PY="$REPO_DIR/.venv/bin/python"
+# Frontend dev-server home. Env-overridable so tests can point at a
+# temp dir with a fake dev.sh (never modify the real UI tree from a
+# test). The default matches the sibling-directory layout on disk.
+UI_DIR="${MORGOTH_UI_DIR:-/home/corio/Morgoth/morgoth_ui}"
 
 cmd_proposals() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli list "$@")
@@ -197,6 +201,63 @@ cmd_scout() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.scout "$@")
 }
 
+cmd_ui() {
+    # Foreground launcher for the morgoth_ui dev server (Next.js).
+    # Ensures the backend is ready first (front errors without it);
+    # then execs `bash scripts/dev.sh` in $UI_DIR with PORT inherited.
+    # Ctrl+C stops the dev server and returns; the backend (if this
+    # command started it) keeps running under systemd.
+    # dev.sh's never-kill-foreign contract is untouched — we hand off
+    # to it verbatim and INHERIT stdout/stderr so its loud aborts
+    # (foreign port holder, missing .env.local) surface unaltered.
+    local port=""
+    local skip_backend=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --port) shift; port="${1:-}"; shift || true;;
+            --port=*) port="${1#--port=}"; shift;;
+            --no-backend) skip_backend=1; shift;;
+            -h|--help)
+                cat <<'HELP'
+morgoth ui [--port N] [--no-backend]
+  --port N       override PORT (default 3010, dev.sh's territory)
+  --no-backend   skip the backend readiness check + auto-start
+Foreground. Ctrl+C stops the dev server; backend keeps running.
+HELP
+                return 0
+                ;;
+            *) _err "unknown ui arg: $1"; return 2;;
+        esac
+    done
+    port="${port:-3010}"
+
+    if [[ $skip_backend -eq 0 ]]; then
+        local body
+        body=$(curl -fs "$API_BASE/api/brain/status" 2>/dev/null || true)
+        if [[ -z "$body" ]] || ! echo "$body" | grep -qE '"ready"[[:space:]]*:[[:space:]]*true'; then
+            printf 'morgoth-ui: backend not ready; starting …\n'
+            cmd_start || return 1
+        else
+            printf 'morgoth-ui: backend ready\n'
+        fi
+    else
+        printf 'morgoth-ui: --no-backend, skipping readiness check\n'
+    fi
+
+    if [[ ! -d "$UI_DIR" ]]; then
+        _err "UI dir not found: $UI_DIR (set MORGOTH_UI_DIR to override)"
+        return 1
+    fi
+    if [[ ! -f "$UI_DIR/scripts/dev.sh" ]]; then
+        _err "UI dev script missing: $UI_DIR/scripts/dev.sh"
+        return 1
+    fi
+
+    printf 'morgoth-ui: http://localhost:%s/wiki\n' "$port"
+    printf 'morgoth-ui: Ctrl+C to stop the dev server (backend keeps running)\n'
+    (cd "$UI_DIR" && PORT="$port" bash scripts/dev.sh)
+}
+
 cmd_focus() {
     # Three shapes:
     #   morgoth focus              → show
@@ -238,6 +299,8 @@ Commands:
                         (docs-page liveness only; reflect gates still guard specs)
   focus [TEXT|--clear]  set / show / clear the operator focus directive
                         (steers objective-generation topic choice only)
+  ui [--port N] [--no-backend]  launch morgoth_ui dev server; ensures backend first
+                        (foreground; Ctrl+C stops dev server, backend keeps running)
   help            print this message
 USAGE
 }
@@ -259,6 +322,7 @@ case "${1:-help}" in
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;
+    ui)        shift; cmd_ui "$@";;
     help|-h|--help) usage;;
     *)
         _err "unknown command: $1"
