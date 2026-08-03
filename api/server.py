@@ -19,9 +19,11 @@ from api.routes import (
     knowledge,
     market,
     objectives,
+    proposals as proposals_route,
     tools as tools_route,
     wiki,
 )
+from api.token import ensure_ui_token
 from api.ws.handler import InboundWebSocketMessage, WebSocketManager
 from core.brain import Brain
 from core.config import AppConfig, load_config
@@ -104,6 +106,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         websocket_manager,
     )
     await brain_service.initialize()
+    # Materialize the UI session token on startup so the Next.js server
+    # can read it before the first user hits an approve/reject/apply.
+    ensure_ui_token()
 
     app.state.config = config
     app.state.llm_client = llm_client
@@ -157,6 +162,7 @@ app.include_router(admin.router)
 app.include_router(knowledge.router)
 app.include_router(wiki.router)
 app.include_router(tools_route.router)
+app.include_router(proposals_route.router)
 
 
 @app.websocket("/ws/chat")
