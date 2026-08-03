@@ -1,4 +1,4 @@
-"""Proposals API — in-UI approve / reject / list.
+"""Proposals API — in-UI approve / reject / apply.
 
 **Security**: mutations require the ``X-Morgoth-Token`` header, matched
 against the local UI session token (``~/.morgoth/ui_token``, mode 0600
@@ -11,22 +11,41 @@ methods as the CLI (``update_status``). This keeps the two surfaces
 converging on identical state transitions — a divergence bug in the
 UI path could otherwise corrupt shadow calibration or the reflect
 negative list.
+
+Apply is BACKGROUND-DISPATCHED — POST /apply returns immediately, and
+the long pytest → commit → restart → health sequence runs off the
+request loop. The frontend polls /apply-status for step markers +
+terminal outcome. A single-flight lock (in-process; single uvicorn
+worker) prevents concurrent applies from racing on the git tree.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
 from api.token import HEADER_NAME, ensure_ui_token
 from memory.persistent import PersistentMemory
+from self_modify import apply as apply_mod
 from self_modify import proposals as P
 
 
 router = APIRouter(prefix="/api/proposals", tags=["proposals"])
+
+
+# --- shared apply-progress state (in-process) -------------------------------
+
+_apply_lock: asyncio.Lock = asyncio.Lock()
+_apply_running: str | None = None
+_apply_progress: dict[str, dict[str, Any]] = {}
+
+
+def _record_progress(pid: str, step: str, terminal: str | None = None) -> None:
+    _apply_progress[pid] = {"step": step, "terminal": terminal}
 
 
 # --- token gate -------------------------------------------------------------
@@ -156,3 +175,92 @@ async def reject_proposal(
     await store.update_status(pid, P.STATUS_REJECTED, payload.reason)
     logger.info(f"ui.reject: {pid} → rejected ({payload.reason[:60]})")
     return {"proposal_id": pid, "status": P.STATUS_REJECTED}
+
+
+# --- apply as async job -----------------------------------------------------
+
+async def _run_apply(store: P.ProposalStore, pid: str) -> None:
+    """Background task: drive apply_proposal, publish step markers.
+
+    apply_proposal already updates status_reason at each step (precheck
+    / write / pytest / commit / restart / health), so /apply-status can
+    surface the latest reason without a second reporting channel. This
+    helper also records a coarse ``step`` label + terminal outcome that
+    stays queryable after the DB row's status_reason is overwritten by
+    the final result.
+    """
+    global _apply_running  # noqa: PLW0603
+    try:
+        _record_progress(pid, "running")
+        final = await apply_mod.apply_proposal(store, pid)
+        _record_progress(pid, "done", terminal=final)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(f"ui.apply {pid} crashed: {exc!r}")
+        _record_progress(
+            pid, "crashed", terminal=apply_mod.STATUS_APPLY_FAILED_ROLLED_BACK,
+        )
+    finally:
+        async with _apply_lock:
+            _apply_running = None
+
+
+@router.post("/{proposal_id}/apply", dependencies=[Depends(require_token)])
+async def apply_proposal_endpoint(
+    proposal_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    """Kick off apply as a background task; return immediately.
+
+    Single-flight: refuses a second apply while one is already running.
+    The precheck inside apply_proposal is now pure-read (969cb52), so a
+    stray concurrent call can't corrupt state — but the lock keeps two
+    pytest runs from stepping on the same git tree simultaneously.
+    """
+    global _apply_running  # noqa: PLW0603
+    store = await _get_store(request)
+    try:
+        pid = await store.resolve_id(proposal_id)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    row = await store.get(pid)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no proposal {proposal_id}")
+    async with _apply_lock:
+        if _apply_running is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"another apply is running ({_apply_running})",
+            )
+        _apply_running = pid
+        _record_progress(pid, "queued")
+    background_tasks.add_task(_run_apply, store, pid)
+    logger.info(f"ui.apply: {pid} queued")
+    return {"proposal_id": pid, "queued": True}
+
+
+@router.get("/{proposal_id}/apply-status")
+async def apply_status(proposal_id: str, request: Request) -> dict[str, Any]:
+    """Progress + terminal outcome for the given proposal's apply run.
+
+    Combines the in-memory step marker (queued/running/done/crashed)
+    with the DB's authoritative ``status`` + ``status_reason`` so the
+    frontend can surface the fine-grained step (from apply_proposal's
+    per-step update_status writes) alongside the coarse lifecycle.
+    """
+    store = await _get_store(request)
+    try:
+        pid = await store.resolve_id(proposal_id)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    row = await store.get(pid)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no proposal {proposal_id}")
+    progress = _apply_progress.get(pid, {"step": "idle", "terminal": None})
+    return {
+        "proposal_id": pid,
+        "step": progress["step"],
+        "terminal": progress["terminal"],
+        "status": row["status"],
+        "status_reason": row.get("status_reason") or "",
+    }

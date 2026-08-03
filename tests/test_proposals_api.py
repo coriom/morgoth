@@ -243,3 +243,150 @@ def test_approve_uses_store_update_status(tmp_path: Path) -> None:
         assert store.update_status.await_args.args[0] == pid
     finally:
         patch.stopall()
+
+
+# --- Phase B: apply as async job --------------------------------------------
+
+def _reset_apply_state() -> None:
+    """Isolate apply-state between tests (module-level globals)."""
+    proposals_route._apply_running = None
+    proposals_route._apply_progress.clear()
+
+
+def test_apply_returns_immediately_without_running_pytest(tmp_path: Path) -> None:
+    """POST /apply must NOT block on the ~45min pytest — it schedules
+    a BackgroundTask and returns. We mock apply_proposal to a fast
+    coroutine and assert the response lands sub-second."""
+    import time as _time
+    _reset_apply_state()
+    app, _ = _build_app_with_token(tmp_path, token="t")
+    try:
+        pid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        store = MagicMock()
+        store.resolve_id = AsyncMock(return_value=pid)
+        store.get = AsyncMock(return_value=_pending_row(pid))
+        fake_apply = AsyncMock(return_value=P.STATUS_APPLIED)
+        with _patch_store(store), \
+             patch.object(proposals_route.apply_mod, "apply_proposal", fake_apply):
+            client = TestClient(app)
+            t0 = _time.monotonic()
+            resp = client.post(
+                f"/api/proposals/{pid}/apply",
+                headers={HEADER_NAME: "t"},
+            )
+            elapsed = _time.monotonic() - t0
+        assert resp.status_code == 200
+        assert resp.json() == {"proposal_id": pid, "queued": True}
+        # TestClient runs BackgroundTasks synchronously after the response,
+        # so this bounds combined latency. If apply_proposal were awaited
+        # inline instead of scheduled, a real 45-min run would blow this.
+        assert elapsed < 5.0, f"apply endpoint took {elapsed:.2f}s"
+        fake_apply.assert_awaited_once()
+    finally:
+        patch.stopall()
+        _reset_apply_state()
+
+
+def test_apply_status_reports_terminal_after_completion(tmp_path: Path) -> None:
+    """After the background apply finishes, /apply-status surfaces the
+    ``done`` step + the terminal outcome + the DB's status."""
+    _reset_apply_state()
+    app, _ = _build_app_with_token(tmp_path, token="t")
+    try:
+        pid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        # The 2nd get() (from apply-status) must see the post-apply row.
+        applied_row = _pending_row(pid)
+        applied_row["status"] = P.STATUS_APPLIED
+        applied_row["status_reason"] = "applied — commit sha abc123"
+        store = MagicMock()
+        store.resolve_id = AsyncMock(return_value=pid)
+        store.get = AsyncMock(side_effect=[_pending_row(pid), applied_row])
+        fake_apply = AsyncMock(return_value=P.STATUS_APPLIED)
+        with _patch_store(store), \
+             patch.object(proposals_route.apply_mod, "apply_proposal", fake_apply):
+            client = TestClient(app)
+            client.post(f"/api/proposals/{pid}/apply", headers={HEADER_NAME: "t"})
+            status_resp = client.get(f"/api/proposals/{pid}/apply-status")
+        assert status_resp.status_code == 200
+        body = status_resp.json()
+        assert body["step"] == "done"
+        assert body["terminal"] == P.STATUS_APPLIED
+        assert body["status"] == P.STATUS_APPLIED
+        assert "commit sha" in body["status_reason"]
+    finally:
+        patch.stopall()
+        _reset_apply_state()
+
+
+def test_apply_single_flight_refuses_concurrent_run(tmp_path: Path) -> None:
+    """A second POST /apply while another is running returns 409."""
+    _reset_apply_state()
+    app, _ = _build_app_with_token(tmp_path, token="t")
+    try:
+        pid_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        pid_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        # Force the lock into "running" state by hand so we can assert the
+        # 409 without race-timing an actual background task.
+        proposals_route._apply_running = pid_a
+        store = MagicMock()
+        store.resolve_id = AsyncMock(return_value=pid_b)
+        store.get = AsyncMock(return_value=_pending_row(pid_b))
+        with _patch_store(store):
+            client = TestClient(app)
+            resp = client.post(
+                f"/api/proposals/{pid_b}/apply",
+                headers={HEADER_NAME: "t"},
+            )
+        assert resp.status_code == 409
+        assert pid_a in resp.json()["detail"]
+    finally:
+        patch.stopall()
+        _reset_apply_state()
+
+
+def test_apply_status_terminal_reports_apply_failed_rolled_back(tmp_path: Path) -> None:
+    """The rollback path must round-trip through /apply-status too."""
+    _reset_apply_state()
+    app, _ = _build_app_with_token(tmp_path, token="t")
+    try:
+        pid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        rolled_row = _pending_row(pid)
+        rolled_row["status"] = P.STATUS_APPLY_FAILED_ROLLED_BACK
+        rolled_row["status_reason"] = "pytest: 3 failed"
+        store = MagicMock()
+        store.resolve_id = AsyncMock(return_value=pid)
+        store.get = AsyncMock(side_effect=[_pending_row(pid), rolled_row])
+        fake_apply = AsyncMock(return_value=P.STATUS_APPLY_FAILED_ROLLED_BACK)
+        with _patch_store(store), \
+             patch.object(proposals_route.apply_mod, "apply_proposal", fake_apply):
+            client = TestClient(app)
+            client.post(f"/api/proposals/{pid}/apply", headers={HEADER_NAME: "t"})
+            body = client.get(f"/api/proposals/{pid}/apply-status").json()
+        assert body["terminal"] == P.STATUS_APPLY_FAILED_ROLLED_BACK
+        assert body["status"] == P.STATUS_APPLY_FAILED_ROLLED_BACK
+        assert body["status_reason"] == "pytest: 3 failed"
+    finally:
+        patch.stopall()
+        _reset_apply_state()
+
+
+def test_apply_requires_token(tmp_path: Path) -> None:
+    """POST /apply without the header returns 401 and does NOT dispatch."""
+    _reset_apply_state()
+    app, _ = _build_app_with_token(tmp_path, token="t")
+    try:
+        pid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        store = MagicMock()
+        store.resolve_id = AsyncMock(return_value=pid)
+        store.get = AsyncMock(return_value=_pending_row(pid))
+        fake_apply = AsyncMock(return_value=P.STATUS_APPLIED)
+        with _patch_store(store), \
+             patch.object(proposals_route.apply_mod, "apply_proposal", fake_apply):
+            client = TestClient(app)
+            resp = client.post(f"/api/proposals/{pid}/apply")
+        assert resp.status_code == 401
+        fake_apply.assert_not_awaited()
+        assert proposals_route._apply_running is None
+    finally:
+        patch.stopall()
+        _reset_apply_state()
