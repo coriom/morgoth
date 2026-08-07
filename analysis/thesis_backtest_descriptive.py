@@ -1,0 +1,356 @@
+"""Descriptive-thesis backtest — scores NON-directional theses against
+the ground truth from the source that generated them.
+
+Directional scorer (thesis_backtest.py) only touches "BTC short-term
+price → up/down/flat". This module scores the OTHER classes: claims
+about non-price metrics that a data source reports historically —
+hashrate, mining difficulty, sentiment (Fear & Greed index).
+
+Design:
+    - Triage every non-directional thesis into one of:
+        VERIFIABLE-METRIC : subject maps to a reachable historical metric
+        VERIFIABLE-RELATION : claim asserts a checkable co-occurrence
+                              (kept as a separate bucket; not scored here
+                              because most reduce to two metric-lookups
+                              and the corpus has almost none)
+        UNVERIFIABLE : subjective / no reachable history / conceptually
+                       wrong (e.g. "Ethereum hash rate" — ETH is PoS)
+    - For each VERIFIABLE-METRIC thesis, extract the asserted class
+      (up/down/flat, or sentiment bucket) and compare to the metric's
+      observed value nearest the thesis timestamp.
+    - Conservative parser: ambiguous → unresolvable, don't force.
+"""
+
+from __future__ import annotations
+
+from bisect import bisect_left
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Literal
+
+from analysis.thesis_backtest import parse_direction  # shared polarity parser
+
+Verifiability = Literal["metric", "relation", "unverifiable"]
+Outcome = Literal["hit", "miss", "skip"]
+MetricKind = Literal["btc_hashrate", "btc_difficulty", "market_sentiment"]
+
+# Subject → metric mapping. Kept explicit (not a regex tangle) because
+# the vocabulary is small and stable — grown from the 248-row dump.
+_HASHRATE_SUBJECTS = ("btc hash rate", "bitcoin hash rate")
+_DIFFICULTY_SUBJECTS = (
+    "bitcoin mining difficulty",
+    "btc mining difficulty",
+    "bitcoin difficulty",
+    "btc difficulty",
+)
+_SENTIMENT_SUBJECTS = ("market sentiment",)
+
+# Subjects for which we KNOW the underlying quantity has no cheap
+# historical source (free CoinGecko / mempool / F&G don't cover them).
+# Kept separately from truly-subjective claims — this is a triage class:
+# "verifiable in principle, unreachable in practice".
+_UNREACHABLE_SUBJECT_MARKERS = (
+    "dominance",       # CoinGecko /global is current-only in free tier
+    "funding rate",    # no free historical funding endpoint
+    "long-short",      # same as above
+    "gas price",       # no free historical gas endpoint
+    "gas prices",
+    "network congestion",  # proxies gas
+    "mining profitability",  # composite; needs revenue + power
+    "on-chain metrics",  # too vague; would require a synthesis
+    "market capitalization",  # global cap = paid; single-asset is a proxy
+    "market volume",       # same
+    "crypto market volume",
+    "market cap",
+)
+
+# Sentiment vocabulary → F&G bucket. The F&G index is 0-100:
+#   0-24  extreme fear    25-44 fear    45-55 neutral
+#   56-74 greed           75-100 extreme greed
+# We collapse into low/mid/high (3 buckets) so the granularity matches
+# the claim vocabulary (which never gets finer than "cautious"/"greedy").
+_SENTIMENT_UP = ("bullish", "positive", "greed", "optim", "risk-on", "euphor")
+_SENTIMENT_DOWN = ("bearish", "negative", "fear", "panic", "pessim", "risk-off")
+_SENTIMENT_MID = ("cautious", "neutral", "mixed", "uncertain", "balanced")
+
+
+def classify_subject(subject: str) -> tuple[Verifiability, MetricKind | None, str | None]:
+    """Return (verifiability, metric_or_None, unreachable_reason_or_None).
+
+    unreachable_reason is set only when verifiability=='unverifiable' AND
+    the subject IS about an objective metric — just one we can't fetch.
+    Used by the CLI to separate "we don't have a source" from "the claim
+    is genuinely subjective/vague".
+    """
+    if not subject:
+        return "unverifiable", None, "empty subject"
+    s = subject.lower()
+    # Ethereum "hash rate" is metaphysically wrong post-merge (PoS, no
+    # hashrate). Not a data-availability issue; the metric doesn't exist.
+    if "ethereum" in s and "hash rate" in s:
+        return "unverifiable", None, "eth hash rate does not exist post-merge"
+    # Relation keywords in the SUBJECT take precedence over metric mapping:
+    # "Bitcoin difficulty adjustments correlate with BTC price" is a
+    # relation claim (the correlation itself), not a level claim on
+    # difficulty. Metric-only match would score the wrong thing.
+    if any(kw in s for kw in (" and ", " while ", "vs", " between ", "correlat")):
+        return "relation", None, None
+    if any(m in s for m in _HASHRATE_SUBJECTS):
+        return "metric", "btc_hashrate", None
+    if any(m in s for m in _DIFFICULTY_SUBJECTS) and "adjustment progress" not in s:
+        return "metric", "btc_difficulty", None
+    if any(m in s for m in _SENTIMENT_SUBJECTS):
+        return "metric", "market_sentiment", None
+    for marker in _UNREACHABLE_SUBJECT_MARKERS:
+        if marker in s:
+            return "unverifiable", None, f"no free historical source for '{marker}'"
+    return "unverifiable", None, "subjective / no metric mapping"
+
+
+def parse_sentiment(claim: str) -> Literal["up", "down", "mid"] | None:
+    """Bucket a sentiment claim into up/mid/down; None if not clearly one."""
+    if not claim:
+        return None
+    c = claim.lower()
+    up = any(w in c for w in _SENTIMENT_UP)
+    down = any(w in c for w in _SENTIMENT_DOWN)
+    mid = any(w in c for w in _SENTIMENT_MID)
+    hits = sum([up, down, mid])
+    if hits != 1:
+        return None
+    return "up" if up else ("down" if down else "mid")
+
+
+def bucket_sentiment_value(fng_index: float) -> Literal["up", "mid", "down"]:
+    """Map a 0-100 F&G index to the same 3-way bucket used for claims."""
+    if fng_index >= 56:
+        return "up"
+    if fng_index <= 44:
+        return "down"
+    return "mid"
+
+
+def nearest_value(sorted_ms: list[int], values: list[float], ts_ms: int) -> float | None:
+    """Same lookup as the directional scorer, returned separately so this
+    module doesn't reach into the other's internals."""
+    if not sorted_ms:
+        return None
+    if ts_ms < sorted_ms[0] or ts_ms > sorted_ms[-1]:
+        return None
+    idx = bisect_left(sorted_ms, ts_ms)
+    if idx == 0:
+        return values[0]
+    if idx == len(sorted_ms):
+        return values[-1]
+    before, after = sorted_ms[idx - 1], sorted_ms[idx]
+    return values[idx - 1] if (ts_ms - before) <= (after - ts_ms) else values[idx]
+
+
+def most_recent_before(sorted_ms: list[int], values: list[float], ts_ms: int) -> float | None:
+    """For epoch-style series (difficulty adjustments): the last observed
+    value at or before ts_ms. Different from nearest_value because a
+    thesis stamped mid-epoch describes the *just-past* adjustment."""
+    if not sorted_ms or ts_ms < sorted_ms[0]:
+        return None
+    idx = bisect_left(sorted_ms, ts_ms + 1)  # rightmost idx with ms <= ts_ms
+    if idx == 0:
+        return None
+    return values[idx - 1]
+
+
+def bucket_change(before: float, after: float, flat_pct: float) -> Literal["up", "down", "flat"]:
+    """Sign-with-flat-band on a % change (before → after)."""
+    if before <= 0:
+        return "flat"
+    ret = (after - before) / before
+    if abs(ret) <= flat_pct:
+        return "flat"
+    return "up" if ret > 0 else "down"
+
+
+@dataclass(frozen=True)
+class DescScoredThesis:
+    thesis_id: str
+    subject: str
+    claim: str
+    confidence: str
+    metric: MetricKind
+    predicted: str  # up|down|flat|mid
+    observed: str
+    outcome: Outcome
+
+
+def triage(
+    rows: Iterable[dict],
+) -> tuple[
+    dict[str, int],
+    list[tuple[str, str, MetricKind]],
+    list[str],
+    list[str],
+]:
+    """Return (bucket_counts, verifiable_metric_rows, unreachable_reasons, subjective_subjects).
+
+    verifiable_metric_rows carries (subject, claim, metric) so the caller
+    doesn't have to re-classify to score.
+    """
+    counts = {"metric": 0, "relation": 0, "unreachable": 0, "subjective": 0, "input": 0}
+    metric_rows: list[tuple[str, str, MetricKind]] = []
+    unreachable_reasons: list[str] = []
+    subjective_subjects: list[str] = []
+    for row in rows:
+        counts["input"] += 1
+        subj = str(row.get("subject", ""))
+        claim = str(row.get("claim", ""))
+        verifiability, metric, reason = classify_subject(subj)
+        if verifiability == "metric" and metric is not None:
+            counts["metric"] += 1
+            metric_rows.append((subj, claim, metric))
+        elif verifiability == "relation":
+            counts["relation"] += 1
+        else:
+            if reason and "no free historical source" in reason or (reason and "does not exist" in reason):
+                counts["unreachable"] += 1
+                unreachable_reasons.append(reason)
+            else:
+                counts["subjective"] += 1
+                subjective_subjects.append(subj)
+    return counts, metric_rows, unreachable_reasons, subjective_subjects
+
+
+def score_hashrate(
+    row: dict,
+    hashrate_series: tuple[list[int], list[float]],
+    horizon_hours: int,
+    flat_pct: float,
+    now: datetime,
+) -> DescScoredThesis | None:
+    """Score a hashrate direction claim against mempool's hashrate history."""
+    predicted = parse_direction(str(row.get("claim", "")))
+    if predicted is None:
+        return None
+    created_at = row["created_at"]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    target = created_at + timedelta(hours=horizon_hours)
+    if target > now:
+        return None
+    sorted_ms, values = hashrate_series
+    p0_ms = int(created_at.timestamp() * 1000)
+    p1_ms = int(target.timestamp() * 1000)
+    v0 = nearest_value(sorted_ms, values, p0_ms)
+    v1 = nearest_value(sorted_ms, values, p1_ms)
+    if v0 is None or v1 is None:
+        return None
+    observed = bucket_change(v0, v1, flat_pct)
+    return DescScoredThesis(
+        thesis_id=str(row.get("thesis_id", "")),
+        subject=str(row.get("subject", "")),
+        claim=str(row.get("claim", "")),
+        confidence=str(row.get("confidence", "")),
+        metric="btc_hashrate",
+        predicted=predicted,
+        observed=observed,
+        outcome="hit" if observed == predicted else "miss",
+    )
+
+
+def score_difficulty(
+    row: dict,
+    difficulty_epochs: list[dict],
+    flat_pct: float,
+    now: datetime,
+) -> DescScoredThesis | None:
+    """Score a difficulty direction claim using mempool's difficulty epochs.
+
+    Each epoch carries an `adjustment` field: signed % change vs previous
+    epoch. We pick the epoch whose adjustment took effect at or before
+    the thesis timestamp — that's what Morgoth *observed*, so that's
+    what the claim is describing.
+    """
+    predicted = parse_direction(str(row.get("claim", "")))
+    if predicted is None:
+        return None
+    created_at = row["created_at"]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if created_at > now:
+        return None
+    ts_ms = int(created_at.timestamp() * 1000)
+    epochs = sorted(difficulty_epochs, key=lambda e: e["time"])
+    sorted_ms = [int(e["time"]) * 1000 for e in epochs]
+    adjustments = [float(e["adjustment"]) / 100.0 for e in epochs]  # % → fraction
+    ret = most_recent_before(sorted_ms, adjustments, ts_ms)
+    if ret is None:
+        return None
+    if abs(ret) <= flat_pct:
+        observed = "flat"
+    else:
+        observed = "up" if ret > 0 else "down"
+    return DescScoredThesis(
+        thesis_id=str(row.get("thesis_id", "")),
+        subject=str(row.get("subject", "")),
+        claim=str(row.get("claim", "")),
+        confidence=str(row.get("confidence", "")),
+        metric="btc_difficulty",
+        predicted=predicted,
+        observed=observed,
+        outcome="hit" if observed == predicted else "miss",
+    )
+
+
+def score_sentiment(
+    row: dict,
+    fng_series: tuple[list[int], list[float]],
+    now: datetime,
+) -> DescScoredThesis | None:
+    """Score a sentiment claim against the F&G index at the thesis timestamp."""
+    predicted = parse_sentiment(str(row.get("claim", "")))
+    if predicted is None:
+        return None
+    created_at = row["created_at"]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if created_at > now:
+        return None
+    sorted_ms, values = fng_series
+    v = nearest_value(sorted_ms, values, int(created_at.timestamp() * 1000))
+    if v is None:
+        return None
+    observed = bucket_sentiment_value(v)
+    return DescScoredThesis(
+        thesis_id=str(row.get("thesis_id", "")),
+        subject=str(row.get("subject", "")),
+        claim=str(row.get("claim", "")),
+        confidence=str(row.get("confidence", "")),
+        metric="market_sentiment",
+        predicted=predicted,
+        observed=observed,
+        outcome="hit" if observed == predicted else "miss",
+    )
+
+
+def aggregate(records: list[DescScoredThesis]) -> dict[str, list[tuple]]:
+    """Same shape as the directional aggregator so the CLI can reuse render."""
+
+    def _tally(key_fn) -> list[tuple]:
+        buckets: dict[str, list[int]] = {}
+        for r in records:
+            key = key_fn(r)
+            b = buckets.setdefault(key, [0, 0])
+            b[0] += 1
+            if r.outcome == "hit":
+                b[1] += 1
+        out = []
+        for key, (n, hits) in sorted(buckets.items(), key=lambda kv: (-kv[1][0], kv[0])):
+            rate = hits / n if n else 0.0
+            out.append((key, n, hits, rate))
+        return out
+
+    n = len(records)
+    hits = sum(1 for r in records if r.outcome == "hit")
+    return {
+        "overall": [("all", n, hits, hits / n if n else 0.0)],
+        "by_metric": _tally(lambda r: r.metric),
+        "by_confidence": _tally(lambda r: r.confidence or "(unset)"),
+        "by_predicted": _tally(lambda r: r.predicted),
+    }
