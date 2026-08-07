@@ -411,6 +411,112 @@ def test_parse_thesis_json_drops_items_missing_required_fields() -> None:
     assert other["confidence"] == "medium"
 
 
+# ---------------------- Grounding prompt (post-backtest rewrite) ----------------------
+#
+# The two calibration backtests (analysis/thesis_backtest{,_descriptive}.py) proved:
+#   · no short-term directional edge on price
+#   · 78 % of non-directional theses are unverifiable, INCLUDING 18 phantom
+#     theses about "Ethereum hash rate" (a metric that doesn't exist post-merge)
+#   · stated confidence is inverted vs hit-rate on both surfaces
+# The rewrite (a) mandates grounding to the synthesis, (b) drops the confidence
+# field from the schema. These tests are grep-level: the prompt STRING must
+# carry the requirement, so that if a future edit accidentally removes it a
+# test breaks rather than silently regressing calibration.
+
+
+@pytest.mark.asyncio
+async def test_grounding_prompt_contains_synthesis_only_language() -> None:
+    """The prompt must frame the synthesis as the ONLY source of truth."""
+
+    llm_client = MagicMock()
+    llm_client.chat = AsyncMock(return_value=_fake_response(content="[]"))
+    brain = _build_brain(llm_client)
+    await brain._extract_theses(
+        obj={"objective_id": "o", "title": "t"},
+        synthesis_text="BTC price -1.6% / 24h per get_crypto_price",
+        sources=["get_crypto_price"],
+    )
+    call = llm_client.chat.call_args
+    user_msg = next(m for m in call.kwargs.get("messages", call.args[0]) if m.role == "user")
+    body = user_msg.content
+    assert "ONLY source of truth" in body
+    assert "grounding is mandatory" in body
+    assert "PHANTOM CLAIM" in body  # names the failure mode explicitly
+    assert "Ethereum hash rate" in body  # cites the concrete past incident
+    assert "supplement from your training knowledge" in body  # ban on training-derived assertions
+    assert "CONCRETE value" in body  # evidence must cite a datum
+
+
+@pytest.mark.asyncio
+async def test_grounding_prompt_prefers_observational_over_predictive() -> None:
+    """The prompt must state the observational-preferred instruction."""
+
+    llm_client = MagicMock()
+    llm_client.chat = AsyncMock(return_value=_fake_response(content="[]"))
+    brain = _build_brain(llm_client)
+    await brain._extract_theses(
+        obj={"objective_id": "o", "title": "t"},
+        synthesis_text="x",
+        sources=["s"],
+    )
+    call = llm_client.chat.call_args
+    user_msg = next(m for m in call.kwargs.get("messages", call.args[0]) if m.role == "user")
+    body = user_msg.content
+    assert "OBSERVATIONAL" in body
+    assert "PREDICTIVE" in body
+
+
+@pytest.mark.asyncio
+async def test_grounding_prompt_no_longer_asks_for_confidence() -> None:
+    """Confidence proved noise on both directional + descriptive backtests
+    (medium > high on both surfaces). Field removed from the JSON schema
+    in the prompt. Parser still defaults absent confidence to 'medium'
+    for wiki/knowledge-API display compatibility.
+    """
+
+    llm_client = MagicMock()
+    llm_client.chat = AsyncMock(return_value=_fake_response(content="[]"))
+    brain = _build_brain(llm_client)
+    await brain._extract_theses(
+        obj={"objective_id": "o", "title": "t"},
+        synthesis_text="x",
+        sources=["s"],
+    )
+    call = llm_client.chat.call_args
+    user_msg = next(m for m in call.kwargs.get("messages", call.args[0]) if m.role == "user")
+    body = user_msg.content
+    # The schema list no longer names confidence as a required element.
+    assert '"confidence" (str)' not in body
+
+
+def test_parser_still_tolerates_confidence_absent() -> None:
+    """Model won't emit confidence under the new prompt; the parser must
+    silently default the field to 'medium' so downstream display code
+    (compile_wiki.py, /api/knowledge) continues to work unchanged."""
+
+    raw = json.dumps([
+        {"subject": "BTC price", "claim": "declining",
+         "evidence": [{"source": "get_crypto_price", "detail": "-2%"}]},
+    ])
+    result = Brain._parse_thesis_json(raw)
+    assert len(result) == 1
+    assert result[0]["confidence"] == "medium"
+
+
+def test_parser_detector_facing_shape_unchanged() -> None:
+    """Regression: the shape the contradiction detector consumes
+    (subject, claim, confidence, evidence keys) MUST be identical to
+    what it was before the grounding rewrite — the pipeline downstream
+    of extraction is untouched."""
+
+    raw = json.dumps([
+        {"subject": "BTC price", "claim": "declining",
+         "evidence": [{"source": "get_crypto_price", "detail": "-2%"}]},
+    ])
+    result = Brain._parse_thesis_json(raw)
+    assert set(result[0].keys()) == {"subject", "claim", "confidence", "evidence"}
+
+
 # ---------------------- _extract_theses (Ollama call wrapper) ----------------------
 
 

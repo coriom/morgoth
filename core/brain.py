@@ -801,40 +801,67 @@ class Brain:
         """
         if not synthesis_text or not synthesis_text.strip():
             return []
+        # GROUNDING PROMPT (post-backtest rewrite):
+        # Two backtests (analysis/thesis_backtest.py, thesis_backtest_descriptive.py)
+        # showed (a) no directional edge on price, (b) 78 % of non-directional theses
+        # unverifiable or unreachable, INCLUDING 18 theses about a metric that
+        # doesn't exist (ETH hash rate post-merge) — training-hallucinated content.
+        # This prompt makes the SYNTHESIS the only source of truth: every claim
+        # must cite a concrete value/observation actually present in this cycle's
+        # findings. The `confidence` field was dropped from generation — the
+        # backtests proved stated confidence is inverted vs hit-rate. Downstream
+        # display defaults to "medium" via _parse_thesis_json.
         prompt = (
             f"OBJECTIVE: {obj.get('title', 'unnamed')}\n"
             f"DISTINCT SOURCES: {', '.join(sources)}\n\n"
-            f"SYNTHESIS:\n{synthesis_text}\n\n"
-            "Extract testable directional beliefs from the synthesis as a JSON "
-            "array. Each element MUST have:\n"
-            '  "subject" (str): a normalized topic, e.g. "BTC short-term price"\n'
-            '  "claim" (str): directional, e.g. "bearish" or "declining"; not vague\n'
-            '  "confidence" (str): "low" | "medium" | "high"\n'
-            '  "evidence" (array): [{"source": "<tool name>", "detail": "<excerpt>"}]\n\n'
-            "RULES:\n"
+            f"SYNTHESIS (findings from THIS cycle — the ONLY source of truth):\n"
+            f"{synthesis_text}\n\n"
+            "Extract testable beliefs from the SYNTHESIS as a JSON array. "
+            "Each element MUST have:\n"
+            '  "subject" (str): a normalized topic. MUST correspond to a '
+            "metric or entity for which the synthesis reports a concrete "
+            "value or observation.\n"
+            '  "claim" (str): a single testable state or direction the '
+            "synthesis actually supports — 'declining', 'increasing', "
+            "'stable', 'bullish', 'bearish', 'high', 'low'. Prefer "
+            "OBSERVATIONAL claims (what the data shows RIGHT NOW) over "
+            "PREDICTIVE claims (where a price will go). Prediction is "
+            "allowed but must still cite an observed datum as evidence.\n"
+            '  "evidence" (array, ≥1 item): each item is '
+            '{"source": "<tool that produced the datum>", "detail": '
+            '"<the actual value/observation from the synthesis>"}. '
+            "detail MUST reference a CONCRETE value (a number, a class, a "
+            "direction) that appears in the synthesis — not free prose.\n\n"
+            "HARD RULES — grounding is mandatory:\n"
+            "- Every thesis MUST be about a metric/entity that the "
+            "synthesis actually discusses with a concrete value or "
+            "observation. Do NOT describe metrics no tool reported this "
+            "cycle (past incident: theses about 'Ethereum hash rate' when "
+            "no hashrate tool ran — a PHANTOM CLAIM asserted from "
+            "training rather than observed from findings; strictly "
+            "prohibited).\n"
+            "- Do NOT assert facts not present in the synthesis. Do NOT "
+            "supplement from your training knowledge — if the finding is "
+            "not in the synthesis, the thesis does not exist.\n"
+            "- Every thesis MUST cite at least one concrete value or "
+            "observation from the synthesis in its evidence. If you "
+            "cannot cite a specific datum, do NOT emit the thesis.\n"
             "- subject must be a SHORT normalized noun phrase — a topic "
-            "(e.g. 'BTC short-term price', 'Ethereum hash rate'). NOT a full "
-            "sentence, NOT a news headline, NOT a phrase naming a specific "
-            "person or event. If the underlying topic cannot be reduced to "
-            "a short noun phrase, do NOT emit a thesis about it.\n"
-            "- claim MUST be a single directional trend or state that could "
-            "be agreed with or contradicted (e.g. 'declining', 'bullish', "
-            "'increasing', 'stable'). If you cannot state a directional "
-            "claim, do NOT emit that thesis. Never emit claims like "
-            "'unclear', 'mixed', 'unknown', 'complex', 'unrelated', "
-            "'no correlation', 'inaccurate' — these are not testable; "
-            "omit them.\n"
-            "- Every thesis MUST have at least one evidence item drawn from "
-            "the synthesis. If you cannot cite evidence for a claim, do NOT "
-            "emit it.\n"
-            "- evidence must come from the synthesis text; do not invent.\n"
-            "- If the synthesis contains no testable directional claim, "
+            "(e.g. 'BTC short-term price', 'BTC hashrate' if hashrate "
+            "was actually measured this cycle). NOT a full sentence, "
+            "NOT a news headline.\n"
+            "- Never emit claims like 'unclear', 'mixed', 'unknown', "
+            "'complex', 'unrelated', 'no correlation', 'inaccurate' — "
+            "these are not testable; omit them.\n"
+            "- If the synthesis contains no grounded testable claim, "
             "return [].\n"
             "EXAMPLES OF WHAT TO REJECT (do NOT emit):\n"
+            "  · subject about a metric the synthesis does not mention "
+            "(phantom claim from training)\n"
+            "  · evidence.detail is prose without any concrete value cited\n"
+            "  · claim='unclear' / 'complex' / 'no correlation' (hedges)\n"
             "  · subject='Market volatility caused by Justice X's dissent' "
             "(fragment sentence, not a topic)\n"
-            "  · claim='unclear or unrelated to BTC itself' (hedge)\n"
-            "  · claim='no correlation' (non-directional)\n"
             "Output ONLY the JSON array. No prose, no preamble, no code fences."
         )
         messages = [
