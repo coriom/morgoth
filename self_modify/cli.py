@@ -20,6 +20,7 @@ from typing import Any
 
 from core.config import load_config
 from memory.persistent import PersistentMemory
+from self_modify import auto_approve as AA
 from self_modify import proposals as P
 
 
@@ -340,6 +341,133 @@ async def _cmd_reject(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_audit(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Gate-3 auto-approve observability.
+
+    Two sub-actions:
+      --now    → classify all CURRENT pending_approval proposals through
+                 Rule R; print the tier + reason; if --write, persist
+                 each judgement to auto_approve_decisions in observation
+                 mode (flag_state reflects the env; criteria_state shows
+                 what's missing).
+      --since  → replay recent auto_approve_decisions log entries.
+
+    Runs read-only against the DB (SELECT on proposals + shadow_verdicts).
+    In observation mode NOTHING is applied — the decision log is the
+    ONLY side-effect (and only if --write is passed).
+    """
+    pm = store._pm
+    pool = pm._require_pool()
+
+    # Pull recent operator decisions + apply outcomes for the criteria snapshot.
+    # We look at the last 60 v2-shadow proposals that reached the operator surface.
+    async with pool.acquire() as conn:
+        op_rows = await conn.fetch(
+            """
+            SELECT p.proposal_id, p.status, p.status_reason, p.created_at,
+                   v.verdict AS shadow_verdict, v.axes, v.prompt_version
+            FROM self_modify_proposals p
+            LEFT JOIN LATERAL (
+                SELECT verdict, axes, prompt_version FROM shadow_verdicts
+                WHERE proposal_id = p.proposal_id
+                ORDER BY created_at DESC LIMIT 1
+            ) v ON true
+            WHERE p.proposed_by = 'morgoth' AND v.prompt_version = 'v2'
+              AND p.status IN ('applied', 'apply_failed_rolled_back', 'rejected')
+            ORDER BY p.created_at DESC
+            LIMIT 60
+            """
+        )
+    import json as _json
+    op_decisions = []
+    apply_outcomes = []
+    for r in op_rows:
+        raw_axes = r["axes"]
+        if isinstance(raw_axes, str):
+            try:
+                raw_axes = _json.loads(raw_axes)
+            except _json.JSONDecodeError:
+                raw_axes = {}
+        proposal = {"status": "pending_approval"}  # counterfactual: what tier would we have picked
+        verdict = {
+            "verdict": r["shadow_verdict"], "axes": raw_axes or {},
+            "prompt_version": r["prompt_version"] or "",
+        }
+        counterfactual = AA.classify_tier(proposal, verdict)
+        matched_R = counterfactual.tier == "AUTO"
+        op_dec = "approve" if r["status"] in ("applied", "apply_failed_rolled_back") else "reject"
+        op_decisions.append({"matched_signature_R": matched_R, "op_decision": op_dec})
+        # Rollback-rate denominator = apply attempts only; rejects never
+        # entered apply, so counting them would dilute the rate.
+        if r["status"] in ("applied", "apply_failed_rolled_back"):
+            apply_outcomes.append({"outcome": r["status"]})
+    snapshot = AA.evaluate_criteria(op_decisions, apply_outcomes)
+    flag = AA.auto_approve_enabled()
+    print(f"AUTO_APPROVE_ENABLED={flag}  rule={AA.RULE_VERSION}")
+    print(
+        f"criteria: n={snapshot.n_decisions}/{AA.N_MIN_DECISIONS}  "
+        f"false_approves={snapshot.n_false_approves}  "
+        f"rollback_rate={snapshot.rollback_rate:.0%}  ok={snapshot.ok}"
+    )
+    if snapshot.reasons:
+        for reason in snapshot.reasons:
+            print(f"  · {reason}")
+
+    if args.now:
+        pending = await store.list_pending(limit=100)
+        # Prefer status=='pending_approval' only.
+        pending = [p for p in pending if p.get("status") == "pending_approval"]
+        print(f"\nPending_approval proposals: {len(pending)}")
+        for p in pending:
+            verdicts = await pm.get_shadow_verdicts(str(p["proposal_id"]))
+            v = verdicts[0] if verdicts else None
+            decision = AA.classify_tier(p, v)
+            may, why = AA.should_auto_apply(decision, snapshot)
+            marker = "AUTO" if may else "HOLD"
+            print(
+                f"  [{marker}] {str(p['proposal_id'])[:8]}  tier={decision.tier}  "
+                f"reason={decision.reason}  gate={why}"
+            )
+            if args.write:
+                async with pool.acquire() as conn:
+                    import json as _json
+                    await conn.execute(
+                        """
+                        INSERT INTO auto_approve_decisions
+                          (proposal_id, tier, reason, rule_version, flag_state,
+                           criteria_state, signature, apply_outcome)
+                        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, NULL)
+                        """,
+                        p["proposal_id"], decision.tier, decision.reason,
+                        AA.RULE_VERSION, flag,
+                        _json.dumps(snapshot.as_dict()),
+                        _json.dumps(decision.signature),
+                    )
+        return 0
+
+    # --since: replay the log
+    since_clause = ""
+    params: list[Any] = []
+    if args.since:
+        since_clause = "WHERE created_at >= NOW() - $1::interval"
+        params.append(args.since)
+    async with pool.acquire() as conn:
+        log_rows = await conn.fetch(
+            f"SELECT proposal_id, tier, reason, rule_version, flag_state, "
+            f"apply_outcome, created_at FROM auto_approve_decisions "
+            f"{since_clause} ORDER BY created_at DESC LIMIT 100",
+            *params,
+        )
+    print(f"\nDecision log entries: {len(log_rows)}")
+    for r in log_rows:
+        print(
+            f"  {r['created_at'].isoformat()}  {str(r['proposal_id'])[:8]}  "
+            f"tier={r['tier']}  flag={r['flag_state']}  outcome={r['apply_outcome'] or '(none)'}"
+        )
+        print(f"    reason: {r['reason']}")
+    return 0
+
+
 async def _main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="self_modify.cli",
@@ -392,6 +520,23 @@ async def _main(argv: list[str]) -> int:
     )
     p_provision.add_argument("proposal_id")
     p_provision.set_defaults(_fn=_cmd_provision)
+
+    p_audit = subparsers.add_parser(
+        "audit",
+        help=(
+            "gate-3 auto-approve observability: --now classifies current "
+            "pending_approval proposals (dry unless --write); --since "
+            "streams the decision log. Shipped INERT — the flag and the "
+            "data-criteria guard both stay closed by default."
+        ),
+    )
+    p_audit.add_argument("--now", action="store_true",
+                         help="classify current pending_approval proposals through Rule R")
+    p_audit.add_argument("--write", action="store_true",
+                         help="persist each --now classification to the decision log")
+    p_audit.add_argument("--since", default=None,
+                         help="pg interval string, e.g. '7 days' — filters --since log listing")
+    p_audit.set_defaults(_fn=_cmd_audit)
 
     args = parser.parse_args(argv)
 

@@ -265,6 +265,36 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure shadow_verdicts table (non-fatal): {}", exc
                 )
+            # Gate-3 auto-approve decisions ledger. Populated in observation
+            # mode (AUTO_APPROVE_ENABLED off) so the operator can watch the
+            # classifier's judgement accumulate WITHOUT any code being
+            # auto-applied. See docs/AUTO_APPROVE_DESIGN.md and
+            # self_modify/auto_approve.py.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS auto_approve_decisions (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        proposal_id UUID NOT NULL,
+                        tier TEXT NOT NULL,
+                        reason TEXT NOT NULL,
+                        rule_version TEXT NOT NULL,
+                        flag_state BOOLEAN NOT NULL,
+                        criteria_state JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        signature JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        apply_outcome TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS auto_approve_decisions_proposal_idx "
+                    "ON auto_approve_decisions (proposal_id);"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure auto_approve_decisions table (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 

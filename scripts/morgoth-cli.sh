@@ -184,6 +184,15 @@ cmd_provision() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli provision "$1")
 }
 
+cmd_audit() {
+    # Gate-3 auto-approve observability. Passes ALL args through so the
+    # operator can invoke --now, --write, --since '7 days', etc. Shipped
+    # INERT: the underlying classifier can only apply anything if BOTH
+    # AUTO_APPROVE_ENABLED=on AND the ledger criteria clear (n>=30,
+    # false-approve==0, rollback<=20 %). See docs/AUTO_APPROVE_DESIGN.md.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli audit "$@")
+}
+
 cmd_reflect() {
     # One-shot reflection cycle: Morgoth proposes a new green-zone tool.
     # Gated by can_self_modify in MORGOTH_PERMS.json. Extra args pass
@@ -294,6 +303,8 @@ Commands:
   apply ID        apply an approved proposal (writes live tree; the door)
   shadow ID       manually re-run Gate 2.5 shadow verifier on a proposal
   provision ID    re-drive a pending_key proposal (checks env-var PRESENCE only)
+  audit [--now] [--write] [--since INT]
+                  gate-3 auto-approve observability (shipped INERT — never applies)
   reflect         run one reflection cycle (Morgoth proposes a new tool)
   scout [--limit N]     refresh the free-API leads table from public-apis
                         (docs-page liveness only; reflect gates still guard specs)
@@ -319,6 +330,7 @@ case "${1:-help}" in
     apply)     shift; cmd_apply "$@";;
     shadow)    shift; cmd_shadow "$@";;
     provision) shift; cmd_provision "$@";;
+    audit)     shift; cmd_audit "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;
