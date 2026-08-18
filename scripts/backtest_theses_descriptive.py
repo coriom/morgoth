@@ -132,10 +132,27 @@ async def main() -> int:
                         help="Flat band for hashrate % change (default 0.02 = ±2%%)")
     parser.add_argument("--difficulty-band", type=float, default=0.005,
                         help="Flat band for difficulty adjustment % (default 0.005 = ±0.5%%)")
+    parser.add_argument("--since", default=None,
+                        help="ISO datetime cutoff — score only theses with created_at >= this")
+    parser.add_argument("--until", default=None,
+                        help="ISO datetime upper bound — score only theses with created_at < this")
     args = parser.parse_args()
 
     config = await load_config()
     theses = await _fetch_theses(config)
+    if args.since or args.until:
+        # Support the pre/post-grounding split without touching the scorer's
+        # core logic. Cutoffs match the format git prints (2026-08-07T19:26:44+00:00).
+        from datetime import datetime as _dt
+        since = _dt.fromisoformat(args.since) if args.since else None
+        until = _dt.fromisoformat(args.until) if args.until else None
+        before = len(theses)
+        theses = [
+            t for t in theses
+            if (since is None or t["created_at"] >= since)
+            and (until is None or t["created_at"] < until)
+        ]
+        print(f"Filter: since={args.since} until={args.until} → {before} → {len(theses)} theses")
     non_directional = [t for t in theses if not _is_directional(t)]
     print(f"Total theses: {len(theses)}  |  Non-directional: {len(non_directional)}")
 
