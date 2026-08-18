@@ -23,7 +23,9 @@ INVARIANTS enforced by grep-lock tests in tests/test_auto_approve.py:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Iterable, Literal
 
 Tier = Literal["AUTO", "HUMAN"]
@@ -193,6 +195,37 @@ def evaluate_criteria(
         rollback_rate=rollback_rate,
         reasons=reasons,
     )
+
+
+# Accepts "7 days", "7d", "24h", "48 hours", "30 minutes", "30m". Empty
+# unit letter shorthand only for d/h/m to keep the grammar tight.
+_SINCE_RE = re.compile(
+    r"^\s*(\d+)\s*(d|h|m|days?|hours?|minutes?|mins?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_since(spec: str) -> timedelta:
+    """Parse a --since spec into a timedelta. Raises ValueError on bad input.
+
+    The audit CLI used to pass raw strings into asyncpg::interval which requires
+    a datetime.timedelta, not a Postgres interval string — so we parse here and
+    let the caller compute a cutoff datetime.
+    """
+    if not spec or not isinstance(spec, str):
+        raise ValueError(f"--since must be non-empty string, got {spec!r}")
+    m = _SINCE_RE.match(spec)
+    if not m:
+        raise ValueError(
+            f"--since {spec!r} not understood; try '7 days', '24h', '30 minutes'"
+        )
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit.startswith("d"):
+        return timedelta(days=n)
+    if unit.startswith("h"):
+        return timedelta(hours=n)
+    return timedelta(minutes=n)
 
 
 def should_auto_apply(

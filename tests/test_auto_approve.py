@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from datetime import timedelta
+
 from self_modify import auto_approve
 from self_modify.auto_approve import (
     AUTO_APPROVE_ENV,
@@ -28,8 +30,43 @@ from self_modify.auto_approve import (
     auto_approve_enabled,
     classify_tier,
     evaluate_criteria,
+    parse_since,
     should_auto_apply,
 )
+
+
+class TestParseSince:
+    """`morgoth audit --since '7 days'` crashed because the raw string was
+    passed to asyncpg::interval which needs a datetime.timedelta. Fix parses
+    the spec Python-side into a timedelta so the CLI can compute a cutoff."""
+
+    @pytest.mark.parametrize(
+        "spec, expected",
+        [
+            ("7 days", timedelta(days=7)),
+            ("7d", timedelta(days=7)),
+            ("1 day", timedelta(days=1)),
+            ("24h", timedelta(hours=24)),
+            ("48 hours", timedelta(hours=48)),
+            ("2 hour", timedelta(hours=2)),
+            ("30 minutes", timedelta(minutes=30)),
+            ("30m", timedelta(minutes=30)),
+            ("5 min", timedelta(minutes=5)),
+            ("15 mins", timedelta(minutes=15)),
+            ("  3d  ", timedelta(days=3)),  # whitespace tolerant
+            ("3D", timedelta(days=3)),      # case tolerant
+        ],
+    )
+    def test_valid(self, spec, expected):
+        assert parse_since(spec) == expected
+
+    @pytest.mark.parametrize(
+        "spec",
+        ["", "7", "days", "7 weeks", "abc", "7 xyz", "-1d", "7,5 days", None],
+    )
+    def test_bad_input_raises_valueerror(self, spec):
+        with pytest.raises(ValueError):
+            parse_since(spec)
 
 MODULE_PATH = Path(auto_approve.__file__)
 

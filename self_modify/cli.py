@@ -445,12 +445,21 @@ async def _cmd_audit(store: P.ProposalStore, args: argparse.Namespace) -> int:
                     )
         return 0
 
-    # --since: replay the log
+    # --since: replay the log. asyncpg::interval wants a datetime.timedelta,
+    # not a Postgres string like '7 days' — so parse the CLI value here and
+    # compute a UTC cutoff, then query WHERE created_at >= cutoff.
+    from datetime import datetime, timezone
     since_clause = ""
     params: list[Any] = []
     if args.since:
-        since_clause = "WHERE created_at >= NOW() - $1::interval"
-        params.append(args.since)
+        try:
+            delta = AA.parse_since(args.since)
+        except ValueError as exc:
+            print(f"error: {exc}")
+            return 2
+        cutoff = datetime.now(tz=timezone.utc) - delta
+        since_clause = "WHERE created_at >= $1"
+        params.append(cutoff)
     async with pool.acquire() as conn:
         log_rows = await conn.fetch(
             f"SELECT proposal_id, tier, reason, rule_version, flag_state, "
