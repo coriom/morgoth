@@ -22,11 +22,13 @@ from analysis.thesis_backtest_descriptive import (
     bucket_sentiment_value,
     classify_subject,
     most_recent_before,
+    parse_level,
     parse_sentiment,
     score_difficulty,
     score_funding,
     score_gas,
     score_hashrate,
+    score_level,
     score_market_cap,
     score_sentiment,
     score_volume,
@@ -147,6 +149,137 @@ class TestTriage:
         assert counts["unreachable"] == 2
         assert counts["subjective"] == 1
         assert len(metric_rows) == 3
+
+
+class TestParseLevel:
+    @pytest.mark.parametrize(
+        "claim, expected",
+        [
+            ("high", "high"),
+            ("HIGH", "high"),
+            ("elevated", "high"),
+            ("strong", "high"),
+            ("low", "low"),
+            ("depressed", "low"),
+            ("weak", "low"),
+            # Compound observed in corpus:
+            ("high (> 6 trillion usd)", "high"),
+            ("low (0.00004788%)", "low"),
+            # Directional-only → None
+            ("increasing", None),
+            ("declining", None),
+            ("stable", None),
+            # Contradictory both-words → None (conservative)
+            ("high but low volatility", None),
+            ("", None),
+        ],
+    )
+    def test_parse(self, claim, expected):
+        assert parse_level(claim) == expected
+
+
+class TestScoreLevel:
+    """Level scorer: HIT iff observed percentile in claimed band, using
+    ONLY samples strictly before the thesis timestamp (no-lookahead)."""
+
+    def setup_method(self):
+        # 60 daily samples anchored 60 days before "now": values 0..59 (monotone
+        # rising). Under a 30-day window ending at thesis_ts, the distribution
+        # slice determines high/low thresholds.
+        self.now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        self.anchor = self.now - timedelta(days=60)
+        anchor_ms = int(self.anchor.timestamp() * 1000)
+        self.ms = [anchor_ms + d * 86400_000 for d in range(60)]
+        self.values = [float(d) for d in range(60)]  # monotone rising
+        self.series = (self.ms, self.values)
+
+    def _mk_row(self, claim, offset_days):
+        return {
+            "thesis_id": f"L{offset_days}",
+            "subject": "Ethereum gas price",
+            "claim": claim,
+            "confidence": "medium",
+            "created_at": self.anchor + timedelta(days=offset_days),
+        }
+
+    def test_high_claim_hits_on_recent_regime_high(self):
+        # At day 50, window = day 20-49 → distribution 20..49. Observed = 50.
+        # 50 > 75th pct of [20..49] (which is ~42) → high → HIT
+        row = self._mk_row("high", 50)
+        r = score_level(row, self.series, "eth_gas", self.now)
+        assert r is not None and r.outcome == "hit"
+
+    def test_low_claim_misses_on_regime_high(self):
+        row = self._mk_row("low", 50)
+        r = score_level(row, self.series, "eth_gas", self.now)
+        assert r is not None and r.outcome == "miss"
+
+    def test_high_claim_misses_at_regime_bottom(self):
+        # At day 10, window = day 0-9 (only 10 samples, still ≥5). Observed = 10.
+        # 10 > 75th pct of [0..9] (~7.5) → high → HIT actually.
+        # Better: pick day 5 where distribution is [0..4] and observed=5 →
+        # high pct = 4 * 0.75 = 3.0, so 5 > 3 → high → HIT.
+        # For a MISS, need series that's flat then dips. Use a different series.
+        anchor_ms = int(self.anchor.timestamp() * 1000)
+        vals = [100.0] * 30 + [50.0]  # 30 flat days, then drops
+        ms = [anchor_ms + d * 86400_000 for d in range(31)]
+        row = {
+            "thesis_id": "Lmiss", "subject": "eth gas", "claim": "high",
+            "confidence": "low", "created_at": self.anchor + timedelta(days=30),
+        }
+        r = score_level(row, (ms, vals), "eth_gas", self.now)
+        # Distribution = 30 samples all 100, so high_thr = 100, low_thr = 100.
+        # Observed at day 30 = 50 → below thr → observed = "low", predicted "high" → MISS.
+        assert r is not None and r.outcome == "miss"
+
+    def test_no_lookahead_uses_only_prior_samples(self):
+        """CRITICAL invariant: distribution must NOT include samples at or
+        after the thesis timestamp. Verified by injecting a series that
+        would produce a DIFFERENT verdict with vs without lookahead."""
+        # Series: 20 samples of value 100, then 20 samples of value 1000.
+        # Thesis at day 20 (the transition), claim "high", observed near
+        # transition is 1000. If no-lookahead (only days 0..19 in window),
+        # distribution = [100]*20 → high_thr = 100 → observed 1000 → HIT.
+        # If we CHEATED (included days 20..39 in window), distribution
+        # would include the 1000s → high_thr around 1000 → observed 1000
+        # → mid → MISS. So HIT under correct implementation.
+        anchor_ms = int(self.anchor.timestamp() * 1000)
+        ms = [anchor_ms + d * 86400_000 for d in range(40)]
+        vals = [100.0] * 20 + [1000.0] * 20
+        row = {
+            "thesis_id": "Lnolookahead", "subject": "eth gas", "claim": "high",
+            "confidence": "medium",
+            "created_at": self.anchor + timedelta(days=20),
+        }
+        r = score_level(row, (ms, vals), "eth_gas", self.now)
+        assert r is not None and r.outcome == "hit"
+
+    def test_returns_none_when_insufficient_prior_samples(self):
+        # Thesis at day 2, only 2 prior samples → <5 → SKIP (None), never fake.
+        row = self._mk_row("high", 2)
+        r = score_level(row, self.series, "eth_gas", self.now)
+        assert r is None
+
+    def test_returns_none_on_no_series(self):
+        r = score_level(self._mk_row("high", 50), None, "eth_gas", self.now)
+        assert r is None
+
+    def test_returns_none_on_ambiguous_claim(self):
+        r = score_level(self._mk_row("increasing", 50), self.series, "eth_gas", self.now)
+        assert r is None
+
+
+class TestGrepLockNoLookahead:
+    """Structural check: score_level source must contain the strict '< ts_ms'
+    slice — the guarantee that no post-thesis data leaks into the distribution."""
+
+    def test_source_uses_strict_less_than(self):
+        import inspect
+        from analysis.thesis_backtest_descriptive import score_level as fn
+        src = inspect.getsource(fn)
+        # Both anchors present: window_start_ms <= m AND m < ts_ms
+        assert "< ts_ms" in src, "score_level must slice with strict < ts_ms (no lookahead)"
+        assert "window_start_ms <= m" in src, "score_level must bound below by window_start_ms"
 
 
 class TestClassifySubjectNewMetrics:

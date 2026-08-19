@@ -375,6 +375,135 @@ def score_sentiment(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# LEVEL-CLAIM SCORER
+#
+# Rationale: claude-cli generates ~74 % LEVEL claims ("dominance is high")
+# following the grounding prompt's "observational over predictive" rule.
+# The 8B still emits ~24 level claims total across the whole corpus.
+# Directional-only scoring returns None for all of these — a coverage
+# gap, not a model failure. This scorer fills it.
+#
+# Window: 30 days ending AT (not after) the thesis timestamp. A claim
+# "high" implicitly means "vs recent normal", not "vs all-time" — 30d
+# captures a recent regime and gives enough samples for stable
+# percentiles (30 daily samples / 90 8h-funding samples / 720 hourly
+# mkt-cap samples). Sensitivity: a claim borderline on a 30d percentile
+# is likely borderline on 60d too; extreme claims are stable.
+#
+# NO-LOOKAHEAD GUARANTEE (critical): the percentile distribution is
+# computed EXCLUSIVELY from values whose timestamp is STRICTLY BEFORE
+# the thesis's created_at. Using post-thesis data would let the scorer
+# "know" what happened next — invalid for backtest scoring. Enforced
+# by the strict `< ts_ms` slice below; grep-locked in tests.
+# ─────────────────────────────────────────────────────────────────────────
+
+_LEVEL_WINDOW_DAYS = 30
+_LEVEL_HIGH_PCT = 0.75
+_LEVEL_LOW_PCT = 0.25
+
+# Vocabulary → band. Grown from ACTUAL corpus frequencies (8B + claude-cli
+# experiment): "high" 28, "low" 17, "elevated"/"depressed"/"strong"/"weak"
+# 0 (unused by either model). Included the synonyms for future-proofing
+# but they contribute nothing at current sample sizes.
+_LEVEL_HIGH_WORDS = ("high", "elevated", "strong")
+_LEVEL_LOW_WORDS = ("low", "depressed", "weak")
+
+
+def parse_level(claim: str) -> Literal["high", "low"] | None:
+    """Extract level from a claim. Returns None if not cleanly high/low
+    or if both words appear (contradictory)."""
+    if not claim:
+        return None
+    c = claim.lower()
+    is_high = any(w in c for w in _LEVEL_HIGH_WORDS)
+    is_low = any(w in c for w in _LEVEL_LOW_WORDS)
+    if is_high and is_low:
+        return None  # "low high"? contradictory / hedge
+    if is_high:
+        return "high"
+    if is_low:
+        return "low"
+    return None
+
+
+def _percentile(sorted_values: list[float], p: float) -> float:
+    """Simple linear-interp percentile on a pre-sorted list. p ∈ [0, 1]."""
+    n = len(sorted_values)
+    if n == 0:
+        return float("nan")
+    if n == 1:
+        return sorted_values[0]
+    idx = p * (n - 1)
+    lo = int(idx)
+    hi = min(lo + 1, n - 1)
+    frac = idx - lo
+    return sorted_values[lo] + frac * (sorted_values[hi] - sorted_values[lo])
+
+
+def score_level(
+    row: dict,
+    series: tuple[list[int], list[float]] | None,
+    metric: MetricKind,
+    now: datetime,
+    window_days: int = _LEVEL_WINDOW_DAYS,
+) -> DescScoredThesis | None:
+    """Score a level claim ('high'/'low') against the metric's percentile
+    distribution over the `window_days` PRIOR to the thesis timestamp.
+
+    Contract:
+      · NO LOOKAHEAD — distribution uses only samples strictly before ts.
+      · No fabrication — missing series / too-few-samples / unmapped
+        vocabulary → return None (SKIP).
+      · HIT iff observed percentile is in the claimed band
+        (high = ≥ 75th, low = ≤ 25th).
+    """
+    predicted = parse_level(str(row.get("claim", "")))
+    if predicted is None:
+        return None
+    if not series:
+        return None
+    created_at = row["created_at"]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if created_at > now:
+        return None
+    ts_ms = int(created_at.timestamp() * 1000)
+    window_start_ms = int((created_at - timedelta(days=window_days)).timestamp() * 1000)
+    sorted_ms, values = series
+    # STRICT < ts_ms: no data at or after the thesis. This is the
+    # no-lookahead guarantee — the scorer can only "see" what Morgoth
+    # could have seen at the moment of the claim.
+    window_vals = [
+        v for m, v in zip(sorted_ms, values)
+        if window_start_ms <= m < ts_ms
+    ]
+    if len(window_vals) < 5:  # too few samples for a stable percentile
+        return None
+    observed_now = nearest_value(sorted_ms, values, ts_ms)
+    if observed_now is None:
+        return None
+    sw = sorted(window_vals)
+    high_thr = _percentile(sw, _LEVEL_HIGH_PCT)
+    low_thr = _percentile(sw, _LEVEL_LOW_PCT)
+    if observed_now >= high_thr:
+        observed_band: Literal["high", "low", "mid"] = "high"
+    elif observed_now <= low_thr:
+        observed_band = "low"
+    else:
+        observed_band = "mid"
+    return DescScoredThesis(
+        thesis_id=str(row.get("thesis_id", "")),
+        subject=str(row.get("subject", "")),
+        claim=str(row.get("claim", "")),
+        confidence=str(row.get("confidence", "")),
+        metric=metric,
+        predicted=predicted,
+        observed=observed_band,
+        outcome="hit" if observed_band == predicted else "miss",
+    )
+
+
 def _score_series_directional(
     row: dict,
     series: tuple[list[int], list[float]] | None,
