@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import os
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -864,6 +865,25 @@ class Brain:
             "(fragment sentence, not a topic)\n"
             "Output ONLY the JSON array. No prose, no preamble, no code fences."
         )
+        # THESIS_GENERATOR env — 'ollama' (default) preserves the existing
+        # cycle behavior byte-for-byte; 'claude-cli' routes the SAME grounding
+        # prompt through the reflect_llm claude-cli path (already used for
+        # reflect/shadow). This is an EXPERIMENT toggle to answer "is the
+        # 33.3 %-hit-rate ceiling the MODEL or the TASK" — it is NOT a
+        # migration. Default MUST stay ollama; grep-locked in the test.
+        _gen = (os.environ.get("THESIS_GENERATOR") or "ollama").strip().lower()
+        if _gen == "claude-cli":
+            from self_modify.reflect_llm import reflect_chat  # local import: keeps unset-env path unaware of it
+            full_prompt = build_system_prompt() + "\n\n" + prompt
+            try:
+                text, _meta = await reflect_chat(full_prompt, self._config, "claude-cli")
+            except Exception as exc:
+                logger.warning(
+                    "Thesis extraction (claude-cli) failed for objective {}: {}",
+                    obj.get("objective_id"), exc,
+                )
+                return []
+            return self._parse_thesis_json((text or "").strip())
         messages = [
             ChatMessage(role="system", content=build_system_prompt()),
             ChatMessage(role="user", content=prompt),

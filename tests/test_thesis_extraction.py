@@ -598,6 +598,103 @@ async def test_extract_theses_returns_empty_on_prose_response() -> None:
     assert result == []
 
 
+# ------------ Switchable generator (THESIS_GENERATOR experiment) ---------------
+#
+# THESIS_GENERATOR env routes _extract_theses to claude-cli via reflect_llm
+# when set. Default is ollama — enforced by a grep-lock so a future edit
+# can't quietly flip the default. Experiment-only; must be reverted after.
+
+
+def test_thesis_generator_default_is_ollama_grep_lock() -> None:
+    """Grep-lock: the fallback in brain.py must default to 'ollama'."""
+    from pathlib import Path
+    src = Path("core/brain.py").read_text()
+    assert 'os.environ.get("THESIS_GENERATOR") or "ollama"' in src, (
+        "THESIS_GENERATOR default must stay 'ollama' — this is a safety lock"
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_theses_routes_to_claude_cli_when_env_set(monkeypatch) -> None:
+    """With THESIS_GENERATOR=claude-cli, extraction bypasses ollama and calls
+    reflect_llm.reflect_chat with provider='claude-cli'. The parsed shape is
+    IDENTICAL to the ollama path — detector-facing format unchanged."""
+    monkeypatch.setenv("THESIS_GENERATOR", "claude-cli")
+    fake_json = json.dumps([{
+        "subject": "BTC short-term price", "claim": "declining",
+        "evidence": [{"source": "get_crypto_price", "detail": "-1.2%"}],
+    }])
+    captured: dict[str, object] = {}
+
+    async def fake_reflect_chat(prompt, config, provider, **kwargs):
+        captured["prompt"] = prompt
+        captured["provider"] = provider
+        return fake_json, {"provider": provider}
+
+    monkeypatch.setattr("self_modify.reflect_llm.reflect_chat", fake_reflect_chat)
+    llm_client = MagicMock()
+    llm_client.chat = AsyncMock(side_effect=AssertionError("ollama must NOT be called under claude-cli"))
+    brain = _build_brain(llm_client)
+
+    result = await brain._extract_theses(
+        obj={"objective_id": "obj-1", "title": "BTC"},
+        synthesis_text="Price dropped 1.2% in 24h.",
+        sources=["get_crypto_price"],
+    )
+    assert captured["provider"] == "claude-cli"
+    # The full prompt includes both the system context and the grounding rules.
+    assert "ONLY source of truth" in captured["prompt"]
+    assert "PHANTOM CLAIM" in captured["prompt"]
+    # Shape parity: detector-facing keys unchanged.
+    assert len(result) == 1
+    assert set(result[0].keys()) == {"subject", "claim", "confidence", "evidence"}
+    assert result[0]["subject"] == "BTC short-term price"
+    llm_client.chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_extract_theses_defaults_to_ollama_when_env_unset(monkeypatch) -> None:
+    """With THESIS_GENERATOR unset, the ollama chat path is used unchanged."""
+    monkeypatch.delenv("THESIS_GENERATOR", raising=False)
+    payload = json.dumps([{
+        "subject": "BTC price", "claim": "declining",
+        "evidence": [{"source": "get_crypto_price", "detail": "-1%"}],
+    }])
+    llm_client = MagicMock()
+    llm_client.chat = AsyncMock(return_value=_fake_response(content=payload))
+    # If claude-cli branch is taken by mistake, reflect_chat is not mocked
+    # here so it would blow up — the failing assertion below is redundant
+    # protection.
+    brain = _build_brain(llm_client)
+    result = await brain._extract_theses(
+        obj={"objective_id": "obj-1", "title": "X"},
+        synthesis_text="Some synthesis text mentioning BTC price.",
+        sources=["get_crypto_price"],
+    )
+    assert len(result) == 1
+    llm_client.chat.assert_called()  # ollama IS called under the default
+
+
+@pytest.mark.asyncio
+async def test_extract_theses_claude_cli_failure_returns_empty(monkeypatch) -> None:
+    """A claude-cli path exception is caught → [] returned, cycle not broken."""
+    monkeypatch.setenv("THESIS_GENERATOR", "claude-cli")
+
+    async def failing_reflect_chat(prompt, config, provider, **kwargs):
+        raise RuntimeError("claude-cli not available")
+
+    monkeypatch.setattr("self_modify.reflect_llm.reflect_chat", failing_reflect_chat)
+    llm_client = MagicMock()
+    llm_client.chat = AsyncMock()
+    brain = _build_brain(llm_client)
+    result = await brain._extract_theses(
+        obj={"objective_id": "obj-1", "title": "X"},
+        synthesis_text="text",
+        sources=["s"],
+    )
+    assert result == []
+
+
 @pytest.mark.asyncio
 async def test_extract_theses_returns_empty_on_chat_failure() -> None:
     """A non-transient chat error is caught and yields [] without raising."""
