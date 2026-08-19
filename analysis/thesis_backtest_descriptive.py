@@ -32,7 +32,12 @@ from analysis.thesis_backtest import parse_direction  # shared polarity parser
 
 Verifiability = Literal["metric", "relation", "unverifiable"]
 Outcome = Literal["hit", "miss", "skip"]
-MetricKind = Literal["btc_hashrate", "btc_difficulty", "market_sentiment"]
+MetricKind = Literal[
+    "btc_hashrate", "btc_difficulty", "market_sentiment",
+    "btc_market_cap", "eth_market_cap",
+    "btc_volume", "eth_volume",
+    "eth_gas", "btc_funding",
+]
 
 # Subject → metric mapping. Kept explicit (not a regex tangle) because
 # the vocabulary is small and stable — grown from the 248-row dump.
@@ -44,24 +49,45 @@ _DIFFICULTY_SUBJECTS = (
     "btc difficulty",
 )
 _SENTIMENT_SUBJECTS = ("market sentiment",)
+# Volume/mkt-cap subject discrimination: BTC/ETH-specific → CoinGecko
+# market_chart is authoritative. "Global"/"Crypto" → the whole-market
+# figure needs CoinGecko Pro (paid), so stays UNREACHABLE. A BTC-proxy
+# for global would silently produce wrong hit-rates — deliberately not done.
+_BTC_MKTCAP_MARKERS = ("btc market cap", "btc's market cap", "bitcoin market cap")
+_ETH_MKTCAP_MARKERS = ("ethereum market cap", "eth market cap")
+_BTC_VOLUME_MARKERS = (
+    "btc 24-hour volume", "btc trading volume", "btc transaction volume",
+    "btc short-term trading volume", "bitcoin volume", "btc volume",
+    "24-hour trading volume for btc", "24-hour volume for btc",
+)
+_ETH_VOLUME_MARKERS = (
+    "ethereum volume", "ethereum trading volume", "ethereum 24h volume",
+    "eth volume", "eth trading volume",
+)
+_ETH_GAS_MARKERS = ("gas price", "gas prices", "ethereum gas")
+_BTC_FUNDING_MARKERS = (
+    "bitcoin futures funding", "btc futures funding", "funding rate",
+    "funding rates",
+)
 
-# Subjects for which we KNOW the underlying quantity has no cheap
-# historical source (free CoinGecko / mempool / F&G don't cover them).
-# Kept separately from truly-subjective claims — this is a triage class:
+# Subjects for which the underlying quantity has NO cheap historical
+# source (probed 2026-08-19; see docs/BACKTEST_HISTORICAL_SOURCES.md).
+# Kept separately from truly-subjective claims — this is triage class
 # "verifiable in principle, unreachable in practice".
 _UNREACHABLE_SUBJECT_MARKERS = (
-    "dominance",       # CoinGecko /global is current-only in free tier
-    "funding rate",    # no free historical funding endpoint
-    "long-short",      # same as above
-    "gas price",       # no free historical gas endpoint
-    "gas prices",
-    "network congestion",  # proxies gas
-    "mining profitability",  # composite; needs revenue + power
-    "on-chain metrics",  # too vague; would require a synthesis
-    "market capitalization",  # global cap = paid; single-asset is a proxy
-    "market volume",       # same
-    "crypto market volume",
-    "market cap",
+    "dominance",       # CoinGecko /global/market_cap_chart is Pro-only (401)
+    "long-short",      # no free historical endpoint checked
+    "mining profitability",  # composite (revenue × cost) — not one series
+    "on-chain metrics",  # too vague to map to a single metric
+    # Global/whole-market mkt cap and volume specifically:
+    "global market cap", "global market capitalization",
+    "global crypto market cap", "global crypto market capitalization",
+    "crypto market cap", "crypto market capitalization",
+    "market capitalization of all cryptocurrencies",
+    "market capitalization of cryptocurrencies",
+    "global crypto market volume", "global market capitalization volume",
+    "crypto market volume", "crypto 24-hour trading volume",
+    "cryptocurrency market",
 )
 
 # Sentiment vocabulary → F&G bucket. The F&G index is 0-100:
@@ -101,9 +127,29 @@ def classify_subject(subject: str) -> tuple[Verifiability, MetricKind | None, st
         return "metric", "btc_difficulty", None
     if any(m in s for m in _SENTIMENT_SUBJECTS):
         return "metric", "market_sentiment", None
+    # Whole-market unreachables checked FIRST (a "global market cap" subject
+    # also contains the bare "market cap" substring — order matters).
     for marker in _UNREACHABLE_SUBJECT_MARKERS:
         if marker in s:
             return "unverifiable", None, f"no free historical source for '{marker}'"
+    if any(m in s for m in _BTC_MKTCAP_MARKERS):
+        return "metric", "btc_market_cap", None
+    if any(m in s for m in _ETH_MKTCAP_MARKERS):
+        return "metric", "eth_market_cap", None
+    if any(m in s for m in _BTC_VOLUME_MARKERS):
+        return "metric", "btc_volume", None
+    if any(m in s for m in _ETH_VOLUME_MARKERS):
+        return "metric", "eth_volume", None
+    if any(m in s for m in _ETH_GAS_MARKERS):
+        return "metric", "eth_gas", None
+    if any(m in s for m in _BTC_FUNDING_MARKERS):
+        return "metric", "btc_funding", None
+    # Bare "market cap" / "market capitalization" with no BTC/ETH/global
+    # qualifier — most likely means "the market", so treat as unreachable.
+    if "market cap" in s or "market capitalization" in s:
+        return "unverifiable", None, "no free historical source for 'market cap' (bare — likely global)"
+    if "market volume" in s or ("volume" in s and "btc" not in s and "ethereum" not in s and "eth " not in s):
+        return "unverifiable", None, "no free historical source for 'market volume' (bare — likely global)"
     return "unverifiable", None, "subjective / no metric mapping"
 
 
@@ -326,6 +372,84 @@ def score_sentiment(
         predicted=predicted,
         observed=observed,
         outcome="hit" if observed == predicted else "miss",
+    )
+
+
+def _score_series_directional(
+    row: dict,
+    series: tuple[list[int], list[float]] | None,
+    horizon_hours: int,
+    flat_pct: float,
+    now: datetime,
+    metric: MetricKind,
+) -> DescScoredThesis | None:
+    """Generic timeseries-directional scorer used by all new metrics.
+
+    Graceful degrade: series=None (fetcher failed) → return None (SKIP).
+    Missing data at t0 or t1 → None (SKIP). NEVER fabricates a zero.
+    """
+    predicted = parse_direction(str(row.get("claim", "")))
+    if predicted is None:
+        return None
+    if not series:
+        return None
+    created_at = row["created_at"]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    target = created_at + timedelta(hours=horizon_hours)
+    if target > now:
+        return None
+    sorted_ms, values = series
+    v0 = nearest_value(sorted_ms, values, int(created_at.timestamp() * 1000))
+    v1 = nearest_value(sorted_ms, values, int(target.timestamp() * 1000))
+    if v0 is None or v1 is None:
+        return None
+    observed = bucket_change(v0, v1, flat_pct)
+    return DescScoredThesis(
+        thesis_id=str(row.get("thesis_id", "")),
+        subject=str(row.get("subject", "")),
+        claim=str(row.get("claim", "")),
+        confidence=str(row.get("confidence", "")),
+        metric=metric,
+        predicted=predicted,
+        observed=observed,
+        outcome="hit" if observed == predicted else "miss",
+    )
+
+
+def score_market_cap(row, series, horizon_hours, flat_pct, now, asset):
+    return _score_series_directional(
+        row, series, horizon_hours, flat_pct, now,
+        metric="btc_market_cap" if asset == "bitcoin" else "eth_market_cap",
+    )
+
+
+def score_volume(row, series, horizon_hours, flat_pct, now, asset):
+    return _score_series_directional(
+        row, series, horizon_hours, flat_pct, now,
+        metric="btc_volume" if asset == "bitcoin" else "eth_volume",
+    )
+
+
+def score_gas(row, series, horizon_hours, flat_pct, now):
+    return _score_series_directional(
+        row, series, horizon_hours, flat_pct, now, metric="eth_gas",
+    )
+
+
+def score_funding(row, series, horizon_hours, flat_pct, now):
+    """Funding claims can be directional ('increasing') OR level ('low', 'high').
+    We only score directional here; level claims — 'low' / 'high' — fall
+    through to None (skip) rather than force a hit against an arbitrary
+    threshold. Prevents fabricated hit-rate on level claims that don't map
+    cleanly to a % change."""
+    claim = str(row.get("claim", "")).lower()
+    if any(w in claim for w in ("low", "high")) and not any(
+        w in claim for w in ("increas", "decreas", "declin", "rising", "falling")
+    ):
+        return None
+    return _score_series_directional(
+        row, series, horizon_hours, flat_pct, now, metric="btc_funding",
     )
 
 

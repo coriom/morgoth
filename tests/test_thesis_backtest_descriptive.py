@@ -24,8 +24,12 @@ from analysis.thesis_backtest_descriptive import (
     most_recent_before,
     parse_sentiment,
     score_difficulty,
+    score_funding,
+    score_gas,
     score_hashrate,
+    score_market_cap,
     score_sentiment,
+    score_volume,
     triage,
 )
 
@@ -41,8 +45,9 @@ class TestClassifySubject:
             ("Market sentiment", "metric", "market_sentiment"),
             ("Ethereum hash rate", "unverifiable", None),  # PoS post-merge
             ("Bitcoin dominance percentage", "unverifiable", None),
-            ("Bitcoin futures funding rate", "unverifiable", None),
-            ("Ethereum gas prices", "unverifiable", None),
+            # Post-source-wiring these ARE reachable (Binance funding, Owlracle gas).
+            ("Bitcoin futures funding rate", "metric", "btc_funding"),
+            ("Ethereum gas prices", "metric", "eth_gas"),
             ("Bitcoin difficulty adjustment progress", "unverifiable", None),
             ("Bitcoin difficulty adjustments correlate with BTC price", "relation", None),
             ("some random subject", "unverifiable", None),
@@ -142,6 +147,140 @@ class TestTriage:
         assert counts["unreachable"] == 2
         assert counts["subjective"] == 1
         assert len(metric_rows) == 3
+
+
+class TestClassifySubjectNewMetrics:
+    @pytest.mark.parametrize(
+        "subject, expected_metric",
+        [
+            ("BTC market capitalization", "btc_market_cap"),
+            ("BTC's market cap", "btc_market_cap"),
+            ("Ethereum market capitalization", "eth_market_cap"),
+            ("BTC 24-hour volume", "btc_volume"),
+            ("BTC transaction volume", "btc_volume"),
+            ("Bitcoin volume traded", "btc_volume"),
+            ("Ethereum volume", "eth_volume"),
+            ("Ethereum trading volume", "eth_volume"),
+            ("Ethereum gas price", "eth_gas"),
+            ("Ethereum Gas Price", "eth_gas"),
+            ("Bitcoin futures funding rate", "btc_funding"),
+            ("BTC futures funding rate", "btc_funding"),
+            ("Funding rates on Bitcoin futures", "btc_funding"),
+        ],
+    )
+    def test_new_metrics_reachable(self, subject, expected_metric):
+        v, m, _ = classify_subject(subject)
+        assert v == "metric" and m == expected_metric
+
+    @pytest.mark.parametrize(
+        "subject",
+        [
+            "Global market capitalization",
+            "Crypto market capitalization",
+            "Global crypto market volume",
+            "Crypto market volume",
+            "Market cap",  # bare — likely global
+            "Market capitalization of cryptocurrencies",
+            "Bitcoin dominance percentage",  # still paid-only
+        ],
+    )
+    def test_global_or_bare_stays_unreachable(self, subject):
+        v, m, reason = classify_subject(subject)
+        assert v == "unverifiable" and m is None
+        assert reason is not None and "no free historical source" in reason
+
+
+class TestScoreNewMetrics:
+    """Directional scoring on the four new metrics, with mocked series."""
+
+    def setup_method(self):
+        self.anchor = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        anchor_ms = int(self.anchor.timestamp() * 1000)
+        # 30 daily points, values rising 2 %/day.
+        self.ms = [anchor_ms + d * 86400_000 for d in range(30)]
+        self.up_series = (self.ms, [100.0 * (1.02 ** d) for d in range(30)])
+        # 30 daily points, flat.
+        self.flat_series = (self.ms, [100.0 for _ in range(30)])
+        self.now = self.anchor + timedelta(days=25)
+
+    def test_market_cap_up_prediction_hits(self):
+        row = {
+            "thesis_id": "m1", "subject": "BTC market capitalization",
+            "claim": "increasing", "confidence": "medium",
+            "created_at": self.anchor,
+        }
+        r = score_market_cap(row, self.up_series, 168, 0.01, self.now, "bitcoin")
+        assert r is not None and r.outcome == "hit" and r.metric == "btc_market_cap"
+
+    def test_market_cap_wrong_prediction_misses(self):
+        row = {
+            "thesis_id": "m2", "subject": "BTC market capitalization",
+            "claim": "declining", "confidence": "medium",
+            "created_at": self.anchor,
+        }
+        r = score_market_cap(row, self.up_series, 168, 0.01, self.now, "bitcoin")
+        assert r is not None and r.outcome == "miss"
+
+    def test_volume_stable_hits_on_flat_series(self):
+        row = {
+            "thesis_id": "v1", "subject": "BTC trading volume",
+            "claim": "stable", "confidence": "low",
+            "created_at": self.anchor,
+        }
+        r = score_volume(row, self.flat_series, 168, 0.15, self.now, "bitcoin")
+        assert r is not None and r.outcome == "hit" and r.metric == "btc_volume"
+
+    def test_gas_increasing_hit(self):
+        row = {
+            "thesis_id": "g1", "subject": "Ethereum gas price",
+            "claim": "increasing", "confidence": "high",
+            "created_at": self.anchor,
+        }
+        r = score_gas(row, self.up_series, 168, 0.10, self.now)
+        assert r is not None and r.outcome == "hit" and r.metric == "eth_gas"
+
+    def test_funding_directional_hit(self):
+        row = {
+            "thesis_id": "f1", "subject": "Bitcoin futures funding rate",
+            "claim": "increasing", "confidence": "medium",
+            "created_at": self.anchor,
+        }
+        r = score_funding(row, self.up_series, 168, 0.0005, self.now)
+        assert r is not None and r.outcome == "hit"
+
+    def test_funding_level_claim_skips(self):
+        """'low'/'high' level claims can't be scored against a % change —
+        must return None (SKIP), not fabricate a match."""
+        row = {
+            "thesis_id": "f2", "subject": "Bitcoin futures funding rate",
+            "claim": "low", "confidence": "medium",
+            "created_at": self.anchor,
+        }
+        r = score_funding(row, self.up_series, 168, 0.0005, self.now)
+        assert r is None
+
+    def test_graceful_degrade_series_none(self):
+        """Source outage → series=None → SKIP, never a crash, never a hit."""
+        row = {
+            "thesis_id": "d1", "subject": "BTC market capitalization",
+            "claim": "increasing", "confidence": "medium",
+            "created_at": self.anchor,
+        }
+        assert score_market_cap(row, None, 168, 0.01, self.now, "bitcoin") is None
+        assert score_volume(row, None, 168, 0.15, self.now, "bitcoin") is None
+        assert score_gas(row, None, 168, 0.10, self.now) is None
+        assert score_funding(row, None, 168, 0.0005, self.now) is None
+
+    def test_no_fabrication_when_target_before_series(self):
+        """Thesis timestamp outside the series window → None, not 0/fake value."""
+        pre_anchor = self.anchor - timedelta(days=90)
+        row = {
+            "thesis_id": "d2", "subject": "BTC market capitalization",
+            "claim": "increasing", "confidence": "medium",
+            "created_at": pre_anchor,
+        }
+        r = score_market_cap(row, self.up_series, 168, 0.01, self.now, "bitcoin")
+        assert r is None
 
 
 class TestScoreHashrate:

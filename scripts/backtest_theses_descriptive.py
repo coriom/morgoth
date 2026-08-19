@@ -52,8 +52,12 @@ from analysis.thesis_backtest_descriptive import (  # noqa: E402
     aggregate,
     classify_subject,
     score_difficulty,
+    score_funding,
+    score_gas,
     score_hashrate,
+    score_market_cap,
     score_sentiment,
+    score_volume,
     triage,
 )
 from core.config import load_config  # noqa: E402
@@ -105,6 +109,82 @@ async def _fetch_fng(client: httpx.AsyncClient):
     ms = [int(d["timestamp"]) * 1000 for d in data]
     val = [float(d["value"]) for d in data]
     return ms, val
+
+
+async def _safe_fetch(name: str, coro):
+    """Wrap a fetcher so a source outage → (None, None, ...) instead of a
+    crash — matches Phase B's "graceful degrade → SKIP, never fabricate"."""
+    try:
+        return await coro
+    except Exception as exc:  # httpx network, timeout, 4xx, 5xx, JSON parse
+        print(f"  WARN: {name} fetch failed ({type(exc).__name__}: {exc}); those rows will SKIP.")
+        return None
+
+
+async def _fetch_coingecko_all_series(client: httpx.AsyncClient, asset: str, api_key: str | None):
+    """Fetch prices, market_caps, total_volumes for asset (90d). Returns
+    dict with three (sorted_ms, values) tuples or None on failure."""
+    headers = {"x-cg-demo-api-key": api_key} if api_key else {}
+    resp = await client.get(
+        f"https://api.coingecko.com/api/v3/coins/{asset}/market_chart",
+        params={"vs_currency": "usd", "days": 90},
+        headers=headers,
+    )
+    resp.raise_for_status()
+    j = resp.json()
+    def _series(key):
+        arr = j.get(key, [])
+        return [int(p[0]) for p in arr], [float(p[1]) for p in arr]
+    return {"prices": _series("prices"), "market_caps": _series("market_caps"),
+            "total_volumes": _series("total_volumes")}
+
+
+async def _fetch_owlracle_gas(client: httpx.AsyncClient):
+    """Owlracle 90d daily gas history (keyless). Returns (sorted_ms, gwei_avg)."""
+    resp = await client.get(
+        "https://api.owlracle.info/v4/eth/history",
+        params={"candles": 90, "timeframe": 1440},
+    )
+    resp.raise_for_status()
+    candles = resp.json().get("candles", [])
+    # Owlracle candles (probed 2026-08-19): {timestamp: ISO, gasPrice:
+    # {open, close, low, high}, avgGas, samples}. No "avg" gas price key —
+    # use close as end-of-day representative value in gwei.
+    ms, vals = [], []
+    for c in candles:
+        ts_raw = c.get("timestamp")
+        gp = c.get("gasPrice") or {}
+        avg = gp.get("close")  # end-of-day gas price
+        if ts_raw is None or avg is None:
+            continue
+        # timestamp may be int (unix seconds) or ISO string
+        if isinstance(ts_raw, (int, float)):
+            ms.append(int(ts_raw) * 1000)
+        else:
+            ms.append(int(datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")).timestamp() * 1000))
+        vals.append(float(avg))
+    # Owlracle returns newest-first typically; ensure sorted for bisect.
+    paired = sorted(zip(ms, vals))
+    if not paired:
+        return [], []
+    return [m for m, _ in paired], [v for _, v in paired]
+
+
+async def _fetch_binance_funding(client: httpx.AsyncClient):
+    """Binance /fapi/v1/fundingRate BTCUSDT — keyless, 8h cadence.
+    Returns (sorted_ms, funding_rate_fraction). Limit 1000 → ~333 days."""
+    resp = await client.get(
+        "https://fapi.binance.com/fapi/v1/fundingRate",
+        params={"symbol": "BTCUSDT", "limit": 1000},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    ms = [int(d["fundingTime"]) for d in data]
+    vals = [float(d["fundingRate"]) for d in data]
+    paired = sorted(zip(ms, vals))
+    if not paired:
+        return [], []
+    return [m for m, _ in paired], [v for _, v in paired]
 
 
 def _is_directional(row: dict) -> bool:
@@ -168,18 +248,39 @@ async def main() -> int:
         for reason, n in Counter(unreachable_reasons).most_common():
             print(f"    {n:>3}  {reason}")
 
-    # Fetch reachable sources
+    # Fetch reachable sources. _safe_fetch wraps each so a source outage
+    # → those rows go SKIP, other metrics still score. No fabrication.
     async with httpx.AsyncClient(timeout=30.0) as client:
-        (hr_series, diff_epochs) = await _fetch_hashrate_and_difficulty(client)
-        fng_series = await _fetch_fng(client)
+        hd = await _safe_fetch("mempool hashrate/difficulty",
+                               _fetch_hashrate_and_difficulty(client))
+        hr_series, diff_epochs = hd if hd else (None, [])
+        fng_series = await _safe_fetch("alternative.me F&G", _fetch_fng(client))
+        btc_cg = await _safe_fetch("CoinGecko BTC market_chart",
+                                   _fetch_coingecko_all_series(client, "bitcoin", config.coingecko_api_key))
+        eth_cg = await _safe_fetch("CoinGecko ETH market_chart",
+                                   _fetch_coingecko_all_series(client, "ethereum", config.coingecko_api_key))
+        gas_series = await _safe_fetch("Owlracle gas history", _fetch_owlracle_gas(client))
+        funding_series = await _safe_fetch("Binance BTC funding", _fetch_binance_funding(client))
     now = datetime.now(timezone.utc)
     print(f"\n=== PHASE B · GROUND-TRUTH SOURCES ===")
-    print(f"  BTC hashrate     : {len(hr_series[0])} points (mempool 3m)          ")
-    print(f"  BTC difficulty   : {len(diff_epochs)} epochs (mempool 3m)             ")
-    print(f"  Fear & Greed idx : {len(fng_series[0])} points (alternative.me 90d)")
-    print(f"  UNREACHABLE      : dominance, funding, gas, volume, mkt cap, long-short")
+    print(f"  BTC hashrate     : {len(hr_series[0]) if hr_series else 0} points (mempool 3m)")
+    print(f"  BTC difficulty   : {len(diff_epochs)} epochs (mempool 3m)")
+    print(f"  Fear & Greed idx : {len(fng_series[0]) if fng_series else 0} points (alternative.me 90d)")
+    print(f"  BTC market_chart : {len(btc_cg['prices'][0]) if btc_cg else 0} points (CoinGecko 90d)")
+    print(f"  ETH market_chart : {len(eth_cg['prices'][0]) if eth_cg else 0} points (CoinGecko 90d)")
+    print(f"  ETH gas          : {len(gas_series[0]) if gas_series else 0} points (Owlracle 90d)")
+    print(f"  BTC funding rate : {len(funding_series[0]) if funding_series else 0} points (Binance /fapi 8h)")
+    print(f"  STILL UNREACHABLE: dominance, global-mkt-cap (paid), long-short")
 
-    # Score reachable ones
+    # Route each metric_row to the right scorer. All new metrics use a
+    # 7-day horizon and ±1 % flat band by default — matches the reasonable
+    # 24h→7d timescale for describing "the state of" a rolling metric.
+    NEW_HORIZON = 168
+    MKTCAP_BAND = 0.01
+    VOLUME_BAND = 0.15   # daily crypto volumes are noisy — wider band
+    GAS_BAND = 0.10      # gwei fluctuates ±10 % daily easily
+    FUNDING_BAND = 0.0005  # 5 bp change over 8h is meaningful
+
     records = []
     metric_row_map = {(subj, claim): metric for subj, claim, metric in metric_rows}
     for row in non_directional:
@@ -188,11 +289,27 @@ async def main() -> int:
             continue
         if metric == "btc_hashrate":
             r = score_hashrate(row, hr_series, horizon_hours=args.hashrate_horizon,
-                               flat_pct=args.hashrate_band, now=now)
+                               flat_pct=args.hashrate_band, now=now) if hr_series else None
         elif metric == "btc_difficulty":
-            r = score_difficulty(row, diff_epochs, flat_pct=args.difficulty_band, now=now)
+            r = score_difficulty(row, diff_epochs, flat_pct=args.difficulty_band, now=now) if diff_epochs else None
         elif metric == "market_sentiment":
-            r = score_sentiment(row, fng_series, now=now)
+            r = score_sentiment(row, fng_series, now=now) if fng_series else None
+        elif metric == "btc_market_cap":
+            r = score_market_cap(row, btc_cg["market_caps"] if btc_cg else None,
+                                 NEW_HORIZON, MKTCAP_BAND, now, "bitcoin")
+        elif metric == "eth_market_cap":
+            r = score_market_cap(row, eth_cg["market_caps"] if eth_cg else None,
+                                 NEW_HORIZON, MKTCAP_BAND, now, "ethereum")
+        elif metric == "btc_volume":
+            r = score_volume(row, btc_cg["total_volumes"] if btc_cg else None,
+                             NEW_HORIZON, VOLUME_BAND, now, "bitcoin")
+        elif metric == "eth_volume":
+            r = score_volume(row, eth_cg["total_volumes"] if eth_cg else None,
+                             NEW_HORIZON, VOLUME_BAND, now, "ethereum")
+        elif metric == "eth_gas":
+            r = score_gas(row, gas_series, NEW_HORIZON, GAS_BAND, now)
+        elif metric == "btc_funding":
+            r = score_funding(row, funding_series, NEW_HORIZON, FUNDING_BAND, now)
         else:
             r = None
         if r is not None:
