@@ -467,9 +467,18 @@ class Brain:
                                         f"extracted {len(theses)} thesis/theses",
                                     )
                                 else:
+                                    # Abstention event — valued outcome, not an
+                                    # error. Log with objective_id + cycle so the
+                                    # rate is observable (100 % abstain or 0 %
+                                    # abstain are both signals).
                                     self._feed_append(
                                         "INFO",
-                                        "no testable theses extracted",
+                                        f"abstain: no grounded thesis "
+                                        f"(objective_id={obj_id[:8]} cycles={new_count})",
+                                    )
+                                    logger.info(
+                                        "thesis abstention: objective_id={} cycles={} reason=empty",
+                                        obj_id, new_count,
                                     )
                             except Exception as exc:
                                 logger.warning(
@@ -812,7 +821,14 @@ class Brain:
         # findings. The `confidence` field was dropped from generation — the
         # backtests proved stated confidence is inverted vs hit-rate. Downstream
         # display defaults to "medium" via _parse_thesis_json.
+        # Track-record injection — INERT today. render_context_block returns
+        # "" when TRACK_RECORD_ENABLED is off (default) OR when no class
+        # qualifies (n>=20 AND outside 2SE of chance). Empty prefix keeps
+        # the prompt byte-identical to pre-track-record; grep-locked test.
+        from analysis.track_record import render_context_block as _tr_block
+        _track_prefix = _tr_block([])  # empty rows until an aggregator wires it
         prompt = (
+            f"{_track_prefix}"
             f"OBJECTIVE: {obj.get('title', 'unnamed')}\n"
             f"DISTINCT SOURCES: {', '.join(sources)}\n\n"
             f"SYNTHESIS (findings from THIS cycle — the ONLY source of truth):\n"
@@ -854,16 +870,27 @@ class Brain:
             "- Never emit claims like 'unclear', 'mixed', 'unknown', "
             "'complex', 'unrelated', 'no correlation', 'inaccurate' — "
             "these are not testable; omit them.\n"
-            "- If the synthesis contains no grounded testable claim, "
-            "return [].\n"
-            "EXAMPLES OF WHAT TO REJECT (do NOT emit):\n"
+            "ABSTENTION IS VALUED — empty output is a NORMAL outcome:\n"
+            "- If the synthesis contains no concrete value that supports a "
+            "grounded testable claim, return an EMPTY array `[]`. Silence "
+            "when the data doesn't support a claim is CORRECT.\n"
+            "- Emitting a weak, hedged, or unsupported thesis is STRICTLY "
+            "WORSE than emitting none — a wrong thesis pollutes the "
+            "contradiction detector, dilutes track-record accuracy, and "
+            "wastes the operator's review budget. A run that produces zero "
+            "theses on a thin synthesis is a SUCCESS, not a failure.\n"
+            "- Fewer, denser, grounded theses ≫ many hedged ones. If in "
+            "doubt: don't emit.\n"
+            "EXAMPLES OF WHAT TO REJECT (do NOT emit — return `[]` "
+            "for the whole batch if nothing else survives):\n"
             "  · subject about a metric the synthesis does not mention "
             "(phantom claim from training)\n"
             "  · evidence.detail is prose without any concrete value cited\n"
             "  · claim='unclear' / 'complex' / 'no correlation' (hedges)\n"
             "  · subject='Market volatility caused by Justice X's dissent' "
             "(fragment sentence, not a topic)\n"
-            "Output ONLY the JSON array. No prose, no preamble, no code fences."
+            "Output ONLY the JSON array (possibly `[]`). No prose, no preamble, "
+            "no code fences."
         )
         # Routed through the LLM abstraction (core/llm). Default resolves to
         # 'ollama:default' — byte-identical to pre-refactor. MORGOTH_LLM_THESIS
