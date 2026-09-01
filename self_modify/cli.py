@@ -477,6 +477,26 @@ async def _cmd_audit(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_models(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Print the live task→provider routing table and reachability of each
+    provider. NEVER prints the ANTHROPIC_API_KEY value — presence only."""
+    from core.llm import registry as _reg
+    from core.llm.providers import probe_reachability
+    print(f"{'TASK':<10}  {'PROVIDER':<12}  {'MODEL':<24}  SOURCE")
+    print("-" * 70)
+    for row in _reg.routing_table():
+        default_note = "" if row["source"] == "env" else "(default)"
+        print(
+            f"  {row['task']:<8}  {row['provider']:<12}  "
+            f"{row['model']:<24}  {row['source']:<7} {default_note}"
+        )
+    print("\nProvider reachability:")
+    for name, (ok, note) in probe_reachability().items():
+        mark = "OK  " if ok else "FAIL"
+        print(f"  [{mark}] {name:<12}  {note}")
+    return 0
+
+
 async def _main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="self_modify.cli",
@@ -529,6 +549,11 @@ async def _main(argv: list[str]) -> int:
     )
     p_provision.add_argument("proposal_id")
     p_provision.set_defaults(_fn=_cmd_provision)
+
+    p_models = subparsers.add_parser(
+        "models", help="print task→provider routing table + provider reachability",
+    )
+    p_models.set_defaults(_fn=_cmd_models)
 
     p_audit = subparsers.add_parser(
         "audit",

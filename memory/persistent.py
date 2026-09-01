@@ -295,6 +295,29 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure auto_approve_decisions table (non-fatal): {}", exc
                 )
+            # LLM call usage log — cross-cutting for cost/latency analysis
+            # across all providers. NO content columns (no prompt, no response) —
+            # sizes only, to keep it PII-safe and small.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS llm_calls (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        task TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        prompt_bytes INT NOT NULL DEFAULT 0,
+                        response_bytes INT NOT NULL DEFAULT 0,
+                        latency_ms INT NOT NULL DEFAULT 0,
+                        outcome TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure llm_calls table (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 

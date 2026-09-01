@@ -865,39 +865,28 @@ class Brain:
             "(fragment sentence, not a topic)\n"
             "Output ONLY the JSON array. No prose, no preamble, no code fences."
         )
-        # THESIS_GENERATOR env — 'ollama' (default) preserves the existing
-        # cycle behavior byte-for-byte; 'claude-cli' routes the SAME grounding
-        # prompt through the reflect_llm claude-cli path (already used for
-        # reflect/shadow). This is an EXPERIMENT toggle to answer "is the
-        # 33.3 %-hit-rate ceiling the MODEL or the TASK" — it is NOT a
-        # migration. Default MUST stay ollama; grep-locked in the test.
-        _gen = (os.environ.get("THESIS_GENERATOR") or "ollama").strip().lower()
-        if _gen == "claude-cli":
-            from self_modify.reflect_llm import reflect_chat  # local import: keeps unset-env path unaware of it
-            full_prompt = build_system_prompt() + "\n\n" + prompt
-            try:
-                text, _meta = await reflect_chat(full_prompt, self._config, "claude-cli")
-            except Exception as exc:
-                logger.warning(
-                    "Thesis extraction (claude-cli) failed for objective {}: {}",
-                    obj.get("objective_id"), exc,
-                )
-                return []
-            return self._parse_thesis_json((text or "").strip())
-        messages = [
-            ChatMessage(role="system", content=build_system_prompt()),
-            ChatMessage(role="user", content=prompt),
-        ]
+        # Routed through the LLM abstraction (core/llm). Default resolves to
+        # 'ollama:default' — byte-identical to pre-refactor. MORGOTH_LLM_THESIS
+        # or the legacy THESIS_GENERATOR env overrides per-task. The registry
+        # keeps the default lock; a test asserts unset env → ollama.
+        from core.llm import registry as _reg
+        from core.llm import providers as _prov, tasks as _tasks
+        from core.llm.logs import log_call as _log_call
+        provider_name, model = _reg.resolve(_tasks.THESIS)
+        provider = _prov.get_provider(provider_name, model, ollama_client=self._llm_client)
         try:
-            response = await self._chat_with_transient_retry(messages)
+            text = await _log_call(
+                self._persistent_memory, _tasks.THESIS, provider_name, model,
+                lambda: provider.complete(prompt, system=build_system_prompt()),
+                prompt_bytes=len(prompt),
+            )
         except Exception as exc:
             logger.warning(
-                "Thesis extraction chat failed for objective {}: {}",
-                obj.get("objective_id"),
-                exc,
+                "Thesis extraction failed for objective {} (provider={}): {}",
+                obj.get("objective_id"), provider_name, exc,
             )
             return []
-        return self._parse_thesis_json((response.message.content or "").strip())
+        return self._parse_thesis_json((text or "").strip())
 
     @staticmethod
     def _parse_thesis_json(text: str) -> list[dict[str, Any]]:

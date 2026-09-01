@@ -184,6 +184,12 @@ cmd_provision() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli provision "$1")
 }
 
+cmd_models() {
+    # Print the per-task LLM routing table + provider reachability.
+    # Read-only. NEVER logs the ANTHROPIC_API_KEY value — presence only.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli models "$@")
+}
+
 cmd_audit() {
     # Gate-3 auto-approve observability. Passes ALL args through so the
     # operator can invoke --now, --write, --since '7 days', etc. Shipped
@@ -305,6 +311,7 @@ Commands:
   provision ID    re-drive a pending_key proposal (checks env-var PRESENCE only)
   audit [--now] [--write] [--since INT]
                   gate-3 auto-approve observability (shipped INERT — never applies)
+  models          show task→provider routing + reachability (env-driven, unset=default)
   reflect         run one reflection cycle (Morgoth proposes a new tool)
   scout [--limit N]     refresh the free-API leads table from public-apis
                         (docs-page liveness only; reflect gates still guard specs)
@@ -331,6 +338,7 @@ case "${1:-help}" in
     shadow)    shift; cmd_shadow "$@";;
     provision) shift; cmd_provision "$@";;
     audit)     shift; cmd_audit "$@";;
+    models)    shift; cmd_models "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;

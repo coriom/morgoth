@@ -606,19 +606,22 @@ async def test_extract_theses_returns_empty_on_prose_response() -> None:
 
 
 def test_thesis_generator_default_is_ollama_grep_lock() -> None:
-    """Grep-lock: the fallback in brain.py must default to 'ollama'."""
+    """Grep-lock: THESIS task default in the LLM registry must stay
+    'ollama:default'. Post-refactor, the fallback lives in core/llm/tasks.py.
+    THESIS_GENERATOR legacy env is still honored (see registry test)."""
     from pathlib import Path
-    src = Path("core/brain.py").read_text()
-    assert 'os.environ.get("THESIS_GENERATOR") or "ollama"' in src, (
-        "THESIS_GENERATOR default must stay 'ollama' — this is a safety lock"
+    src = Path("core/llm/tasks.py").read_text()
+    # Must contain the exact default line for THESIS.
+    assert 'THESIS: "ollama:default"' in src, (
+        "THESIS default must stay 'ollama:default' — this is a safety lock"
     )
 
 
 @pytest.mark.asyncio
 async def test_extract_theses_routes_to_claude_cli_when_env_set(monkeypatch) -> None:
-    """With THESIS_GENERATOR=claude-cli, extraction bypasses ollama and calls
-    reflect_llm.reflect_chat with provider='claude-cli'. The parsed shape is
-    IDENTICAL to the ollama path — detector-facing format unchanged."""
+    """With MORGOTH_LLM_THESIS=claude-cli (or the legacy THESIS_GENERATOR alias),
+    extraction routes through the provider registry to claude-cli. The parsed
+    shape is IDENTICAL to the ollama path — detector-facing format unchanged."""
     monkeypatch.setenv("THESIS_GENERATOR", "claude-cli")
     fake_json = json.dumps([{
         "subject": "BTC short-term price", "claim": "declining",
@@ -626,12 +629,14 @@ async def test_extract_theses_routes_to_claude_cli_when_env_set(monkeypatch) -> 
     }])
     captured: dict[str, object] = {}
 
-    async def fake_reflect_chat(prompt, config, provider, **kwargs):
+    async def fake_claude_cli(prompt, runner):
+        # Post-refactor: ClaudeCliProvider calls reflect_llm._claude_cli_call
+        # under the hood — mocking that is the invariant that survives
+        # the abstraction.
         captured["prompt"] = prompt
-        captured["provider"] = provider
-        return fake_json, {"provider": provider}
+        return fake_json, {"provider": "claude-cli"}
 
-    monkeypatch.setattr("self_modify.reflect_llm.reflect_chat", fake_reflect_chat)
+    monkeypatch.setattr("self_modify.reflect_llm._claude_cli_call", fake_claude_cli)
     llm_client = MagicMock()
     llm_client.chat = AsyncMock(side_effect=AssertionError("ollama must NOT be called under claude-cli"))
     brain = _build_brain(llm_client)
@@ -641,8 +646,7 @@ async def test_extract_theses_routes_to_claude_cli_when_env_set(monkeypatch) -> 
         synthesis_text="Price dropped 1.2% in 24h.",
         sources=["get_crypto_price"],
     )
-    assert captured["provider"] == "claude-cli"
-    # The full prompt includes both the system context and the grounding rules.
+    # System context + grounding rules both present in the delivered prompt.
     assert "ONLY source of truth" in captured["prompt"]
     assert "PHANTOM CLAIM" in captured["prompt"]
     # Shape parity: detector-facing keys unchanged.
@@ -677,13 +681,13 @@ async def test_extract_theses_defaults_to_ollama_when_env_unset(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_extract_theses_claude_cli_failure_returns_empty(monkeypatch) -> None:
-    """A claude-cli path exception is caught → [] returned, cycle not broken."""
+    """A provider exception is caught → [] returned, cycle not broken."""
     monkeypatch.setenv("THESIS_GENERATOR", "claude-cli")
 
-    async def failing_reflect_chat(prompt, config, provider, **kwargs):
+    async def failing(prompt, runner):
         raise RuntimeError("claude-cli not available")
 
-    monkeypatch.setattr("self_modify.reflect_llm.reflect_chat", failing_reflect_chat)
+    monkeypatch.setattr("self_modify.reflect_llm._claude_cli_call", failing)
     llm_client = MagicMock()
     llm_client.chat = AsyncMock()
     brain = _build_brain(llm_client)
