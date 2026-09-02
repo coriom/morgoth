@@ -24,11 +24,14 @@ from analysis.thesis_backtest_descriptive import (
     most_recent_before,
     parse_level,
     parse_sentiment,
+    score_base_fee,
+    score_congestion,
     score_difficulty,
     score_funding,
     score_gas,
     score_hashrate,
     score_level,
+    score_macro,
     score_market_cap,
     score_sentiment,
     score_volume,
@@ -321,6 +324,109 @@ class TestClassifySubjectNewMetrics:
         v, m, reason = classify_subject(subject)
         assert v == "unverifiable" and m is None
         assert reason is not None and "no free historical source" in reason
+
+
+class TestClassifyNewDarkMetrics:
+    """2026-09 wiring: congestion / base fee / macro subjects that were
+    previously unmapped are now routed to reachable series."""
+
+    @pytest.mark.parametrize(
+        "subject, expected",
+        [
+            ("Ethereum network congestion", "eth_congestion"),
+            ("Ethereum mempool congestion", "eth_congestion"),
+            ("Ethereum base fee", "eth_base_fee"),
+            ("US Unemployment Rate", "us_unemployment"),
+            ("US unemployment rate (2018 baseline)", "us_unemployment"),
+            ("CPI", "us_cpi"),
+            ("US inflation", "us_cpi"),
+            ("Fed funds rate", "us_fed_funds"),
+            ("US interest rate", "us_fed_funds"),
+        ],
+    )
+    def test_reachable(self, subject, expected):
+        v, m, _ = classify_subject(subject)
+        assert v == "metric" and m == expected
+
+    @pytest.mark.parametrize(
+        "subject",
+        [
+            "Ethereum block height",     # no free per-block history
+            "US-Canada tariff policy",   # no reliable numeric series
+            "Bitcoin mempool size",      # no free historical
+        ],
+    )
+    def test_still_unmapped(self, subject):
+        v, m, _ = classify_subject(subject)
+        # Either unverifiable/subjective OR relation — the point is
+        # NOT to route to a metric it isn't actually verified against.
+        assert m is None
+
+
+class TestScoreProxyAndMacro:
+    def setup_method(self):
+        self.now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        self.anchor = self.now - timedelta(days=40)
+        anchor_ms = int(self.anchor.timestamp() * 1000)
+        # Daily rising series for gas-proxy scoring.
+        self.day_ms = [anchor_ms + d * 86400_000 for d in range(30)]
+        self.day_vals = [100.0 * (1.02 ** d) for d in range(30)]
+        self.gas_series = (self.day_ms, self.day_vals)
+        # Monthly rising series for macro (like FRED).
+        self.mo_ms = [anchor_ms + m * 30 * 86400_000 for m in range(3)]
+        self.mo_vals = [4.0, 4.2, 4.5]
+        self.macro_series = (self.mo_ms, self.mo_vals)
+
+    def test_congestion_proxy_hits(self):
+        row = {"thesis_id": "c1", "subject": "Ethereum network congestion",
+               "claim": "increasing", "confidence": "medium",
+               "created_at": self.anchor}
+        r = score_congestion(row, self.gas_series, 168, 0.10, self.now)
+        assert r is not None and r.outcome == "hit" and r.metric == "eth_congestion"
+
+    def test_base_fee_proxy_misses_wrong_direction(self):
+        row = {"thesis_id": "b1", "subject": "Ethereum base fee",
+               "claim": "declining", "confidence": "low",
+               "created_at": self.anchor}
+        r = score_base_fee(row, self.gas_series, 168, 0.10, self.now)
+        assert r is not None and r.outcome == "miss" and r.metric == "eth_base_fee"
+
+    def test_macro_directional_hit(self):
+        # Anchor at first month (4.0) → horizon lands at second month (4.2)
+        # → +5% → up. Claim "increasing" → HIT.
+        row = {"thesis_id": "m1", "subject": "US Unemployment Rate",
+               "claim": "increasing", "confidence": "medium",
+               "created_at": self.anchor}
+        r = score_macro(row, self.macro_series, 30 * 24, 0.02, self.now, "us_unemployment")
+        assert r is not None and r.outcome == "hit" and r.metric == "us_unemployment"
+
+    def test_macro_intra_month_is_flat(self):
+        # Horizon 7d on monthly data → P0 and P1 both land on the same
+        # observation → flat. Claim "stable" → HIT.
+        row = {"thesis_id": "m2", "subject": "US Unemployment Rate",
+               "claim": "stable", "confidence": "medium",
+               "created_at": self.anchor + timedelta(days=3)}
+        r = score_macro(row, self.macro_series, 168, 0.005, self.now, "us_unemployment")
+        assert r is not None and r.outcome == "hit"
+
+    def test_all_new_scorers_degrade_to_none_on_missing_series(self):
+        row = {"thesis_id": "d", "subject": "Ethereum base fee",
+               "claim": "increasing", "confidence": "medium",
+               "created_at": self.anchor}
+        assert score_congestion(row, None, 168, 0.10, self.now) is None
+        assert score_base_fee(row, None, 168, 0.10, self.now) is None
+        assert score_macro(row, None, 168, 0.02, self.now, "us_unemployment") is None
+
+    def test_no_lookahead_on_macro_via_horizon_check(self):
+        """Thesis timestamp AFTER the series end → future data absent → SKIP.
+        Complements the strict-< invariant on the level scorer with the
+        directional scorer's target-outside-window check."""
+        row = {"thesis_id": "n", "subject": "US Unemployment Rate",
+               "claim": "increasing", "confidence": "medium",
+               "created_at": self.now + timedelta(days=1)}
+        # Future thesis → horizon exceeds `now` → SKIP.
+        r = score_macro(row, self.macro_series, 168, 0.02, self.now, "us_unemployment")
+        assert r is None
 
 
 class TestScoreNewMetrics:

@@ -37,6 +37,11 @@ MetricKind = Literal[
     "btc_market_cap", "eth_market_cap",
     "btc_volume", "eth_volume",
     "eth_gas", "btc_funding",
+    # 2026-09 wiring — reuses Owlracle gas history as a proxy for
+    # congestion + base fee (both correlate ~1:1 with gwei), plus FRED
+    # macro series (monthly cadence, 12-month scoring window).
+    "eth_congestion", "eth_base_fee",
+    "us_unemployment", "us_cpi", "us_fed_funds",
 ]
 
 # Subject → metric mapping. Kept explicit (not a regex tangle) because
@@ -69,6 +74,23 @@ _BTC_FUNDING_MARKERS = (
     "bitcoin futures funding", "btc futures funding", "funding rate",
     "funding rates",
 )
+# ETH-network subjects that all reduce to "how expensive is Ethereum
+# right now", which the Owlracle gas series tracks. Congestion and base
+# fee move ~monotonically with gwei — proxy is defensible for
+# directional/level scoring, not for absolute-value claims.
+_ETH_CONGESTION_MARKERS = (
+    "ethereum network congestion",
+    "ethereum mempool congestion",
+    "network congestion",
+)
+_ETH_BASE_FEE_MARKERS = (
+    "ethereum base fee", "eth base fee", "base fee",
+)
+# Macro (FRED-backed). Explicit list; a bare "inflation" / "interest
+# rate" without a country qualifier stays unmapped — conservative.
+_US_UNEMPLOYMENT_MARKERS = ("unemployment rate", "us unemployment")
+_US_CPI_MARKERS = ("cpi", "consumer price index", "us inflation")
+_US_FED_FUNDS_MARKERS = ("fed funds", "federal funds rate", "us interest rate")
 
 # Subjects for which the underlying quantity has NO cheap historical
 # source (probed 2026-08-19; see docs/BACKTEST_HISTORICAL_SOURCES.md).
@@ -144,6 +166,19 @@ def classify_subject(subject: str) -> tuple[Verifiability, MetricKind | None, st
         return "metric", "eth_gas", None
     if any(m in s for m in _BTC_FUNDING_MARKERS):
         return "metric", "btc_funding", None
+    # Congestion / base fee routed to the Owlracle gas series (documented
+    # proxy). Match BEFORE the bare-gas fallback so a "gas prices AND
+    # block height relationship" subject doesn't get double-classified.
+    if any(m in s for m in _ETH_CONGESTION_MARKERS):
+        return "metric", "eth_congestion", None
+    if any(m in s for m in _ETH_BASE_FEE_MARKERS):
+        return "metric", "eth_base_fee", None
+    if any(m in s for m in _US_UNEMPLOYMENT_MARKERS):
+        return "metric", "us_unemployment", None
+    if any(m in s for m in _US_CPI_MARKERS):
+        return "metric", "us_cpi", None
+    if any(m in s for m in _US_FED_FUNDS_MARKERS):
+        return "metric", "us_fed_funds", None
     # Bare "market cap" / "market capitalization" with no BTC/ETH/global
     # qualifier — most likely means "the market", so treat as unreachable.
     if "market cap" in s or "market capitalization" in s:
@@ -579,6 +614,34 @@ def score_funding(row, series, horizon_hours, flat_pct, now):
         return None
     return _score_series_directional(
         row, series, horizon_hours, flat_pct, now, metric="btc_funding",
+    )
+
+
+def score_congestion(row, series, horizon_hours, flat_pct, now):
+    """Score ETH congestion claim against gas history (documented proxy)."""
+    return _score_series_directional(
+        row, series, horizon_hours, flat_pct, now, metric="eth_congestion",
+    )
+
+
+def score_base_fee(row, series, horizon_hours, flat_pct, now):
+    return _score_series_directional(
+        row, series, horizon_hours, flat_pct, now, metric="eth_base_fee",
+    )
+
+
+def score_macro(row, series, horizon_hours, flat_pct, now, metric):
+    """Score macro claim (unemployment/CPI/fed funds) against FRED series.
+
+    Monthly cadence: nearest_value picks the closest month-start observation
+    to the thesis timestamp. Directional scoring compares P0 (nearest at
+    created_at) to P1 (nearest at created_at + horizon_hours). At the
+    default 7d horizon on monthly data, P0 and P1 often land on the same
+    observation → observed = flat, which is correct: a monthly series
+    doesn't change intra-month.
+    """
+    return _score_series_directional(
+        row, series, horizon_hours, flat_pct, now, metric=metric,
     )
 
 

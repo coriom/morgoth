@@ -51,10 +51,14 @@ from analysis.thesis_backtest import parse_direction, subject_asset  # noqa: E40
 from analysis.thesis_backtest_descriptive import (  # noqa: E402
     aggregate,
     classify_subject,
+    score_base_fee,
+    score_congestion,
     score_difficulty,
     score_funding,
     score_gas,
     score_hashrate,
+    score_level,
+    score_macro,
     score_market_cap,
     score_sentiment,
     score_volume,
@@ -170,6 +174,41 @@ async def _fetch_owlracle_gas(client: httpx.AsyncClient):
     return [m for m, _ in paired], [v for _, v in paired]
 
 
+async def _fetch_fred_series(client: httpx.AsyncClient, series_id: str, api_key: str | None):
+    """FRED /series/observations — monthly-cadence macro series (UNRATE,
+    CPIAUCSL, FEDFUNDS). Returns (sorted_ms, values) or None on missing key.
+
+    Depth: request 3 years back → ~36 monthly obs, plenty for percentile
+    computation on level scoring. Missing values ('.') → skipped.
+    """
+    if not api_key:
+        return None
+    from datetime import datetime as _dt, timedelta as _td
+    start = (_dt.utcnow() - _td(days=1100)).strftime("%Y-%m-%d")
+    resp = await client.get(
+        "https://api.stlouisfed.org/fred/series/observations",
+        params={"series_id": series_id, "api_key": api_key,
+                "file_type": "json", "observation_start": start},
+    )
+    resp.raise_for_status()
+    obs = resp.json().get("observations", [])
+    ms, vals = [], []
+    for o in obs:
+        date_s = o.get("date"); v = o.get("value")
+        if date_s is None or v in (None, ".", ""):
+            continue
+        try:
+            ts = _dt.strptime(date_s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            ms.append(int(ts.timestamp() * 1000))
+            vals.append(float(v))
+        except (ValueError, TypeError):
+            continue
+    paired = sorted(zip(ms, vals))
+    if not paired:
+        return [], []
+    return [m for m, _ in paired], [v for _, v in paired]
+
+
 async def _fetch_binance_funding(client: httpx.AsyncClient):
     """Binance /fapi/v1/fundingRate BTCUSDT — keyless, 8h cadence.
     Returns (sorted_ms, funding_rate_fraction). Limit 1000 → ~333 days."""
@@ -261,6 +300,12 @@ async def main() -> int:
                                    _fetch_coingecko_all_series(client, "ethereum", config.coingecko_api_key))
         gas_series = await _safe_fetch("Owlracle gas history", _fetch_owlracle_gas(client))
         funding_series = await _safe_fetch("Binance BTC funding", _fetch_binance_funding(client))
+        # FRED macro series — reads FRED_API_KEY at runtime; None if absent.
+        import os as _os
+        fred_key = _os.environ.get("FRED_API_KEY")
+        unrate_series = await _safe_fetch("FRED UNRATE", _fetch_fred_series(client, "UNRATE", fred_key)) if fred_key else None
+        cpi_series = await _safe_fetch("FRED CPIAUCSL", _fetch_fred_series(client, "CPIAUCSL", fred_key)) if fred_key else None
+        fedfunds_series = await _safe_fetch("FRED FEDFUNDS", _fetch_fred_series(client, "FEDFUNDS", fred_key)) if fred_key else None
     now = datetime.now(timezone.utc)
     print(f"\n=== PHASE B · GROUND-TRUTH SOURCES ===")
     print(f"  BTC hashrate     : {len(hr_series[0]) if hr_series else 0} points (mempool 3m)")
@@ -270,7 +315,10 @@ async def main() -> int:
     print(f"  ETH market_chart : {len(eth_cg['prices'][0]) if eth_cg else 0} points (CoinGecko 90d)")
     print(f"  ETH gas          : {len(gas_series[0]) if gas_series else 0} points (Owlracle 90d)")
     print(f"  BTC funding rate : {len(funding_series[0]) if funding_series else 0} points (Binance /fapi 8h)")
-    print(f"  STILL UNREACHABLE: dominance, global-mkt-cap (paid), long-short")
+    print(f"  FRED UNRATE      : {len(unrate_series[0]) if unrate_series else 0} obs (monthly)")
+    print(f"  FRED CPIAUCSL    : {len(cpi_series[0]) if cpi_series else 0} obs (monthly)")
+    print(f"  FRED FEDFUNDS    : {len(fedfunds_series[0]) if fedfunds_series else 0} obs (monthly)")
+    print(f"  STILL UNREACHABLE: dominance, global-mkt-cap (paid), long-short, ETH block height")
 
     # Route each metric_row to the right scorer. All new metrics use a
     # 7-day horizon and ±1 % flat band by default — matches the reasonable
@@ -283,9 +331,32 @@ async def main() -> int:
 
     records = []
     metric_row_map = {(subj, claim): metric for subj, claim, metric in metric_rows}
+    # Series lookup for level scoring — needs to know which series maps
+    # to which metric so the level scorer can compute percentile over
+    # the metric's own history (strict < ts_ms, no lookahead).
+    def _series_for_level(metric):
+        return {
+            "btc_hashrate": hr_series,
+            "market_sentiment": fng_series,
+            "btc_market_cap": (btc_cg["market_caps"] if btc_cg else None),
+            "eth_market_cap": (eth_cg["market_caps"] if eth_cg else None),
+            "btc_volume": (btc_cg["total_volumes"] if btc_cg else None),
+            "eth_volume": (eth_cg["total_volumes"] if eth_cg else None),
+            "eth_gas": gas_series, "eth_base_fee": gas_series, "eth_congestion": gas_series,
+            "btc_funding": funding_series,
+            "us_unemployment": unrate_series, "us_cpi": cpi_series, "us_fed_funds": fedfunds_series,
+        }.get(metric)
+
     for row in non_directional:
         metric = metric_row_map.get((str(row.get("subject", "")), str(row.get("claim", ""))))
         if metric is None:
+            continue
+        # LEVEL claim ('high'/'low')? Try the level scorer first — a
+        # directional scorer would None it out anyway.
+        lvl_series = _series_for_level(metric)
+        lvl_r = score_level(row, lvl_series, metric, now) if lvl_series else None
+        if lvl_r is not None:
+            records.append(lvl_r)
             continue
         if metric == "btc_hashrate":
             r = score_hashrate(row, hr_series, horizon_hours=args.hashrate_horizon,
@@ -310,6 +381,16 @@ async def main() -> int:
             r = score_gas(row, gas_series, NEW_HORIZON, GAS_BAND, now)
         elif metric == "btc_funding":
             r = score_funding(row, funding_series, NEW_HORIZON, FUNDING_BAND, now)
+        elif metric == "eth_congestion":
+            r = score_congestion(row, gas_series, NEW_HORIZON, GAS_BAND, now)
+        elif metric == "eth_base_fee":
+            r = score_base_fee(row, gas_series, NEW_HORIZON, GAS_BAND, now)
+        elif metric == "us_unemployment":
+            r = score_macro(row, unrate_series, NEW_HORIZON, 0.02, now, "us_unemployment")
+        elif metric == "us_cpi":
+            r = score_macro(row, cpi_series, NEW_HORIZON, 0.005, now, "us_cpi")
+        elif metric == "us_fed_funds":
+            r = score_macro(row, fedfunds_series, NEW_HORIZON, 0.05, now, "us_fed_funds")
         else:
             r = None
         if r is not None:
