@@ -408,6 +408,40 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure llm_fallback_events table (non-fatal): {}", exc
                 )
+            # provider_health + resource_samples — continuous awareness.
+            # provider_health rows land ONLY on transitions (see
+            # core/llm/heartbeat.persist_on_change); resource_samples land
+            # every cycle boundary.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_health (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        provider TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        detail TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS resource_samples (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        classification TEXT NOT NULL,
+                        ram_available_pct FLOAT NOT NULL,
+                        swap_pct FLOAT NOT NULL,
+                        lav_ratio FLOAT NOT NULL,
+                        cpu_idle_pct FLOAT NOT NULL,
+                        reason TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure provider_health/resource_samples (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 

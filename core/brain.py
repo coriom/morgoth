@@ -408,12 +408,76 @@ class Brain:
         (default: 10 min). Profile 2026-09-02 measured active cycle work
         at 5-15 s vs the 600 s sleep — the top-of-loop wait was pure
         latency, not throughput protection.
+
+        CONTINUOUS AWARENESS (observe + report; NEVER auto-throttle):
+          · Provider heartbeat every PROVIDER_HEARTBEAT_MINUTES (default
+            10). Transition-only persist to provider_health.
+          · Resource sample at every cycle boundary. Persist to
+            resource_samples; WARN on entering THRASHING (rate-limited).
+        Neither ever changes cadence, pauses cycles, or swaps providers.
         """
+
+        from core.llm.heartbeat import (
+            one_heartbeat_round as _hb_round,
+            persist_on_change as _hb_persist,
+            heartbeat_interval_secs as _hb_interval,
+        )
+        from analysis.resources import sample_now as _sample_now
+        import time as _time
+        provider_state: dict[str, str] = {}
+        last_heartbeat_ts: float = 0.0
+        # Rate-limit THRASHING WARN to once per 15 min so a sustained
+        # incident doesn't spam the log.
+        last_thrash_warn_ts: float = 0.0
+        thrash_warn_min_secs = 15 * 60
 
         while True:
             try:
                 logger.info("Autonomous cycle starting")
                 self._feed_append("SYSTEM", "autonomous cycle started")
+
+                # Resource sample — cheap, in-process, at cycle boundary.
+                # Failure never propagates; a bad /proc read just yields
+                # OK with conservative zeros.
+                try:
+                    rs = _sample_now()
+                    try:
+                        _pool = self._persistent_memory._require_pool()
+                        async with _pool.acquire() as _c:
+                            await _c.execute(
+                                "INSERT INTO resource_samples (classification, "
+                                "ram_available_pct, swap_pct, lav_ratio, "
+                                "cpu_idle_pct, reason) VALUES ($1,$2,$3,$4,$5,$6)",
+                                rs.classification, rs.ram_available_pct,
+                                rs.swap_pct, rs.lav_ratio, rs.cpu_idle_pct,
+                                rs.reason[:400],
+                            )
+                    except Exception as _rs_exc:
+                        logger.warning("resource_samples insert failed: {}", _rs_exc)
+                    if rs.classification == "THRASHING":
+                        now_ts = _time.monotonic()
+                        if now_ts - last_thrash_warn_ts >= thrash_warn_min_secs:
+                            logger.warning(
+                                "RESOURCE THRASHING: {} — consider serializing "
+                                "heavy builds (CARGO_BUILD_JOBS=1), raising "
+                                ".wslconfig memory, or pausing cycles",
+                                rs.reason,
+                            )
+                            last_thrash_warn_ts = now_ts
+                except Exception as _rs_exc:
+                    logger.warning("resource sample failed (non-fatal): {}", _rs_exc)
+
+                # Provider heartbeat — periodic, transition-only persist.
+                now_ts = _time.monotonic()
+                if now_ts - last_heartbeat_ts >= _hb_interval():
+                    try:
+                        probes = await _hb_round()
+                        provider_state = await _hb_persist(
+                            self._persistent_memory, provider_state, probes,
+                        )
+                        last_heartbeat_ts = now_ts
+                    except Exception as _hb_exc:
+                        logger.warning("provider heartbeat failed: {}", _hb_exc)
 
                 objectives = await self._persistent_memory.get_objectives(
                     status="pending", limit=1

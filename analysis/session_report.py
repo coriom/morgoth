@@ -54,6 +54,9 @@ class SessionReport:
     rail_summary: str = ""
     fallback_events: int = 0
     fallback_breakdown: list[tuple[str, str, str, int]] = field(default_factory=list)
+    provider_state: dict[str, str] = field(default_factory=dict)
+    provider_last_transition: str = ""
+    resource_summary: dict[str, object] = field(default_factory=dict)
 
     def window_hours(self) -> float:
         return max(1e-6, (self.now - self.since).total_seconds() / 3600.0)
@@ -90,6 +93,17 @@ class SessionReport:
                 lines.append(f"  · task={task} configured={cfg} used={used} n={n}")
         else:
             lines.append("LLM FALLBACKS            : 0")
+        if self.provider_state:
+            parts = [f"{p} {s}" for p, s in sorted(self.provider_state.items())]
+            trans = f" (last transition: {self.provider_last_transition})" if self.provider_last_transition else " (no transitions)"
+            lines.append(f"PROVIDERS                : {', '.join(parts)}{trans}")
+        if self.resource_summary and self.resource_summary.get("n", 0):
+            rs = self.resource_summary
+            lines.append(
+                f"RESOURCES                : n={rs['n']} samples · worst={rs['worst']}"
+                f" · TIGHT={rs['tight']} · THRASHING={rs['thrashing']}"
+                f" · peak_swap={rs['peak_swap_pct']}%"
+            )
         if self.tool_calls:
             lines.append("TOOL ADOPTION (data sources, top 10):")
             top = sorted(self.tool_calls.items(), key=lambda kv: -kv[1])[:10]
@@ -190,6 +204,54 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.proposals_pending = p_rows[0]["n"] if p_rows else 0
         except Exception:
             r.proposals_pending = 0
+        # Provider health: current state + last transition timestamp.
+        try:
+            ph_latest = await conn.fetch(
+                "SELECT DISTINCT ON (provider) provider, status, created_at "
+                "FROM provider_health ORDER BY provider, created_at DESC"
+            )
+            r.provider_state = {row["provider"]: row["status"] for row in ph_latest}
+            if ph_latest:
+                last = max(ph_latest, key=lambda row: row["created_at"])
+                r.provider_last_transition = f"{last['provider']} → {last['status']} at {last['created_at'].isoformat(timespec='minutes')}"
+        except Exception:
+            r.provider_state = {}
+        # Resource samples in window.
+        try:
+            from analysis.resources import ResourceSample as _RS, summarize_window
+            rs_rows = await conn.fetch(
+                "SELECT classification, ram_available_pct, swap_pct, lav_ratio, "
+                "cpu_idle_pct, reason, created_at FROM resource_samples "
+                "WHERE created_at >= $1 ORDER BY created_at ASC", since,
+            )
+            samples = [
+                _RS(
+                    ts_iso=row["created_at"].isoformat(timespec="seconds"),
+                    ram_total_mb=0, ram_available_mb=0,  # not persisted in this table
+                    swap_total_mb=0, swap_used_mb=0,
+                    load_avg_1=row["lav_ratio"], cpu_count=1,
+                    cpu_idle_pct=row["cpu_idle_pct"],
+                    classification=row["classification"], reason=row["reason"] or "",
+                )
+                for row in rs_rows
+            ]
+            # Overlay the persisted percentages so the aggregate is accurate.
+            for s, row in zip(samples, rs_rows):
+                s.__dict__["_swap_pct_override"] = float(row["swap_pct"])
+                s.__dict__["_ram_avail_override"] = float(row["ram_available_pct"])
+            # Cheap re-summarize using the persisted percentages directly.
+            if rs_rows:
+                tight = sum(1 for row in rs_rows if row["classification"] == "TIGHT")
+                thrashing = sum(1 for row in rs_rows if row["classification"] == "THRASHING")
+                r.resource_summary = {
+                    "n": len(rs_rows),
+                    "worst": "THRASHING" if thrashing else ("TIGHT" if tight else "OK"),
+                    "tight": tight,
+                    "thrashing": thrashing,
+                    "peak_swap_pct": round(max(float(row["swap_pct"]) for row in rs_rows) * 100, 1),
+                }
+        except Exception:
+            r.resource_summary = {}
         # LLM fallback events
         try:
             fb_rows = await conn.fetch(
