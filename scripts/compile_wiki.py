@@ -439,18 +439,26 @@ async def _load_applied_provenance(pm: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
-async def _load_tool_usage(pm: Any) -> tuple[dict[str, int], dict[str, list[tuple[str, str]]]]:
+async def _load_tool_usage(
+    pm: Any,
+    subject_to_canonical: dict[str, str] | None = None,
+) -> tuple[dict[str, int], dict[str, list[tuple[str, str]]]]:
     """Compute per-tool usage from the DB.
 
     Returns two maps keyed by tool name:
     - objectives_count[name] — number of objectives whose sources_used
       array contains this tool name
     - theses_fed[name] — list of (subject, slug) for theses whose evidence
-      contains at least one entry with source == name
+      contains at least one entry with source == name. Slug resolves
+      through the canonical map so the emitted wikilink points at the
+      entity page that ACTUALLY EXISTS (many surface subjects merge into
+      one canonical entity — the pre-fix behavior slugified the surface
+      and produced 122 dangling entities/* wikilinks).
 
     Both are computed by pulling the rows and scanning client-side. The
     row counts are small (≤ a few hundred each) so this is cheap.
     """
+    subject_to_canonical = subject_to_canonical or {}
     pool = pm._require_pool()  # noqa: SLF001
     async with pool.acquire() as conn:
         obj_rows = await conn.fetch(
@@ -484,8 +492,16 @@ async def _load_tool_usage(pm: Any) -> tuple[dict[str, int], dict[str, list[tupl
             src = e.get("source")
             if isinstance(src, str) and src:
                 seen_sources.add(src)
+        # Ghost-target fix: slug from the CANONICAL subject the entity
+        # page was actually written under. Falls back to surface slug
+        # for theses that predate the canonical map (which will land as
+        # missing — that's honest, not dangling due to slug drift).
+        canonical = subject_to_canonical.get(subject, subject)
+        display_subject = canonical or subject
         for name in seen_sources:
-            theses_fed.setdefault(name, []).append((subject, slugify(subject)))
+            theses_fed.setdefault(name, []).append(
+                (display_subject, slugify(canonical))
+            )
     return objectives_count, theses_fed
 
 
@@ -646,7 +662,9 @@ async def compile_wiki(
     tools = _registered_tools_offline(config, pm)
     tool_names: set[str] = {t.name for t in tools}
     provenance_by_path = await _load_applied_provenance(pm)
-    objectives_count, theses_fed = await _load_tool_usage(pm)
+    # Pass the canonical map so theses_fed slugs point at entity pages
+    # that actually exist (fix for the 122 dangling entities/* wikilinks).
+    objectives_count, theses_fed = await _load_tool_usage(pm, subject_to_canonical)
 
     system_rows: list[dict[str, Any]] = []
     # Source of truth for data-source labeling: runtime DATA_SOURCE_TOOLS
