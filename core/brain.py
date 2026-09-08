@@ -477,9 +477,8 @@ class Brain:
                                     )
                                 else:
                                     # Abstention event — valued outcome, not an
-                                    # error. Log with objective_id + cycle so the
-                                    # rate is observable (100 % abstain or 0 %
-                                    # abstain are both signals).
+                                    # error. Log + persist so the rate is
+                                    # queryable via `morgoth session-report`.
                                     self._feed_append(
                                         "INFO",
                                         f"abstain: no grounded thesis "
@@ -489,6 +488,19 @@ class Brain:
                                         "thesis abstention: objective_id={} cycles={} reason=empty",
                                         obj_id, new_count,
                                     )
+                                    try:
+                                        pool = self._persistent_memory._require_pool()
+                                        async with pool.acquire() as _conn:
+                                            await _conn.execute(
+                                                "INSERT INTO abstention_events "
+                                                "(objective_id, cycles) VALUES ($1, $2)",
+                                                obj_id, int(new_count),
+                                            )
+                                    except Exception as _abstain_exc:
+                                        logger.warning(
+                                            "abstention_events insert failed (non-fatal): {}",
+                                            _abstain_exc,
+                                        )
                             except Exception as exc:
                                 logger.warning(
                                     "Thesis extraction failed, objective already done: {}",
@@ -1329,6 +1341,24 @@ class Brain:
                         tool=tool_call.function.name,
                         duration_ms=_dur,
                     )
+                    # 429 / rate-limit visibility: persist so a too-fast cadence
+                    # is READABLE in `morgoth session-report` rather than silent.
+                    if not _ok:
+                        _err_txt = str(tool_result.get("error") or "")
+                        if "429" in _err_txt or "rate limit" in _err_txt.lower() or "too many requests" in _err_txt.lower():
+                            logger.warning(
+                                "RATE-LIMITED: tool={} error={}", _name, _err_txt[:200],
+                            )
+                            try:
+                                _pool = self._persistent_memory._require_pool()
+                                async with _pool.acquire() as _c:
+                                    await _c.execute(
+                                        "INSERT INTO rate_limit_events "
+                                        "(tool_name, status_code, error_text) VALUES ($1, $2, $3)",
+                                        _name, 429, _err_txt[:500],
+                                    )
+                            except Exception as _rl_exc:
+                                logger.warning("rate_limit_events insert failed: {}", _rl_exc)
                     if _ok and _name in DATA_SOURCE_TOOLS and self._current_objective_id:
                         try:
                             await self._persistent_memory.add_source_used(

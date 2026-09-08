@@ -477,6 +477,51 @@ async def _cmd_audit(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_session_report(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """One-shot session summary for the operator's short cycling window.
+
+    Read-only aggregator over abstention_events, rate_limit_events,
+    llm_calls, theses, objectives, proposals. --full also invokes the
+    descriptive backtest to compute the window's verifiable share
+    (slower — one HTTP round-trip per source).
+
+    --since accepts the same '7 days'/'24h'/'30m' grammar as `morgoth
+    audit --since` (reuses auto_approve.parse_since).
+    """
+    from datetime import datetime, timezone
+    from analysis import session_report as SR
+    from self_modify.auto_approve import parse_since as _parse_since
+    if args.since:
+        try:
+            delta = _parse_since(args.since)
+        except ValueError as exc:
+            print(f"error: {exc}")
+            return 2
+        since = datetime.now(tz=timezone.utc) - delta
+    else:
+        # Default: since service (re)start — best proxy is uptime from
+        # /api/brain/status; falls back to last 24 h if that fails.
+        since = datetime.now(tz=timezone.utc) - timedelta_from_uptime()
+    r = await SR.collect(store._pm, since, full=args.full)
+    print(r.render())
+    return 0
+
+
+def timedelta_from_uptime():
+    """Best-effort: query the running service for its uptime; if unreachable,
+    default to 24h. Kept trivial to avoid pulling httpx into cli.py imports."""
+    from datetime import timedelta
+    import httpx
+    try:
+        r = httpx.get("http://localhost:8000/api/brain/status", timeout=3.0)
+        secs = int(r.json().get("uptime_seconds") or 0)
+        if secs > 0:
+            return timedelta(seconds=secs)
+    except Exception:
+        pass
+    return timedelta(days=1)
+
+
 async def _cmd_models(store: P.ProposalStore, args: argparse.Namespace) -> int:
     """Print the live task→provider routing table and reachability of each
     provider. NEVER prints the ANTHROPIC_API_KEY value — presence only."""
@@ -554,6 +599,19 @@ async def _main(argv: list[str]) -> int:
         "models", help="print task→provider routing table + provider reachability",
     )
     p_models.set_defaults(_fn=_cmd_models)
+
+    p_session = subparsers.add_parser(
+        "session-report",
+        help=(
+            "one-shot session summary since restart (or --since '7 days'). "
+            "Add --full to compute verifiable-share (slower — hits data sources)."
+        ),
+    )
+    p_session.add_argument("--since", default=None,
+                           help="'7 days'|'24h'|'30m' — window start; default: since service restart")
+    p_session.add_argument("--full", action="store_true",
+                           help="also compute verifiable-share (slow; hits CoinGecko/mempool/etc.)")
+    p_session.set_defaults(_fn=_cmd_session_report)
 
     p_audit = subparsers.add_parser(
         "audit",

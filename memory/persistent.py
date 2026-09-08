@@ -318,6 +318,34 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure llm_calls table (non-fatal): {}", exc
                 )
+            # Abstention + rate-limit event ledgers. Both writers non-fatal;
+            # readers (morgoth session-report) tolerate missing tables.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS abstention_events (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        objective_id TEXT,
+                        cycles INT NOT NULL DEFAULT 0,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS rate_limit_events (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        tool_name TEXT NOT NULL,
+                        status_code INT,
+                        error_text TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure abstention/rate_limit tables (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 

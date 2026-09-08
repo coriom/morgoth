@@ -190,6 +190,13 @@ cmd_models() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli models "$@")
 }
 
+cmd_session_report() {
+    # One-shot dashboard for a short cycling window (--since '7 days'/'24h'/
+    # '30m'; default: since service restart). --full also computes the
+    # verifiable-share via the descriptive backtest (slower).
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli session-report "$@")
+}
+
 cmd_audit() {
     # Gate-3 auto-approve observability. Passes ALL args through so the
     # operator can invoke --now, --write, --since '7 days', etc. Shipped
@@ -312,6 +319,9 @@ Commands:
   audit [--now] [--write] [--since INT]
                   gate-3 auto-approve observability (shipped INERT — never applies)
   models          show task→provider routing + reachability (env-driven, unset=default)
+  session-report [--since DURATION] [--full]
+                  one-shot dashboard: cycles, theses, abstentions, contradictions,
+                  rate-limit hits, LLM usage, pending measurement counters
   reflect         run one reflection cycle (Morgoth proposes a new tool)
   scout [--limit N]     refresh the free-API leads table from public-apis
                         (docs-page liveness only; reflect gates still guard specs)
@@ -339,6 +349,7 @@ case "${1:-help}" in
     provision) shift; cmd_provision "$@";;
     audit)     shift; cmd_audit "$@";;
     models)    shift; cmd_models "$@";;
+    session-report) shift; cmd_session_report "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;
