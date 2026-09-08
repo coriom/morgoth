@@ -376,11 +376,20 @@ class Brain:
         await self._scheduler.schedule(task)
 
     async def run_autonomous_cycle(self) -> None:
-        """Background loop that drives Morgoth's autonomy."""
+        """Background loop that drives Morgoth's autonomy.
+
+        Sleep placement: at the BOTTOM of the loop (previously at TOP).
+        Semantics-preserving after the first cycle — inter-cycle cadence
+        is still autonomous_cycle_minutes. But post-restart the first
+        cycle now runs IMMEDIATELY instead of after a full sleep window,
+        saving `autonomous_cycle_minutes` per restart of pure idle
+        (default: 10 min). Profile 2026-09-02 measured active cycle work
+        at 5-15 s vs the 600 s sleep — the top-of-loop wait was pure
+        latency, not throughput protection.
+        """
 
         while True:
             try:
-                await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
                 logger.info("Autonomous cycle starting")
                 self._feed_append("SYSTEM", "autonomous cycle started")
 
@@ -676,6 +685,9 @@ class Brain:
             except Exception as e:
                 logger.error("Autonomous cycle error: {}", e)
                 self._feed_append("ERROR", f"cycle error: {e}")
+            # Inter-cycle sleep at the BOTTOM (was at TOP pre-fix). Ensures
+            # steady-state cadence but eliminates the post-restart idle wait.
+            await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
 
     async def enqueue_message(self, content: str, user_id: str = "default") -> None:
         """Queue an incoming chat message for asynchronous processing."""
