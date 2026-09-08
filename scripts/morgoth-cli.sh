@@ -197,6 +197,13 @@ cmd_session_report() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli session-report "$@")
 }
 
+cmd_rail_check() {
+    # Rail-health snapshot: one polite call per data-source tool, classified
+    # OK / DEGRADED / FROZEN / DEAD. Read-only against the rail. FROZEN
+    # detection needs at least two runs (compares against prior digest).
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli rail-check "$@")
+}
+
 cmd_audit() {
     # Gate-3 auto-approve observability. Passes ALL args through so the
     # operator can invoke --now, --write, --since '7 days', etc. Shipped
@@ -322,6 +329,8 @@ Commands:
   session-report [--since DURATION] [--full]
                   one-shot dashboard: cycles, theses, abstentions, contradictions,
                   rate-limit hits, LLM usage, pending measurement counters
+  rail-check      one polite call per data-source tool; classify each as OK /
+                  DEGRADED / FROZEN / DEAD; persist for cross-run FROZEN detection
   reflect         run one reflection cycle (Morgoth proposes a new tool)
   scout [--limit N]     refresh the free-API leads table from public-apis
                         (docs-page liveness only; reflect gates still guard specs)
@@ -350,6 +359,7 @@ case "${1:-help}" in
     audit)     shift; cmd_audit "$@";;
     models)    shift; cmd_models "$@";;
     session-report) shift; cmd_session_report "$@";;
+    rail-check) shift; cmd_rail_check "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;

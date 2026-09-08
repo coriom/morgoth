@@ -270,6 +270,28 @@ class Brain:
             logger.warning(
                 "stale-objective sweep failed (non-blocking): {}", exc,
             )
+        # Orphan reclaim: 'in_progress' rows abandoned by a mid-cycle stop
+        # (short-window operator pattern) get flipped back to 'pending' so
+        # the selector picks them up. cycle_count is preserved — the
+        # objective RESUMES rather than restarts. Threshold defaults to
+        # 30 min (well over the ~50 min a legitimate 5-cycle run takes
+        # would clear); env-overridable. Non-blocking on failure.
+        try:
+            import os as _os
+            reclaim_min = int(_os.environ.get("ORPHAN_RECLAIM_MINUTES") or 30)
+            reclaimed = await self._persistent_memory.reclaim_orphan_objectives(
+                reclaim_min,
+            )
+            for row in reclaimed:
+                logger.info(
+                    "orphan reclaimed: id={} title={!r} cycle_count={} "
+                    "(resumed, not restarted)",
+                    str(row.get("objective_id", ""))[:8],
+                    (row.get("title") or "")[:80],
+                    row.get("cycle_count", 0),
+                )
+        except Exception as exc:
+            logger.warning("orphan reclaim failed (non-blocking): {}", exc)
         await self._episodic_memory.initialize()
         await self._scheduler.initialize()
         awakening = await self.awaken()

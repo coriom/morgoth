@@ -346,6 +346,47 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure abstention/rate_limit tables (non-fatal): {}", exc
                 )
+            # objectives.updated_at — activity marker for the orphan
+            # reclaim path. Nullable ALTER; existing rows default to
+            # created_at so the first reclaim cycle doesn't false-positive.
+            try:
+                await connection.execute(
+                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS "
+                    "updated_at TIMESTAMPTZ DEFAULT NOW();"
+                )
+                await connection.execute(
+                    "UPDATE objectives SET updated_at = created_at "
+                    "WHERE updated_at IS NULL;"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure objectives.updated_at (non-fatal): {}", exc
+                )
+            # rail_health — one row per (tool, check_ts) so FROZEN
+            # detection can compare digests across runs. Read-only from
+            # the CLI + session-report; no cycle-loop consumer.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS rail_health (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        tool_name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        digest TEXT,
+                        detail TEXT,
+                        latency_ms INT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS rail_health_tool_created_idx "
+                    "ON rail_health (tool_name, created_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure rail_health table (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 
@@ -580,6 +621,11 @@ class PersistentMemory:
                 params.append(json.dumps([evidence]))
                 idx += 1
 
+            # Always bump updated_at when the row changes — the
+            # orphan-reclaim path relies on this activity marker.
+            if set_clauses:
+                set_clauses.append("updated_at = NOW()")
+
             if not set_clauses:
                 row = await conn.fetchrow(
                     "SELECT * FROM objectives WHERE objective_id = $1",
@@ -598,18 +644,63 @@ class PersistentMemory:
         return dict(row)
 
     async def increment_cycle_count(self, objective_id: str) -> int:
-        """Atomically increment cycle_count for an objective and return the new value."""
+        """Atomically increment cycle_count for an objective and return the new value.
+
+        Also bumps updated_at — the orphan-reclaim path uses this as the
+        activity marker to distinguish 'stuck in_progress' from
+        'currently cycling'.
+        """
 
         import uuid as _uuid
 
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "UPDATE objectives SET cycle_count = cycle_count + 1 "
-                "WHERE objective_id = $1 RETURNING cycle_count",
+                "UPDATE objectives SET cycle_count = cycle_count + 1, "
+                "updated_at = NOW() WHERE objective_id = $1 RETURNING cycle_count",
                 _uuid.UUID(str(objective_id)),
             )
         return row["cycle_count"] if row else 0
+
+    async def reclaim_orphan_objectives(
+        self,
+        threshold_minutes: int,
+        current_objective_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Reclaim in_progress objectives with no activity for
+        ``threshold_minutes``. Sets status back to 'pending', preserves
+        cycle_count so the objective RESUMES rather than restarts.
+
+        Guards:
+          · Only rows with status='in_progress' — done/failed untouched.
+          · Only rows with updated_at older than the threshold — fresh
+            in_progress work is never touched.
+          · If ``current_objective_id`` is provided, that row is excluded
+            regardless of age (belt-and-braces against the ACTIVE
+            objective in this process being reclaimed).
+
+        Returns the reclaimed rows for logging.
+        """
+        pool = self._require_pool()
+        params: list[Any] = [int(threshold_minutes)]
+        exclusion = ""
+        if current_objective_id:
+            import uuid as _uuid
+            try:
+                params.append(_uuid.UUID(str(current_objective_id)))
+                exclusion = "AND objective_id != $2"
+            except (TypeError, ValueError):
+                pass
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"UPDATE objectives SET status = 'pending', updated_at = NOW() "
+                f"WHERE status = 'in_progress' "
+                f"AND updated_at < NOW() - ($1::int * INTERVAL '1 minute') "
+                f"{exclusion} "
+                f"RETURNING objective_id, title, cycle_count, updated_at",
+                *params,
+            )
+        return [dict(row) for row in rows]
 
     async def get_sources_used(self, objective_id: str) -> list[str]:
         """Return the list of distinct data-source tool names used for an objective."""

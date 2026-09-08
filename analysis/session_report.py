@@ -51,6 +51,7 @@ class SessionReport:
     llm_by_task_provider: list[dict[str, Any]] = field(default_factory=list)
     pending_measurements: dict[str, Any] = field(default_factory=dict)
     proposals_pending: int = 0
+    rail_summary: str = ""
 
     def window_hours(self) -> float:
         return max(1e-6, (self.now - self.since).total_seconds() / 3600.0)
@@ -79,6 +80,8 @@ class SessionReport:
                 lines.append(f"  · {tool}: {n} hits")
         else:
             lines.append("RATE-LIMIT WARNINGS      : none")
+        if self.rail_summary:
+            lines.append(self.rail_summary)
         if self.tool_calls:
             lines.append("TOOL ADOPTION (data sources, top 10):")
             top = sorted(self.tool_calls.items(), key=lambda kv: -kv[1])[:10]
@@ -179,6 +182,26 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.proposals_pending = p_rows[0]["n"] if p_rows else 0
         except Exception:
             r.proposals_pending = 0
+        # Rail health — latest row per tool from rail_health.
+        try:
+            from analysis import rail_health as _RH
+            rh_rows = await conn.fetch(
+                "SELECT DISTINCT ON (tool_name) tool_name, status, digest, "
+                "detail, latency_ms FROM rail_health "
+                "ORDER BY tool_name, created_at DESC"
+            )
+            if rh_rows:
+                latest = [
+                    _RH.RailResult(
+                        tool_name=row["tool_name"], status=row["status"],
+                        digest=row["digest"] or "", detail=row["detail"] or "",
+                        latency_ms=row["latency_ms"] or 0,
+                    )
+                    for row in rh_rows
+                ]
+                r.rail_summary = _RH.one_line_summary(latest)
+        except Exception:
+            r.rail_summary = ""
 
     # Tool adoption — parse from the logs table (best-effort — logs.duration_ms
     # can proxy but tool name lives in content; approximate via LIKE).

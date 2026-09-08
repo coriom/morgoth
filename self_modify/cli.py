@@ -477,6 +477,90 @@ async def _cmd_audit(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_rail_check(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """One polite call per registered data-source tool; classify each as
+    OK / DEGRADED / FROZEN / DEAD; persist to rail_health for cross-run
+    FROZEN detection.
+
+    Sequential with a polite delay so the tightest source (Owlracle
+    100 req/hr) is respected. Never disables a tool — report only.
+    """
+    import asyncio as _asyncio
+    import time as _time
+    from unittest.mock import MagicMock
+    from analysis import rail_health as RH
+    from core.brain import DATA_SOURCE_TOOLS
+    from core.config import load_config
+    from api.server import build_tool_router
+    from memory.episodic import EpisodicMemory
+
+    pm = store._pm
+    pool = pm._require_pool()
+
+    # Load prior digests (one per tool, newest first).
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT ON (tool_name) tool_name, digest FROM rail_health "
+            "ORDER BY tool_name, created_at DESC"
+        )
+    prior = {r["tool_name"]: r["digest"] for r in rows if r["digest"]}
+
+    config = await load_config()
+    # Data-source tools only touch config + persistent_memory; agent_manager
+    # and notifier are used by non-rail tools (create_agent/notify). Mock
+    # them so the rail-check CLI doesn't need to spin up a full runtime.
+    em = EpisodicMemory(config.chroma_dir)
+    router = build_tool_router(config, pm, em, MagicMock(), MagicMock())
+
+    results: list[RH.RailResult] = []
+    tool_list = sorted(DATA_SOURCE_TOOLS)
+    for i, name in enumerate(tool_list):
+        try:
+            tool = router.get_tool(name)
+        except Exception as exc:
+            results.append(RH.RailResult(
+                tool_name=name, status="DEAD", digest="",
+                detail=f"tool not registered: {exc}",
+            ))
+            continue
+        declared = tuple(getattr(type(tool), "digest_fields", ()) or ())
+        # Pick minimal args per tool — most take none; a few need symbol/series_id.
+        kwargs: dict[str, object] = {}
+        if name == "get_crypto_price":
+            kwargs = {"symbol": "btc"}
+        elif name == "get_crypto_history":
+            kwargs = {"symbol": "btc", "days": 3}
+        elif name == "fred_series_observations":
+            kwargs = {"series_id": "UNRATE"}
+        elif name == "get_news":
+            kwargs = {"query": "bitcoin"}
+        elif name == "web_search":
+            kwargs = {"query": "bitcoin"}
+        t0 = _time.monotonic()
+        try:
+            result = await router.execute_tool(name, kwargs)
+        except Exception as exc:
+            result = exc
+        latency_ms = int((_time.monotonic() - t0) * 1000)
+        rail = RH.classify(name, result, declared, prior.get(name), latency_ms=latency_ms)
+        results.append(rail)
+        # Persist for FROZEN detection on subsequent runs.
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO rail_health (tool_name, status, digest, detail, latency_ms) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    rail.tool_name, rail.status, rail.digest,
+                    rail.detail[:500], rail.latency_ms,
+                )
+        except Exception as exc:
+            print(f"WARN: could not persist rail_health for {name}: {exc}")
+        if i < len(tool_list) - 1:
+            await _asyncio.sleep(RH.DEFAULT_INTER_TOOL_DELAY_SECS)
+    print(RH.render_table(results))
+    return 0
+
+
 async def _cmd_session_report(store: P.ProposalStore, args: argparse.Namespace) -> int:
     """One-shot session summary for the operator's short cycling window.
 
@@ -599,6 +683,16 @@ async def _main(argv: list[str]) -> int:
         "models", help="print task→provider routing table + provider reachability",
     )
     p_models.set_defaults(_fn=_cmd_models)
+
+    p_rail = subparsers.add_parser(
+        "rail-check",
+        help=(
+            "one polite call per data-source tool; classify OK/DEGRADED/"
+            "FROZEN/DEAD. Persists to rail_health for cross-run FROZEN "
+            "detection. Read-only against the rail."
+        ),
+    )
+    p_rail.set_defaults(_fn=_cmd_rail_check)
 
     p_session = subparsers.add_parser(
         "session-report",
