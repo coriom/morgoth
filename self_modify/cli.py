@@ -477,6 +477,56 @@ async def _cmd_audit(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_env(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Print the environment snapshot + current routing vs recommended.
+
+    Read-only. NEVER writes .env. NEVER auto-selects a paid provider —
+    api appears in the RECOMMENDED column only when ANTHROPIC_API_KEY
+    is present, and only with an explicit 'requires operator opt-in
+    (cost)' marker (see suggest_routing).
+    """
+    from core.llm.environment import detect_environment, suggest_routing
+    from core.llm import registry as _reg, tasks as _tasks
+    env = await detect_environment()
+    print("═══ Environment snapshot ═══")
+    for line in env.to_lines():
+        print(line)
+    recommendations = {r.task: r for r in suggest_routing(env)}
+    print("\n═══ Routing (CURRENT vs RECOMMENDED) ═══")
+    print(f"  {'TASK':<10}  {'CURRENT':<26}  {'RECOMMENDED':<26}  MATCH")
+    print("  " + "-" * 78)
+    diffs: list[tuple[str, str, str]] = []
+    for task in _tasks.all_tasks():
+        cur_p, cur_m = _reg.resolve(task)
+        cur = f"{cur_p}:{cur_m}"
+        rec = recommendations.get(task)
+        rec_str = f"{rec.provider}:{rec.model}" if rec else "(none)"
+        if not rec:
+            marker = " "
+        elif rec.provider == cur_p and (rec.model == cur_m or rec.model == "default"):
+            marker = "MATCH"
+        elif rec.provider == cur_p:
+            marker = "DIFFERS (model)"
+            diffs.append((task, cur, rec_str))
+        else:
+            # Configured provider unavailable on THIS machine → BROKEN.
+            unavailable = (
+                (cur_p == "ollama" and env.ollama.status == "unavailable")
+                or (cur_p == "claude-cli" and env.claude_cli.status != "ok")
+                or (cur_p == "api" and env.api_key.status == "unavailable")
+            )
+            marker = "BROKEN" if unavailable else "DIFFERS"
+            diffs.append((task, cur, rec_str))
+        print(f"  {task:<10}  {cur:<26}  {rec_str:<26}  {marker}")
+    if diffs:
+        print("\n═══ To apply the recommendation, add to .env (or export): ═══")
+        for task, _cur, rec_str in diffs:
+            env_key = f"MORGOTH_LLM_{task.upper()}"
+            print(f"  {env_key}={rec_str}")
+        print("\n  (System does NOT write .env for you — operator's decision.)")
+    return 0
+
+
 async def _cmd_rail_check(store: P.ProposalStore, args: argparse.Namespace) -> int:
     """One polite call per registered data-source tool; classify each as
     OK / DEGRADED / FROZEN / DEAD; persist to rail_health for cross-run
@@ -683,6 +733,16 @@ async def _main(argv: list[str]) -> int:
         "models", help="print task→provider routing table + provider reachability",
     )
     p_models.set_defaults(_fn=_cmd_models)
+
+    p_env = subparsers.add_parser(
+        "env",
+        help=(
+            "print environment capability snapshot + current vs recommended "
+            "LLM routing. Read-only; NEVER writes .env; NEVER auto-selects "
+            "a paid provider."
+        ),
+    )
+    p_env.set_defaults(_fn=_cmd_env)
 
     p_rail = subparsers.add_parser(
         "rail-check",

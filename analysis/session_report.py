@@ -52,6 +52,8 @@ class SessionReport:
     pending_measurements: dict[str, Any] = field(default_factory=dict)
     proposals_pending: int = 0
     rail_summary: str = ""
+    fallback_events: int = 0
+    fallback_breakdown: list[tuple[str, str, str, int]] = field(default_factory=list)
 
     def window_hours(self) -> float:
         return max(1e-6, (self.now - self.since).total_seconds() / 3600.0)
@@ -82,6 +84,12 @@ class SessionReport:
             lines.append("RATE-LIMIT WARNINGS      : none")
         if self.rail_summary:
             lines.append(self.rail_summary)
+        if self.fallback_events:
+            lines.append(f"LLM FALLBACKS            : {self.fallback_events}")
+            for task, cfg, used, n in self.fallback_breakdown[:5]:
+                lines.append(f"  · task={task} configured={cfg} used={used} n={n}")
+        else:
+            lines.append("LLM FALLBACKS            : 0")
         if self.tool_calls:
             lines.append("TOOL ADOPTION (data sources, top 10):")
             top = sorted(self.tool_calls.items(), key=lambda kv: -kv[1])[:10]
@@ -182,6 +190,20 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.proposals_pending = p_rows[0]["n"] if p_rows else 0
         except Exception:
             r.proposals_pending = 0
+        # LLM fallback events
+        try:
+            fb_rows = await conn.fetch(
+                "SELECT task, configured, used, COUNT(*) AS n FROM llm_fallback_events "
+                "WHERE created_at >= $1 GROUP BY task, configured, used "
+                "ORDER BY n DESC", since,
+            )
+            r.fallback_events = sum(row["n"] for row in fb_rows)
+            r.fallback_breakdown = [
+                (row["task"], row["configured"], row["used"], row["n"])
+                for row in fb_rows
+            ]
+        except Exception:
+            r.fallback_events = 0
         # Rail health — latest row per tool from rail_health.
         try:
             from analysis import rail_health as _RH

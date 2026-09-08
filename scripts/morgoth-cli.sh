@@ -197,6 +197,12 @@ cmd_session_report() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli session-report "$@")
 }
 
+cmd_env() {
+    # Print environment capability snapshot + current vs recommended LLM
+    # routing. NEVER writes .env. NEVER auto-selects paid providers.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli env "$@")
+}
+
 cmd_rail_check() {
     # Rail-health snapshot: one polite call per data-source tool, classified
     # OK / DEGRADED / FROZEN / DEAD. Read-only against the rail. FROZEN
@@ -331,6 +337,8 @@ Commands:
                   rate-limit hits, LLM usage, pending measurement counters
   rail-check      one polite call per data-source tool; classify each as OK /
                   DEGRADED / FROZEN / DEAD; persist for cross-run FROZEN detection
+  env             print environment capability snapshot + current vs recommended
+                  LLM routing (never writes .env; never auto-selects paid providers)
   reflect         run one reflection cycle (Morgoth proposes a new tool)
   scout [--limit N]     refresh the free-API leads table from public-apis
                         (docs-page liveness only; reflect gates still guard specs)
@@ -360,6 +368,7 @@ case "${1:-help}" in
     models)    shift; cmd_models "$@";;
     session-report) shift; cmd_session_report "$@";;
     rail-check) shift; cmd_rail_check "$@";;
+    env) shift; cmd_env "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;

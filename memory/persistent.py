@@ -387,6 +387,27 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure rail_health table (non-fatal): {}", exc
                 )
+            # LLM fallback ledger — every time the configured provider fails
+            # and a downward-ladder step activates, a row lands here. Visible
+            # in `morgoth session-report` so a silent ollama-instead-of-cli
+            # doesn't poison model comparisons.
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS llm_fallback_events (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        task TEXT NOT NULL,
+                        configured TEXT NOT NULL,
+                        used TEXT NOT NULL,
+                        reason TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure llm_fallback_events table (non-fatal): {}", exc
+                )
 
         logger.info("PostgreSQL pool initialized and schema ensured")
 

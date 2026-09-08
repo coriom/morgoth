@@ -942,15 +942,32 @@ class Brain:
         # 'ollama:default' — byte-identical to pre-refactor. MORGOTH_LLM_THESIS
         # or the legacy THESIS_GENERATOR env overrides per-task. The registry
         # keeps the default lock; a test asserts unset env → ollama.
+        # SAFE FALLBACK: if the configured provider fails at call time, walk
+        # DOWNWARD in cost (api → claude-cli → ollama). Never upward. Every
+        # fallback logs + persists to llm_fallback_events for visibility in
+        # `morgoth session-report`.
         from core.llm import registry as _reg
         from core.llm import providers as _prov, tasks as _tasks
         from core.llm.logs import log_call as _log_call
+        from core.llm.fallback import call_with_fallback as _fallback
         provider_name, model = _reg.resolve(_tasks.THESIS)
-        provider = _prov.get_provider(provider_name, model, ollama_client=self._llm_client)
+
+        def _build(name: str):
+            try:
+                m = model if name == provider_name else "default"
+                return _prov.get_provider(name, m, ollama_client=self._llm_client)
+            except (ValueError, _prov.HttpApiKeyMissing):
+                return None
+
+        _system_prompt = build_system_prompt()
         try:
             text = await _log_call(
                 self._persistent_memory, _tasks.THESIS, provider_name, model,
-                lambda: provider.complete(prompt, system=build_system_prompt()),
+                lambda: _fallback(
+                    _build, _tasks.THESIS, provider_name,
+                    lambda p: p.complete(prompt, system=_system_prompt),
+                    pm=self._persistent_memory,
+                ),
                 prompt_bytes=len(prompt),
             )
         except Exception as exc:
