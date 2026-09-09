@@ -76,7 +76,8 @@ async def _fetch_theses(config) -> list[dict[str, Any]]:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT thesis_id, subject, claim, confidence, evidence, status, "
-                "objective_id, created_at FROM theses ORDER BY created_at ASC"
+                "objective_id, created_at, code_version "
+                "FROM theses ORDER BY created_at ASC"
             )
         out = []
         for r in rows:
@@ -255,10 +256,19 @@ async def main() -> int:
                         help="ISO datetime cutoff — score only theses with created_at >= this")
     parser.add_argument("--until", default=None,
                         help="ISO datetime upper bound — score only theses with created_at < this")
+    parser.add_argument("--code-version", default=None,
+                        help="short git sha — score only theses stamped with this commit. "
+                             "Rows with NULL code_version are EXCLUDED (historical rows).")
     args = parser.parse_args()
 
     config = await load_config()
     theses = await _fetch_theses(config)
+    if args.code_version:
+        before = len(theses)
+        # NULL rows excluded (historical). Explicit — never crash on the
+        # NULL comparison; skip cleanly.
+        theses = [t for t in theses if t.get("code_version") == args.code_version]
+        print(f"Filter: code_version={args.code_version} → {before} → {len(theses)} theses")
     if args.since or args.until:
         # Support the pre/post-grounding split without touching the scorer's
         # core logic. Cutoffs match the format git prints (2026-08-07T19:26:44+00:00).

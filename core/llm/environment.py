@@ -118,7 +118,10 @@ async def _probe_ollama() -> Capability:
         cfg = await load_config()
     except Exception as exc:
         return Capability("unavailable", f"config load failed: {type(exc).__name__}: {exc}")
-    host = getattr(cfg, "ollama_host", None) or "http://localhost:11434"
+    # Config field is `ollama_base_url` (Pydantic HttpUrl). Cast to str;
+    # fall back to the local default if the attribute is somehow absent.
+    _url = getattr(cfg, "ollama_base_url", None)
+    host = str(_url).rstrip('/') if _url else "http://localhost:11434"
     try:
         import httpx
         async with httpx.AsyncClient(timeout=2.0) as c:
@@ -128,7 +131,7 @@ async def _probe_ollama() -> Capability:
         payload = r.json()
         tags = [m.get("name") or m.get("model") for m in payload.get("models", [])]
         tags = [t for t in tags if t]
-        primary = getattr(cfg, "primary_model", "") or ""
+        primary = getattr(cfg, "ollama_primary_model", "") or ""
         has_primary = any(primary in t for t in tags)
         detail = f"{host} · {len(tags)} model(s) pulled"
         if primary:

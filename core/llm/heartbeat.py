@@ -44,22 +44,35 @@ async def probe_ollama() -> ProbeResult:
     try:
         cfg = await load_config()
         import httpx
+        host = str(cfg.ollama_base_url).rstrip('/')
         async with httpx.AsyncClient(timeout=2.0) as c:
-            r = await c.get(f"{cfg.ollama_host.rstrip('/')}/api/tags")
+            r = await c.get(f"{host}/api/tags")
         if r.status_code == 200:
-            return ProbeResult("ollama", "ok", f"HTTP 200 at {cfg.ollama_host}")
+            return ProbeResult("ollama", "ok", f"HTTP 200 at {host}")
         return ProbeResult("ollama", "down", f"HTTP {r.status_code}")
     except Exception as exc:
         return ProbeResult("ollama", "down", f"{type(exc).__name__}: {str(exc)[:80]}")
 
 
 def probe_claude_cli() -> ProbeResult:
-    """`claude --version` presence probe. No network call."""
-    if not shutil.which("claude"):
+    """`claude --version` presence probe. No network call.
+
+    Fallback resolution: systemd's Environment=PATH doesn't always
+    populate the child's search path uniformly across runners. When
+    shutil.which('claude') returns None, try the known install path
+    (~/.npm-global/bin/claude) so a system misconfig doesn't
+    false-negative-report claude-cli as down.
+    """
+    binary = shutil.which("claude")
+    if not binary:
+        candidate = os.path.expanduser("~/.npm-global/bin/claude")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            binary = candidate
+    if not binary:
         return ProbeResult("claude-cli", "down", "not on PATH")
     try:
         out = subprocess.run(
-            ["claude", "--version"], capture_output=True, text=True, timeout=3,
+            [binary, "--version"], capture_output=True, text=True, timeout=3,
         )
         if out.returncode == 0:
             ver = (out.stdout or "").strip().splitlines()[0] if out.stdout else ""

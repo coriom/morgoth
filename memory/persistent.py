@@ -362,6 +362,23 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure objectives.updated_at (non-fatal): {}", exc
                 )
+            # theses.code_version + self_modify_proposals.code_version —
+            # provenance so every measurement can filter "produced under
+            # commit X". Historical rows stay NULL; the descriptive
+            # backtest excludes NULL when a --code-version filter is set.
+            try:
+                await connection.execute(
+                    "ALTER TABLE theses ADD COLUMN IF NOT EXISTS "
+                    "code_version TEXT;"
+                )
+                await connection.execute(
+                    "ALTER TABLE self_modify_proposals ADD COLUMN IF NOT EXISTS "
+                    "code_version TEXT;"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not ensure code_version columns (non-fatal): {}", exc
+                )
             # rail_health — one row per (tool, check_ts) so FROZEN
             # detection can compare digests across runs. Read-only from
             # the CLI + session-report; no cycle-loop consumer.
@@ -610,6 +627,56 @@ class PersistentMemory:
                 )
         return [dict(row) for row in rows]
 
+    async def claim_next_objective(
+        self,
+        limit: int = 1,
+        active_threshold_minutes: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Atomically claim the next `limit` claimable objectives.
+
+        Claimable = status='pending' OR (status='in_progress' AND
+        updated_at > NOW() - active_threshold_minutes). This lets a
+        single process resume its in-flight objective across multiple
+        cycles (cadence 10 min << threshold 30 min), while a truly
+        abandoned in_progress row ages past threshold and is
+        surfaced by the reclaim path.
+
+        Two invariants:
+          · SELECT ... FOR UPDATE SKIP LOCKED — a concurrent claimer
+            never blocks and never sees the same row. Single-instance
+            benefit: a restart racing an in-flight cycle can never
+            double-claim. Multi-instance benefit (future): the table
+            becomes a work queue for free — no coordination code.
+          · SAME TRANSACTION marks in_progress + bumps updated_at.
+            The reclaim path (updated_at < NOW() - threshold) sees a
+            claimed-then-abandoned row age past threshold naturally.
+
+        Priority order matches get_objectives(status='pending'):
+        priority ASC, created_at ASC.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    "SELECT * FROM objectives "
+                    "WHERE status = 'pending' "
+                    "   OR (status = 'in_progress' "
+                    "       AND updated_at > NOW() - ($1::int * INTERVAL '1 minute')) "
+                    "ORDER BY priority ASC, created_at ASC "
+                    "FOR UPDATE SKIP LOCKED LIMIT $2",
+                    int(active_threshold_minutes), int(limit),
+                )
+                if not rows:
+                    return []
+                ids = [row["objective_id"] for row in rows]
+                await conn.execute(
+                    "UPDATE objectives SET status = 'in_progress', "
+                    "updated_at = NOW() WHERE objective_id = ANY($1::uuid[])",
+                    ids,
+                )
+        # Return updated shape (status='in_progress' now).
+        return [{**dict(row), "status": "in_progress"} for row in rows]
+
     async def timeout_stale_objectives(
         self,
         max_age_days: float,
@@ -797,18 +864,24 @@ class PersistentMemory:
         confidence: str = "medium",
         evidence: list[dict[str, Any]] | None = None,
         objective_id: str | None = None,
+        code_version: str | None = None,
     ) -> str:
-        """Insert a thesis row and return its thesis_id as a string."""
+        """Insert a thesis row and return its thesis_id as a string.
+
+        code_version is the short git-sha of the running code (captured
+        once at startup via core.version.get_code_version). Nullable —
+        historical rows are NULL, which the backtest CLI's optional
+        --code-version filter excludes explicitly rather than crashes on.
+        """
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO theses (subject, claim, confidence, evidence, objective_id) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5) RETURNING thesis_id",
-                subject,
-                claim,
-                confidence,
+                "INSERT INTO theses "
+                "(subject, claim, confidence, evidence, objective_id, code_version) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5, $6) RETURNING thesis_id",
+                subject, claim, confidence,
                 json.dumps(evidence or []),
-                objective_id,
+                objective_id, code_version,
             )
         return str(row["thesis_id"]) if row else ""
 

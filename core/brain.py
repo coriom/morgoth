@@ -479,8 +479,13 @@ class Brain:
                     except Exception as _hb_exc:
                         logger.warning("provider heartbeat failed: {}", _hb_exc)
 
-                objectives = await self._persistent_memory.get_objectives(
-                    status="pending", limit=1
+                # Atomic claim: SELECT ... FOR UPDATE SKIP LOCKED + mark
+                # in_progress in the same transaction. Prevents a
+                # restart-racing-cycle from double-claiming; future-
+                # proofs the table as a work queue for multi-instance
+                # operation with zero coordination code added today.
+                objectives = await self._persistent_memory.claim_next_objective(
+                    limit=1,
                 )
 
                 if objectives:
@@ -548,6 +553,8 @@ class Brain:
                                 theses = await self._extract_theses(
                                     obj, synthesis_text, sources_used_done
                                 )
+                                from core.version import get_code_version as _gcv
+                                _cv = _gcv()
                                 for t in theses:
                                     await self._persistent_memory.add_thesis(
                                         subject=t["subject"],
@@ -555,6 +562,7 @@ class Brain:
                                         confidence=t.get("confidence", "medium"),
                                         evidence=t.get("evidence", []),
                                         objective_id=obj_id,
+                                        code_version=_cv,
                                     )
                                 if theses:
                                     self._feed_append(
