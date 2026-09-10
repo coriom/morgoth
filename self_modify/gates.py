@@ -40,6 +40,8 @@ from self_modify import zones
 
 
 # Directory names to skip when copying the working tree into the sandbox.
+# .env is excluded — the copy tree must never contain production secrets;
+# even under fs confinement, a leaked-into-copy secret is a leak.
 _SANDBOX_IGNORE = shutil.ignore_patterns(
     ".venv",
     ".git",
@@ -50,11 +52,36 @@ _SANDBOX_IGNORE = shutil.ignore_patterns(
     "*.egg-info",
     ".pytest_cache",
     "node_modules",
+    ".env",
+    ".envrc",
+    "secrets",
 )
 
 # Path to the venv interpreter used to drive pytest inside the sandbox.
 # Kept absolute so it works regardless of caller cwd or sandbox path.
 _VENV_PYTHON = "/home/corio/Morgoth/morgoth/.venv/bin/python"
+_VENV_ROOT = "/home/corio/Morgoth/morgoth/.venv"
+
+# Hardening budget — two enforcement paths because WSL2's kernel does
+# not reliably honor cgroup ``memory.max`` at the user-scope level (a
+# 150 MB cap allowed a 500 MB allocator through in the empirical probe
+# at wiring time). We therefore combine:
+#   * ``prlimit --as=<bytes>``  → kernel-enforced RLIMIT_AS per process
+#     (a bloated pytest-xdist worker is killed with MemoryError even
+#     when cgroup MemoryMax is a no-op).
+#   * ``systemd-run --property=MemoryMax=…``  → cumulative cap when the
+#     controller is actually active (works on kernels that do enforce).
+#   * ``systemd-run --property=TasksMax=…``   → pids cgroup IS enforced
+#     under WSL2 — bounds fork bombs at the cgroup level.
+#   * ``systemd-run --property=CPUQuota=…``   → cpu cgroup bounds CPU %.
+#
+# 7.6 GB host → 5 GB cumulative cap (leaves ~2.6 GB headroom for
+# morgoth + host). Per-process RLIMIT_AS 3 GB — bigger than any legit
+# xdist worker under our suite, smaller than a real memory bomb.
+_MEMORY_MAX_BYTES = 5 * 1024**3        # cumulative cgroup cap
+_PER_PROCESS_AS_BYTES = 3 * 1024**3    # kernel-enforced RLIMIT_AS
+_TASKS_MAX = 1024
+_CPU_QUOTA_PCT = 800
 
 # Hard timeout for pytest under the sandbox — a proposal that hangs the
 # suite is a failure, not an outage.
@@ -124,14 +151,16 @@ _PYTEST_TIMEOUT_SECS = SANDBOX_TIMEOUT_SECONDS
 # Env override SANDBOX_TIMEOUT_SECONDS propagates to BOTH sites.
 PYTEST_BUDGET_SECS: int = SANDBOX_TIMEOUT_SECONDS
 
-# Cached feasibility probe for user+net namespace isolation. The probe
-# tries to enter a user+net ns and immediately exit; anything non-zero
-# means the kernel or seccomp policy is denying the operation and we
-# should fail-open with a loud warning (defense-in-depth degraded —
-# the repr-based template render is still the primary injection
-# barrier). Cached because the probe runs ~10ms and gate_tests can
-# fire in a tight cycle.
+# Cached feasibility probes for hardening layers. Each probe runs at
+# most once per process lifetime; a False result degrades that ONE
+# layer with a loud warning, while the surviving layers still apply.
+# Layers (independent, additive):
+#   isolation:      unshare --user --map-root-user --net  (netns + user_ns)
+#   confinement:    bwrap  (fs isolation + env scrubbing via --clearenv)
+#   cgroup_limits:  systemd-run --user --scope --property=MemoryMax/...
 _isolation_available_cache: bool | None = None
+_bwrap_available_cache: bool | None = None
+_cgroup_limits_available_cache: bool | None = None
 
 
 def _isolation_available() -> bool:
@@ -157,6 +186,76 @@ def _isolation_available() -> bool:
         rc = 1
     _isolation_available_cache = rc == 0
     return _isolation_available_cache
+
+
+def _bwrap_available() -> bool:
+    """True iff a minimal ``bwrap`` invocation succeeds. Cached.
+
+    False here means the copied tree runs without a mount namespace —
+    a compromised generated tool could read ~/.env, ~/.ssh, vault/,
+    or the live repo. Loud warning; the netns layer still applies.
+    """
+    global _bwrap_available_cache
+    if _bwrap_available_cache is not None:
+        return _bwrap_available_cache
+    try:
+        rc = subprocess.run(
+            ["bwrap", "--ro-bind", "/usr", "/usr", "--proc", "/proc",
+             "--dev", "/dev", "--unshare-user", "--", "true"],
+            capture_output=True,
+            timeout=5,
+        ).returncode
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        rc = 1
+    _bwrap_available_cache = rc == 0
+    return _bwrap_available_cache
+
+
+def _cgroup_limits_available() -> bool:
+    """True iff ``systemd-run --user --scope`` can attach cgroup properties.
+
+    Requires the user session bus reachable via XDG_RUNTIME_DIR. From
+    morgoth.service (system slice), we inject XDG_RUNTIME_DIR in
+    _hardened_outer_env below so the probe and the real call both
+    have the runtime dir path. False here means a runaway allocator
+    cannot be killed by the kernel — it only dies at the pytest
+    timeout (thrashing risk).
+    """
+    global _cgroup_limits_available_cache
+    if _cgroup_limits_available_cache is not None:
+        return _cgroup_limits_available_cache
+    try:
+        rc = subprocess.run(
+            ["systemd-run", "--user", "--scope", "--quiet",
+             "--property=MemoryMax=100M", "--property=TasksMax=10",
+             "--", "true"],
+            capture_output=True,
+            env=_hardened_outer_env(),
+            timeout=5,
+        ).returncode
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        rc = 1
+    _cgroup_limits_available_cache = rc == 0
+    return _cgroup_limits_available_cache
+
+
+def _hardened_outer_env() -> dict[str, str]:
+    """Minimal env passed to the outer subprocess (systemd-run / bwrap).
+
+    Explicit whitelist — parent env is NOT propagated. This is the
+    first line of defense against secret leakage: FRED_API_KEY,
+    POSTGRES_URL, TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY that live in
+    morgoth.service's Environment= directives must not reach the
+    sandboxed pytest process. XDG_RUNTIME_DIR is required so
+    ``systemd-run --user`` reaches the session bus from a system
+    service context.
+    """
+    uid = os.getuid()
+    return {
+        "PATH": "/usr/sbin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "XDG_RUNTIME_DIR": f"/run/user/{uid}",
+    }
 
 
 async def gate_zone(
@@ -190,52 +289,123 @@ async def gate_zone(
     return "green"
 
 
-def _build_pytest_argv(sandbox: Path, *, isolated: bool) -> list[str]:
+def _build_pytest_argv(
+    sandbox: Path,
+    *,
+    isolated: bool,
+    confined: bool = False,
+    cgroup_bound: bool = False,
+) -> list[str]:
     """Return the argv used to invoke pytest inside ``sandbox``.
+
+    Three additive hardening layers, each detected independently:
+
+    - isolated   → wrap in ``unshare --user --map-root-user --net``
+                   (fresh netns + user_ns, loopback raised inside).
+    - confined   → wrap the inner pytest in ``bwrap --clearenv --tmpfs
+                   /tmp --ro-bind <system-dirs> --bind <sandbox>``
+                   so the FS view is: sandbox (rw) + system+venv (ro),
+                   nothing else. ~/.env / vault / live repo unreachable.
+                   ``--share-net`` inherits the outer unshare's netns.
+    - cgroup_bound → wrap the whole thing in ``systemd-run --user
+                   --scope --property=MemoryMax=... TasksMax=... CPUQuota=...``
+                   so a runaway is killed by the kernel, not by the
+                   pytest timeout — protects host from thrashing.
 
     ``-n auto`` distributes tests across CPU cores (pytest-xdist),
     dropping the sandbox suite wall time from ~2701s serial to ~547s
     parallel on a 12-core host. Suite is fully DB-mocked so xdist
     parallelizes clean; the two consecutive stability runs at wiring
-    time produced identical 593/593 passes.
-
-    Isolated form wraps the invocation in ``unshare --user
-    --map-root-user --net sh -c "ip link set lo up; cd <sandbox> &&
-    exec <venv-python> -m pytest -q -n auto"`` so the sandbox has
-    loopback reachable (needed by any test that binds to 127.0.0.1)
-    but no route to the outside world. Non-isolated form is the plain
-    call the sandbox always used.
+    time produced identical 593/593 passes. When ``confined`` and the
+    outer sh runs under unshare, ``ip link set lo up`` runs there
+    (needs CAP_NET_ADMIN, which bwrap drops) and bwrap uses
+    ``--share-net`` to inherit the netns with lo already UP.
     """
-    if isolated:
+    if not isolated:
+        return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"]
+
+    # Per-process RLIMIT_AS via ``prlimit`` — kernel-enforced, works
+    # on WSL2 where cgroup memory.max is silently ignored. Wraps the
+    # venv python so every xdist worker inherits the cap.
+    pytest_call = [
+        "prlimit", f"--as={_PER_PROCESS_AS_BYTES}",
+        "--", _VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto",
+    ]
+
+    if confined:
+        import shlex
+        bwrap = [
+            "bwrap", "--clearenv",
+            "--setenv", "PATH", "/usr/sbin:/usr/bin:/bin",
+            "--setenv", "HOME", str(sandbox),
+            "--setenv", "LANG", "C.UTF-8",
+            "--ro-bind", "/usr", "/usr",
+            "--ro-bind", "/lib", "/lib",
+            "--ro-bind", "/lib64", "/lib64",
+            "--ro-bind", "/bin", "/bin",
+            "--ro-bind", "/etc", "/etc",
+            "--ro-bind", _VENV_ROOT, _VENV_ROOT,
+            "--tmpfs", "/tmp",
+            "--bind", str(sandbox), str(sandbox),
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--share-net",
+            "--die-with-parent",
+            "--chdir", str(sandbox),
+            "--",
+        ] + pytest_call
+        inner = "ip link set lo up; exec " + " ".join(shlex.quote(a) for a in bwrap)
+    else:
+        pytest_str = " ".join(pytest_call)
         inner = (
             f"ip link set lo up; cd {sandbox} && "
-            f"exec {_VENV_PYTHON} -m pytest -q -n auto"
+            f"exec {pytest_str}"
         )
-        return ["unshare", "--user", "--map-root-user", "--net",
-                "sh", "-c", inner]
-    return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"]
+    outer = ["unshare", "--user", "--map-root-user", "--net",
+             "sh", "-c", inner]
+
+    if cgroup_bound:
+        return [
+            "systemd-run", "--user", "--scope", "--quiet",
+            f"--property=MemoryMax={_MEMORY_MAX_BYTES}",
+            f"--property=TasksMax={_TASKS_MAX}",
+            f"--property=CPUQuota={_CPU_QUOTA_PCT}%",
+            "--",
+        ] + outer
+    return outer
 
 
 def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
-    """Blocking call — run pytest -q from ``sandbox``, wrapped in a
-    user+net namespace when the kernel supports it.
+    """Blocking call — run pytest -q from ``sandbox`` under the strongest
+    hardening posture the host supports. Each layer probed independently.
 
-    The wrapper appears in argv when isolation is available; when it
-    is not, the caller sees the plain invocation AND a warning line
-    in the logs. The isolation decision is made per-call (probe is
-    cached) so a kernel update that flips the feature does not
-    require a Morgoth restart.
+    Missing layers degrade gracefully with warnings; the surviving
+    layers still apply. Env passed to the outer subprocess is a
+    minimal whitelist (``_hardened_outer_env``) so parent secrets
+    (POSTGRES_URL, FRED_API_KEY, ANTHROPIC_API_KEY, …) never reach
+    the sandboxed pytest even when bwrap's ``--clearenv`` is absent.
     """
     isolated = _isolation_available()
+    confined = _bwrap_available() if isolated else False
+    cgroup_bound = _cgroup_limits_available() if isolated else False
     if not isolated:
         logger.warning(
             "sandbox network isolation UNAVAILABLE — running with host "
             "network (defense-in-depth degraded)"
         )
-    argv = _build_pytest_argv(sandbox, isolated=isolated)
-    # cwd needs to point at the sandbox for the non-isolated form;
-    # under isolation the ``cd`` inside the shell script does that job
-    # from inside the ns and cwd here is irrelevant.
+    if isolated and not confined:
+        logger.warning(
+            "sandbox filesystem confinement UNAVAILABLE (bwrap missing) — "
+            "sandbox may read files outside its copied tree"
+        )
+    if isolated and not cgroup_bound:
+        logger.warning(
+            "sandbox cgroup limits UNAVAILABLE (systemd-run --user failed) — "
+            "runaway allocation only bounded by the pytest timeout"
+        )
+    argv = _build_pytest_argv(
+        sandbox, isolated=isolated, confined=confined, cgroup_bound=cgroup_bound,
+    )
     cwd = None if isolated else str(sandbox)
     completed = subprocess.run(
         argv,
@@ -243,11 +413,11 @@ def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=_PYTEST_TIMEOUT_SECS,
+        env=_hardened_outer_env() if isolated else None,
     )
-    # Attach the isolation marker to the completed process for the
-    # caller to append to status_reason. subprocess.CompletedProcess
-    # has no free slot, so we stash on a wrapper attribute.
     completed.isolated = isolated  # type: ignore[attr-defined]
+    completed.confined = confined  # type: ignore[attr-defined]
+    completed.cgroup_bound = cgroup_bound  # type: ignore[attr-defined]
     return completed
 
 
@@ -295,9 +465,11 @@ async def gate_tests(
 
         # Isolation posture — attached by _run_pytest_in_sandbox for
         # the status_reason tail so the operator sees it at gate 3.
-        isolation_marker = (
-            "isolation=on" if getattr(completed, "isolated", False) else "isolation=off"
-        )
+        # Layers reported independently so a partial degrade is visible.
+        iso = "on" if getattr(completed, "isolated", False) else "off"
+        cnf = "on" if getattr(completed, "confined", False) else "off"
+        cgb = "on" if getattr(completed, "cgroup_bound", False) else "off"
+        isolation_marker = f"isolation={iso} confined={cnf} cgroup={cgb}"
 
         if completed.returncode != 0:
             # Capture the tail of stdout+stderr for the operator (kept
