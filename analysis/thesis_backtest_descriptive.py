@@ -53,7 +53,13 @@ _DIFFICULTY_SUBJECTS = (
     "bitcoin difficulty",
     "btc difficulty",
 )
-_SENTIMENT_SUBJECTS = ("market sentiment",)
+_SENTIMENT_SUBJECTS = (
+    "market sentiment",
+    # Fear & Greed vocabulary — grounding-era generation uses the tool
+    # name directly ("Fear & Greed Index", "Crypto Fear & Greed Index",
+    # "F&G"). The value 0-100 IS the F&G index; series is alternative.me.
+    "fear & greed", "fear and greed", "fng",
+)
 # Volume/mkt-cap subject discrimination: BTC/ETH-specific → CoinGecko
 # market_chart is authoritative. "Global"/"Crypto" → the whole-market
 # figure needs CoinGecko Pro (paid), so stays UNREACHABLE. A BTC-proxy
@@ -73,6 +79,11 @@ _ETH_GAS_MARKERS = ("gas price", "gas prices", "ethereum gas")
 _BTC_FUNDING_MARKERS = (
     "bitcoin futures funding", "btc futures funding", "funding rate",
     "funding rates",
+    # Grounding-era corpus phrasings — subject uses the exchange symbol
+    # ("BTCUSDT futures funding interest rate") which contained no
+    # substring the old markers caught (btc is prefix of btcusdt with
+    # no space; "funding rate" required contiguity broken by "interest").
+    "btcusdt futures funding", "futures funding interest", "futures funding rate",
 )
 # ETH-network subjects that all reduce to "how expensive is Ethereum
 # right now", which the Owlracle gas series tracks. Congestion and base
@@ -137,6 +148,13 @@ def classify_subject(subject: str) -> tuple[Verifiability, MetricKind | None, st
     # hashrate). Not a data-availability issue; the metric doesn't exist.
     if "ethereum" in s and "hash rate" in s:
         return "unverifiable", None, "eth hash rate does not exist post-merge"
+    # Sentiment markers checked BEFORE the relation guard — "fear and
+    # greed index" contains " and " but the whole phrase is a proper
+    # noun (the F&G Index), not a relation claim between two variables.
+    # Match by full multi-word marker so a genuine "fear and X and Y"
+    # relation phrasing would not spuriously match.
+    if any(m in s for m in _SENTIMENT_SUBJECTS):
+        return "metric", "market_sentiment", None
     # Relation keywords in the SUBJECT take precedence over metric mapping:
     # "Bitcoin difficulty adjustments correlate with BTC price" is a
     # relation claim (the correlation itself), not a level claim on
@@ -147,8 +165,6 @@ def classify_subject(subject: str) -> tuple[Verifiability, MetricKind | None, st
         return "metric", "btc_hashrate", None
     if any(m in s for m in _DIFFICULTY_SUBJECTS) and "adjustment progress" not in s:
         return "metric", "btc_difficulty", None
-    if any(m in s for m in _SENTIMENT_SUBJECTS):
-        return "metric", "market_sentiment", None
     # Whole-market unreachables checked FIRST (a "global market cap" subject
     # also contains the bare "market cap" substring — order matters).
     for marker in _UNREACHABLE_SUBJECT_MARKERS:
@@ -643,6 +659,127 @@ def score_macro(row, series, horizon_hours, flat_pct, now, metric):
     return _score_series_directional(
         row, series, horizon_hours, flat_pct, now, metric=metric,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# VALUE-CLAIM SCORER  (reporting-accuracy track)
+#
+# Rationale: the descriptive/directional scorers ask "was the qualifier
+# apt?" (percentile band, up/down/flat). The generation prompt requires
+# each thesis to CITE a concrete value from the synthesis — checking
+# that CITED value against the ground-truth series at the thesis
+# timestamp is a stronger, more fundamental question: did Morgoth
+# STATE THE WORLD CORRECTLY? A 63 that matches the actual F&G ~63
+# earns a HIT; a fabricated 63 against actual 42 earns a MISS.
+#
+# Skip discipline: unparseable value, missing series, timestamp outside
+# series range, or a magnitude that clearly means a different unit (>100x
+# off actual) → SKIP with a reason code. NEVER fabricates.
+#
+# Strict no-lookahead: uses nearest_value(sorted_ms, values, ts_ms) —
+# same lookup as the other scorers — which returns None if ts_ms is
+# past sorted_ms[-1]. A thesis stamped after the last observation
+# cannot be scored on reporting accuracy without extrapolation.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Relative tolerance for a HIT — a stated F&G "63" vs actual 65 is 3.2 %
+# off → HIT. Stated 63 vs actual 30 is 110 % off → MISS. Chosen to be
+# generous enough for rounding + sampling jitter, tight enough to catch
+# fabrication.
+_VALUE_TOLERANCE = 0.10
+
+# Skip-reason vocabulary — the CLI histograms these so the operator
+# sees WHY the value track skipped (unparseable vs stale-series vs
+# unit-mismatch is very different diagnostic information).
+VALUE_SKIP_REASONS = (
+    "no_evidence", "no_number_in_detail", "no_series",
+    "ts_out_of_series_range", "unit_mismatch",
+)
+
+
+def extract_reported_value(evidence: list) -> float | None:
+    """Pull the first plausibly-numeric value out of evidence[].detail.
+
+    Regex greedily catches a signed decimal, optionally with a trailing
+    percent — the grounding prompt drives generation toward stating a
+    single canonical number per evidence entry ("Index value 63", "-2.01%",
+    "0.00010000"). We take the first number encountered because the
+    prompt puts the datum FIRST in the detail phrasing.
+    """
+    import re
+    if not evidence:
+        return None
+    # Word-boundary guards on both sides — the match must be surrounded
+    # by non-word chars. This skips numbers embedded in unit-prefixed
+    # tokens ("24h", "5m", "3d") and identifiers ("v2ex") so "24h change
+    # of -2.01%" resolves to -2.01, not 24 or 2 (greedy backtrack would
+    # otherwise land on the shortest legal digit sequence).
+    pattern = re.compile(r"(?<!\w)-?\d+(?:\.\d+)?(?!\w)")
+    for e in evidence:
+        if not isinstance(e, dict):
+            continue
+        detail = str(e.get("detail", "")).replace(",", "")
+        m = pattern.search(detail)
+        if m:
+            try:
+                return float(m.group(0))
+            except ValueError:
+                continue
+    return None
+
+
+def score_value(
+    row: dict,
+    series: tuple[list[int], list[float]] | None,
+    metric: MetricKind,
+    now: datetime,
+) -> tuple[DescScoredThesis | None, str | None]:
+    """Value-based scorer. Returns (record_or_None, skip_reason_or_None).
+
+    On HIT/MISS: record populated, skip_reason=None. On SKIP: record=None,
+    skip_reason ∈ VALUE_SKIP_REASONS.
+    """
+    ev = row.get("evidence") or []
+    if not ev:
+        return None, "no_evidence"
+    reported = extract_reported_value(ev)
+    if reported is None:
+        return None, "no_number_in_detail"
+    if not series:
+        return None, "no_series"
+    created_at = row["created_at"]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if created_at > now:
+        return None, "ts_out_of_series_range"
+    ts_ms = int(created_at.timestamp() * 1000)
+    sorted_ms, values = series
+    actual = nearest_value(sorted_ms, values, ts_ms)
+    if actual is None:
+        return None, "ts_out_of_series_range"
+    # Unit-mismatch guard — a reported value that is >100x off the
+    # ground-truth almost certainly means a different unit (wei vs gwei,
+    # or a % change vs an absolute level). Refusing to score is correct;
+    # forcing a MISS would poison the reporting-accuracy signal.
+    if actual == 0.0:
+        # Can't compute relative; require exact-zero match on the report.
+        outcome: Outcome = "hit" if abs(reported) < 1e-9 else "miss"
+    else:
+        ratio = abs(reported) / abs(actual)
+        if ratio > 100.0 or (ratio < 0.01 and reported != 0.0):
+            return None, "unit_mismatch"
+        rel_err = abs(reported - actual) / abs(actual)
+        outcome = "hit" if rel_err <= _VALUE_TOLERANCE else "miss"
+    return DescScoredThesis(
+        thesis_id=str(row.get("thesis_id", "")),
+        subject=str(row.get("subject", "")),
+        claim=str(row.get("claim", "")),
+        confidence=str(row.get("confidence", "")),
+        metric=metric,
+        predicted=f"reported={reported:g}",
+        observed=f"actual={actual:g}",
+        outcome=outcome,
+    ), None
 
 
 def aggregate(records: list[DescScoredThesis]) -> dict[str, list[tuple]]:

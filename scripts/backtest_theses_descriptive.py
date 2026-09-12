@@ -61,6 +61,7 @@ from analysis.thesis_backtest_descriptive import (  # noqa: E402
     score_macro,
     score_market_cap,
     score_sentiment,
+    score_value,
     score_volume,
     triage,
 )
@@ -340,6 +341,8 @@ async def main() -> int:
     FUNDING_BAND = 0.0005  # 5 bp change over 8h is meaningful
 
     records = []
+    value_records = []
+    value_skip_reasons: dict[str, int] = {}
     metric_row_map = {(subj, claim): metric for subj, claim, metric in metric_rows}
     # Series lookup for level scoring — needs to know which series maps
     # to which metric so the level scorer can compute percentile over
@@ -361,9 +364,18 @@ async def main() -> int:
         metric = metric_row_map.get((str(row.get("subject", "")), str(row.get("claim", ""))))
         if metric is None:
             continue
+        # VALUE track — reporting-accuracy check, independent of the
+        # level/directional tracks. Runs on every mapped row regardless
+        # of what level/directional does; skip reasons are histogrammed.
+        vseries = _series_for_level(metric)
+        v_r, v_skip = score_value(row, vseries, metric, now)
+        if v_r is not None:
+            value_records.append(v_r)
+        elif v_skip is not None:
+            value_skip_reasons[v_skip] = value_skip_reasons.get(v_skip, 0) + 1
         # LEVEL claim ('high'/'low')? Try the level scorer first — a
         # directional scorer would None it out anyway.
-        lvl_series = _series_for_level(metric)
+        lvl_series = vseries
         lvl_r = score_level(row, lvl_series, metric, now) if lvl_series else None
         if lvl_r is not None:
             records.append(lvl_r)
@@ -406,15 +418,27 @@ async def main() -> int:
         if r is not None:
             records.append(r)
 
-    print(f"\n=== PHASE C · SCORING ({len(records)} scored of {counts['metric']} VERIFIABLE-METRIC candidates) ===")
-    if not records:
-        print("  (no records scored — parser skipped all)")
-        return 0
-    agg = aggregate(records)
-    print(_render_table("=== DESCRIPTIVE · OVERALL ===", agg["overall"], min_n_note=1))
-    print(_render_table("=== DESCRIPTIVE · BY METRIC ===", agg["by_metric"]))
-    print(_render_table("=== DESCRIPTIVE · BY CONFIDENCE ===", agg["by_confidence"]))
-    print(_render_table("=== DESCRIPTIVE · BY PREDICTED CLASS ===", agg["by_predicted"]))
+    print(f"\n=== PHASE C · SCORING ({len(records)} descriptive scored of {counts['metric']} VERIFIABLE-METRIC candidates) ===")
+    if records:
+        agg = aggregate(records)
+        print(_render_table("=== DESCRIPTIVE · OVERALL ===", agg["overall"], min_n_note=1))
+        print(_render_table("=== DESCRIPTIVE · BY METRIC ===", agg["by_metric"]))
+        print(_render_table("=== DESCRIPTIVE · BY CONFIDENCE ===", agg["by_confidence"]))
+        print(_render_table("=== DESCRIPTIVE · BY PREDICTED CLASS ===", agg["by_predicted"]))
+    else:
+        print("  (no descriptive records scored)")
+    # Value track — reporting-accuracy. Reported alongside, not merged.
+    print(f"\n=== PHASE C · VALUE-BASED (reporting-accuracy) — {len(value_records)} scored ===")
+    if value_records:
+        vagg = aggregate(value_records)
+        print(_render_table("=== VALUE · OVERALL ===", vagg["overall"], min_n_note=1))
+        print(_render_table("=== VALUE · BY METRIC ===", vagg["by_metric"]))
+    else:
+        print("  (no value records scored)")
+    if value_skip_reasons:
+        print("  VALUE skip reasons:")
+        for reason, n in sorted(value_skip_reasons.items(), key=lambda kv: -kv[1]):
+            print(f"    {n:>3}  {reason}")
     return 0
 
 

@@ -21,6 +21,7 @@ from analysis.thesis_backtest_descriptive import (
     bucket_change,
     bucket_sentiment_value,
     classify_subject,
+    extract_reported_value,
     most_recent_before,
     parse_level,
     parse_sentiment,
@@ -34,8 +35,10 @@ from analysis.thesis_backtest_descriptive import (
     score_macro,
     score_market_cap,
     score_sentiment,
+    score_value,
     score_volume,
     triage,
+    VALUE_SKIP_REASONS,
 )
 
 
@@ -657,3 +660,150 @@ class TestAggregate:
         assert by_conf["high"] == (2, 1)
         assert by_conf["medium"] == (1, 1)
         assert by_conf["low"] == (1, 1)
+
+
+class TestGroundingEraSubjectMarkers:
+    """The claude-cli grounding-era corpus uses phrasings the pre-existing
+    marker vocabulary did not catch. Regression fence — the traced F&G
+    thesis MUST classify as metric/market_sentiment, and the BTCUSDT
+    futures funding phrasing MUST route to btc_funding."""
+
+    def test_fear_and_greed_subject_classifies_as_market_sentiment(self):
+        for s in ("Fear & Greed Index", "Crypto Fear & Greed Index",
+                   "fear and greed index", "FNG"):
+            v, m, _ = classify_subject(s)
+            assert (v, m) == ("metric", "market_sentiment"), s
+
+    def test_btcusdt_futures_funding_classifies_as_btc_funding(self):
+        for s in ("BTCUSDT futures funding interest rate",
+                   "BTCUSDT futures funding rate"):
+            v, m, _ = classify_subject(s)
+            assert (v, m) == ("metric", "btc_funding"), s
+
+    def test_bare_market_sentiment_still_maps(self):
+        # Regression: the added F&G markers must not break the existing
+        # 'market sentiment' mapping (single-marker path prior to the fix).
+        v, m, _ = classify_subject("Market sentiment")
+        assert (v, m) == ("metric", "market_sentiment")
+
+
+class TestExtractReportedValue:
+    def test_bare_integer_extracted(self):
+        assert extract_reported_value([{"detail": "Index value 63 classified as Greed"}]) == 63.0
+
+    def test_percentage_extracted_without_the_percent_sign(self):
+        # The regex captures the number itself; downstream comparison
+        # against the series decides unit semantics.
+        assert extract_reported_value([{"detail": "24h change of -2.01%"}]) == -2.01
+
+    def test_small_float_extracted(self):
+        assert extract_reported_value([{"detail": "interestRate: 0.00010000"}]) == 0.0001
+
+    def test_first_number_wins(self):
+        # Detail contains two numbers — we take the first because the
+        # grounding prompt puts the datum first.
+        assert extract_reported_value([{"detail": "value 63 (previously 45)"}]) == 63.0
+
+    def test_no_number_returns_none(self):
+        assert extract_reported_value([{"detail": "no digits present"}]) is None
+
+    def test_no_evidence_returns_none(self):
+        assert extract_reported_value([]) is None
+        assert extract_reported_value(None) is None
+
+    def test_comma_thousands_stripped_before_parse(self):
+        # "63,120" → 63120 not 63.
+        assert extract_reported_value([{"detail": "market cap 63,120"}]) == 63120.0
+
+
+class TestScoreValue:
+    """Reporting-accuracy scorer: value in evidence vs series at ts."""
+
+    _NOW = datetime(2026, 9, 12, 23, 0, tzinfo=timezone.utc)
+
+    def _series(self, points):
+        sorted_ms = [int(p[0].timestamp() * 1000) for p in points]
+        values = [p[1] for p in points]
+        return (sorted_ms, values)
+
+    def _row(self, subject, claim, detail, created_at):
+        return {
+            "thesis_id": "t1", "subject": subject, "claim": claim,
+            "confidence": "medium", "created_at": created_at,
+            "evidence": [{"source": "s", "detail": detail}],
+        }
+
+    def test_hit_when_reported_matches_actual_within_tolerance(self):
+        series = self._series([
+            (datetime(2026, 9, 10, tzinfo=timezone.utc), 65.0),
+            (datetime(2026, 9, 11, tzinfo=timezone.utc), 64.0),
+            (datetime(2026, 9, 12, 12, tzinfo=timezone.utc), 63.5),
+        ])
+        row = self._row("Fear & Greed Index", "high", "Index value 63",
+                         datetime(2026, 9, 12, 6, tzinfo=timezone.utc))
+        r, skip = score_value(row, series, "market_sentiment", self._NOW)
+        assert skip is None and r is not None and r.outcome == "hit"
+
+    def test_miss_when_reported_diverges_from_actual(self):
+        series = self._series([
+            (datetime(2026, 9, 11, tzinfo=timezone.utc), 30.0),
+            (datetime(2026, 9, 12, 12, tzinfo=timezone.utc), 32.0),
+        ])
+        row = self._row("Fear & Greed Index", "high", "Index value 63",
+                         datetime(2026, 9, 12, 6, tzinfo=timezone.utc))
+        r, skip = score_value(row, series, "market_sentiment", self._NOW)
+        assert skip is None and r is not None and r.outcome == "miss"
+
+    def test_skip_no_number_in_evidence(self):
+        series = self._series([(datetime(2026, 9, 12, tzinfo=timezone.utc), 63.0)])
+        row = self._row("X", "high", "no digits here",
+                         datetime(2026, 9, 12, 6, tzinfo=timezone.utc))
+        r, skip = score_value(row, series, "market_sentiment", self._NOW)
+        assert r is None and skip == "no_number_in_detail"
+
+    def test_skip_no_series(self):
+        row = self._row("X", "high", "value 63",
+                         datetime(2026, 9, 12, 6, tzinfo=timezone.utc))
+        r, skip = score_value(row, None, "market_sentiment", self._NOW)
+        assert r is None and skip == "no_series"
+
+    def test_skip_ts_past_last_sample(self):
+        # thesis is AFTER the last series observation → no-lookahead
+        # skip (nearest_value returns None).
+        series = self._series([
+            (datetime(2026, 9, 1, tzinfo=timezone.utc), 63.0),
+            (datetime(2026, 9, 5, tzinfo=timezone.utc), 65.0),
+        ])
+        row = self._row("X", "high", "value 63",
+                         datetime(2026, 9, 12, 6, tzinfo=timezone.utc))
+        r, skip = score_value(row, series, "market_sentiment", self._NOW)
+        assert r is None and skip == "ts_out_of_series_range"
+
+    def test_skip_unit_mismatch_orders_of_magnitude_off(self):
+        # Reported 3_118_255_194 (wei-ish) vs actual 30 (gwei) → 100M x off.
+        series = self._series([
+            (datetime(2026, 9, 11, tzinfo=timezone.utc), 30.0),
+            (datetime(2026, 9, 12, 12, tzinfo=timezone.utc), 31.0),
+        ])
+        row = self._row("Ethereum gas price", "high",
+                         "gas price of 3118255194",
+                         datetime(2026, 9, 12, 6, tzinfo=timezone.utc))
+        r, skip = score_value(row, series, "eth_gas", self._NOW)
+        assert r is None and skip == "unit_mismatch"
+
+    def test_skip_reason_vocabulary_is_finite(self):
+        # Grep-lock: the CLI histograms these reasons; a new reason
+        # requires updating both sites, so the constant enumerates them.
+        assert set(VALUE_SKIP_REASONS) == {
+            "no_evidence", "no_number_in_detail", "no_series",
+            "ts_out_of_series_range", "unit_mismatch",
+        }
+
+    def test_no_lookahead_uses_nearest_value_bounded_by_series(self):
+        # Structural: score_value delegates to nearest_value which
+        # short-circuits if ts_ms > sorted_ms[-1]. This is the same
+        # invariant the level scorer relies on — no lookahead possible.
+        import inspect
+        src = inspect.getsource(score_value)
+        assert "nearest_value(" in src
+        assert "if actual is None:" in src
