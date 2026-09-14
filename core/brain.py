@@ -423,6 +423,11 @@ class Brain:
             heartbeat_interval_secs as _hb_interval,
         )
         from analysis.resources import sample_now as _sample_now
+        from core.connectivity import (
+            ConnectivityMonitor as _CM,
+            _probe_interval_secs as _cx_interval,
+            _flag_enabled as _cx_enabled,
+        )
         import time as _time
         provider_state: dict[str, str] = {}
         last_heartbeat_ts: float = 0.0
@@ -430,11 +435,53 @@ class Brain:
         # incident doesn't spam the log.
         last_thrash_warn_ts: float = 0.0
         thrash_warn_min_secs = 15 * 60
+        # Pre-cycle connectivity monitor — one instance per loop. State
+        # rides across ticks; transitions persisted once per flip.
+        _connectivity = _CM()
 
         while True:
             try:
                 logger.info("Autonomous cycle starting")
                 self._feed_append("SYSTEM", "autonomous cycle started")
+
+                # PRE-CYCLE CONNECTIVITY CHECK — BEFORE any objective claim.
+                # If offline, skip the whole cycle: no claim, no tool call,
+                # no cycle_count change. Sleep the CHEAP probe interval
+                # (default 30s) and check again. The outage guard in
+                # core/outage_guard.py remains as the post-cycle safety net
+                # for the interval between the FIRST failed probe and the
+                # first cycle we actually skip.
+                if _cx_enabled():
+                    _cx_trans = await _connectivity.update()
+                    if _cx_trans == "online→offline":
+                        await self._persistent_memory.record_connectivity_transition(
+                            "online→offline",
+                        )
+                        logger.warning(
+                            "CONNECTIVITY offline — pausing cycles (probe every "
+                            "{:.0f}s until online)", _cx_interval(),
+                        )
+                        self._feed_append(
+                            "ERROR",
+                            f"connectivity offline — cycles paused",
+                        )
+                    elif _cx_trans == "offline→online":
+                        _dur = int(_connectivity.offline_duration_secs())
+                        await self._persistent_memory.record_connectivity_transition(
+                            "offline→online", duration_secs=_dur,
+                        )
+                        logger.info(
+                            "CONNECTIVITY online — outage lasted {}s; resuming cycles",
+                            _dur,
+                        )
+                        self._feed_append(
+                            "OK",
+                            f"connectivity restored after {_dur}s outage",
+                        )
+                    if not _connectivity.is_online:
+                        # Offline: skip cycle entirely. Cheap poll cadence.
+                        await asyncio.sleep(_cx_interval())
+                        continue
 
                 # Resource sample — cheap, in-process, at cycle boundary.
                 # Failure never propagates; a bad /proc read just yields

@@ -50,6 +50,9 @@ class SessionReport:
     rate_limit_warnings: list[tuple[str, int]] = field(default_factory=list)
     network_outages: int = 0
     network_outages_cycles_saved: int = 0
+    connectivity_state: str = "online"
+    connectivity_outages: int = 0
+    connectivity_offline_seconds: int = 0
     llm_by_task_provider: list[dict[str, Any]] = field(default_factory=list)
     pending_measurements: dict[str, Any] = field(default_factory=dict)
     proposals_pending: int = 0
@@ -94,6 +97,13 @@ class SessionReport:
             )
         else:
             lines.append("NETWORK OUTAGES          : none")
+        # CONNECTIVITY: pre-cycle probe state — online|offline, outage count,
+        # total offline seconds in the window (rounded to minutes for display).
+        _off_min = self.connectivity_offline_seconds // 60
+        lines.append(
+            f"CONNECTIVITY             : {self.connectivity_state} | "
+            f"{self.connectivity_outages} outages, total {_off_min}m offline"
+        )
         if self.rail_summary:
             lines.append(self.rail_summary)
         if self.fallback_events:
@@ -202,6 +212,30 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
         except Exception:
             r.network_outages = 0
             r.network_outages_cycles_saved = 0
+        # Connectivity transitions — count offline→online pairs (an outage
+        # event) and sum duration_secs (total offline wall clock).
+        try:
+            cx_row = await conn.fetchrow(
+                "SELECT COUNT(*) FILTER (WHERE direction = 'offline→online') AS n, "
+                "coalesce(SUM(duration_secs), 0) AS secs "
+                "FROM connectivity_transitions WHERE occurred_at >= $1",
+                since,
+            )
+            r.connectivity_outages = int(cx_row["n"]) if cx_row else 0
+            r.connectivity_offline_seconds = int(cx_row["secs"]) if cx_row else 0
+            # Current state = direction of most-recent transition (default online).
+            last = await conn.fetchrow(
+                "SELECT direction FROM connectivity_transitions "
+                "ORDER BY occurred_at DESC LIMIT 1"
+            )
+            if last and last["direction"] == "online→offline":
+                r.connectivity_state = "offline"
+            else:
+                r.connectivity_state = "online"
+        except Exception:
+            r.connectivity_outages = 0
+            r.connectivity_offline_seconds = 0
+            r.connectivity_state = "online"
         # LLM calls
         try:
             llm_rows = await conn.fetch(

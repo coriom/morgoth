@@ -159,6 +159,27 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create network_outage_events table (non-fatal): {}", exc)
             try:
+                # Connectivity transitions — one row per online↔offline flip.
+                # NEVER one row per probe (a 30s poll all night is noise);
+                # only the transition matters. duration_secs is filled when
+                # we go back to online, describing the outage window length.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS connectivity_transitions (
+                        transition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        occurred_at TIMESTAMPTZ DEFAULT NOW(),
+                        direction TEXT NOT NULL,
+                        duration_secs INTEGER
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS connectivity_transitions_ts_idx "
+                    "ON connectivity_transitions (occurred_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create connectivity_transitions table (non-fatal): {}", exc)
+            try:
                 await connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS theses (
@@ -789,6 +810,24 @@ class PersistentMemory:
         if row is None:
             raise ValueError(f"Objective {objective_id} not found")
         return dict(row)
+
+    async def record_connectivity_transition(
+        self, direction: str, duration_secs: int | None = None,
+    ) -> None:
+        """Persist an online↔offline flip. Direction is either
+        'online→offline' or 'offline→online'; duration_secs is filled
+        only on the recovery row (offline window length)."""
+        pool = self._require_pool()
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO connectivity_transitions "
+                    "(direction, duration_secs) VALUES ($1, $2)",
+                    str(direction)[:32],
+                    int(duration_secs) if duration_secs is not None else None,
+                )
+        except Exception as exc:
+            logger.warning("connectivity_transitions insert failed (non-fatal): {}", exc)
 
     async def increment_outage_streak(self, objective_id: str) -> int:
         """Bump consecutive_network_outage_cycles by 1; return new value."""
