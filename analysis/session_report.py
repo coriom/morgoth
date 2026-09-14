@@ -48,6 +48,8 @@ class SessionReport:
     contradictions_new: int = 0
     tool_calls: dict[str, int] = field(default_factory=dict)
     rate_limit_warnings: list[tuple[str, int]] = field(default_factory=list)
+    network_outages: int = 0
+    network_outages_cycles_saved: int = 0
     llm_by_task_provider: list[dict[str, Any]] = field(default_factory=list)
     pending_measurements: dict[str, Any] = field(default_factory=dict)
     proposals_pending: int = 0
@@ -85,6 +87,13 @@ class SessionReport:
                 lines.append(f"  · {tool}: {n} hits")
         else:
             lines.append("RATE-LIMIT WARNINGS      : none")
+        if self.network_outages:
+            lines.append(
+                f"NETWORK OUTAGES          : {self.network_outages} events, "
+                f"{self.network_outages_cycles_saved} cycles saved"
+            )
+        else:
+            lines.append("NETWORK OUTAGES          : none")
         if self.rail_summary:
             lines.append(self.rail_summary)
         if self.fallback_events:
@@ -181,6 +190,18 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.rate_limit_warnings = [(row["tool_name"], row["n"]) for row in rl_rows]
         except Exception:
             r.rate_limit_warnings = []
+        # Network-outage events — visibility is the point of the guard.
+        try:
+            out_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n, coalesce(SUM(cycles_lost), 0) AS cyc "
+                "FROM network_outage_events WHERE occurred_at >= $1",
+                since,
+            )
+            r.network_outages = int(out_row["n"]) if out_row else 0
+            r.network_outages_cycles_saved = int(out_row["cyc"]) if out_row else 0
+        except Exception:
+            r.network_outages = 0
+            r.network_outages_cycles_saved = 0
         # LLM calls
         try:
             llm_rows = await conn.fetch(

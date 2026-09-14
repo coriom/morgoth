@@ -135,6 +135,31 @@ class PersistentMemory:
                 logger.warning("Could not add sources_used column (objectives table may not exist yet): {}", exc)
             try:
                 await connection.execute(
+                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS "
+                    "consecutive_network_outage_cycles INTEGER DEFAULT 0;"
+                )
+            except Exception as exc:
+                logger.warning("Could not add outage-streak column (non-fatal): {}", exc)
+            try:
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS network_outage_events (
+                        event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        occurred_at TIMESTAMPTZ DEFAULT NOW(),
+                        objective_id TEXT,
+                        cycles_lost INTEGER DEFAULT 1,
+                        sample_error TEXT
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS network_outage_events_ts_idx "
+                    "ON network_outage_events (occurred_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create network_outage_events table (non-fatal): {}", exc)
+            try:
+                await connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS theses (
                         thesis_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -764,6 +789,77 @@ class PersistentMemory:
         if row is None:
             raise ValueError(f"Objective {objective_id} not found")
         return dict(row)
+
+    async def increment_outage_streak(self, objective_id: str) -> int:
+        """Bump consecutive_network_outage_cycles by 1; return new value."""
+        import uuid as _uuid
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE objectives SET "
+                "consecutive_network_outage_cycles = "
+                "  coalesce(consecutive_network_outage_cycles, 0) + 1 "
+                "WHERE objective_id = $1 "
+                "RETURNING consecutive_network_outage_cycles",
+                _uuid.UUID(str(objective_id)),
+            )
+        return int(row["consecutive_network_outage_cycles"]) if row else 0
+
+    async def reset_outage_streak(self, objective_id: str) -> None:
+        """Zero the outage streak counter — called on any non-outage cycle."""
+        import uuid as _uuid
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE objectives SET "
+                "consecutive_network_outage_cycles = 0 "
+                "WHERE objective_id = $1",
+                _uuid.UUID(str(objective_id)),
+            )
+
+    async def requeue_objective_after_outage(
+        self, objective_id: str, cycles_lost: int
+    ) -> None:
+        """Revert an objective to pending after a persistent outage.
+
+        Sets status='pending', cycle_count=0, outage-streak=0 so the
+        objective re-enters the queue for a full attempt once the
+        network recovers. Appends an evidence marker so the operator
+        can see WHY the objective was requeued.
+        """
+        import uuid as _uuid
+        import json as _json
+        marker = {
+            "type": "network_outage_requeue",
+            "cycles_lost": int(cycles_lost),
+            "note": "objective was requeued because every cycle failed with "
+                    "network errors — it was never investigated",
+        }
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE objectives SET status = 'pending', cycle_count = 0, "
+                "consecutive_network_outage_cycles = 0, updated_at = NOW(), "
+                "evidence = coalesce(evidence, '[]'::jsonb) || $2::jsonb "
+                "WHERE objective_id = $1",
+                _uuid.UUID(str(objective_id)),
+                _json.dumps([marker]),
+            )
+
+    async def record_outage_event(
+        self, objective_id: str | None, cycles_lost: int, sample_error: str
+    ) -> None:
+        """Persist a NETWORK OUTAGE event so session-report can surface it."""
+        pool = self._require_pool()
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO network_outage_events "
+                    "(objective_id, cycles_lost, sample_error) VALUES ($1, $2, $3)",
+                    objective_id, int(cycles_lost), str(sample_error)[:500],
+                )
+        except Exception as exc:
+            logger.warning("network_outage_events insert failed (non-fatal): {}", exc)
 
     async def increment_cycle_count(self, objective_id: str) -> int:
         """Atomically increment cycle_count for an objective and return the new value.

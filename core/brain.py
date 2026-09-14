@@ -761,6 +761,49 @@ class Brain:
                 finally:
                     self._current_objective_id = None
 
+                # OUTAGE GUARD — inspect this cycle's tool_results and,
+                # for an autonomous cycle bound to an objective, either
+                # bump the streak (all-network failure), reset it (any
+                # success or non-network failure), or requeue the
+                # objective when the streak crosses the threshold. Never
+                # touches gates/apply/thesis-flow — only the cycle-slot
+                # accounting for a network-dead cycle.
+                if objectives:
+                    from core.outage_guard import (
+                        cycle_is_all_network_outage as _is_outage,
+                        outage_abort_cycles as _abort_at,
+                    )
+                    obj_for_guard = objectives[0]
+                    obj_id_for_guard = str(obj_for_guard["objective_id"])
+                    is_outage, sample_errs = _is_outage(result.tool_results or [])
+                    if is_outage:
+                        streak = await self._persistent_memory.increment_outage_streak(
+                            obj_id_for_guard,
+                        )
+                        await self._persistent_memory.record_outage_event(
+                            obj_id_for_guard, 1, sample_errs[0] if sample_errs else "",
+                        )
+                        self._feed_append(
+                            "ERROR",
+                            f"network outage cycle {streak}/{_abort_at()} "
+                            f"(objective_id={obj_id_for_guard[:8]}) — "
+                            f"all tool calls failed with network errors",
+                        )
+                        if streak >= _abort_at():
+                            await self._persistent_memory.requeue_objective_after_outage(
+                                obj_id_for_guard, streak,
+                            )
+                            self._feed_append(
+                                "INFO",
+                                f"requeued objective {obj_id_for_guard[:8]} to "
+                                f"pending after {streak} consecutive network-outage "
+                                f"cycles (cycle_count reset to 0)",
+                            )
+                    else:
+                        await self._persistent_memory.reset_outage_streak(
+                            obj_id_for_guard,
+                        )
+
                 if objectives:
                     obj = objectives[0]
                     obj_id = str(obj["objective_id"])
