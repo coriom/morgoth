@@ -600,6 +600,50 @@ class Brain:
                                 theses = await self._extract_theses(
                                     obj, synthesis_text, sources_used_done
                                 )
+                                # NUMERIC-FIDELITY GATE — deterministic check
+                                # that every cited number in evidence[].detail
+                                # matches a value in that tool's raw output.
+                                # `findings` (populated at auto-complete) IS
+                                # the tool_results digest across cycles; we
+                                # thread it in without pipeline restructuring.
+                                from core.numeric_fidelity import (
+                                    check_thesis as _fidelity_check,
+                                    _flag_enabled as _fg_enabled,
+                                )
+                                gated: list[dict[str, Any]] = []
+                                if _fg_enabled():
+                                    for t in theses:
+                                        act = _fidelity_check(t, findings)
+                                        try:
+                                            await self._persistent_memory.record_numeric_fidelity_event(
+                                                obj_id, act.subject, act.tool, act.action,
+                                                act.reason, act.cited_value, act.true_value,
+                                            )
+                                        except Exception:
+                                            pass
+                                        if act.action == "drop":
+                                            self._feed_append(
+                                                "INFO",
+                                                f"numeric-gate DROP {act.subject!r} "
+                                                f"tool={act.tool} cited={act.cited_value}",
+                                            )
+                                            continue
+                                        if act.action == "rewrite" and act.corrected_detail:
+                                            # Replace the first evidence entry's
+                                            # detail with the corrected string.
+                                            new_ev = list(t.get("evidence") or [])
+                                            for i, e in enumerate(new_ev):
+                                                if isinstance(e, dict) and e.get("source") == act.tool:
+                                                    new_ev[i] = {**e, "detail": act.corrected_detail}
+                                                    break
+                                            t = {**t, "evidence": new_ev}
+                                            self._feed_append(
+                                                "OK",
+                                                f"numeric-gate REWRITE {act.subject!r} "
+                                                f"cited={act.cited_value} → true={act.true_value}",
+                                            )
+                                        gated.append(t)
+                                    theses = gated
                                 from core.version import get_code_version as _gcv
                                 _cv = _gcv()
                                 for t in theses:

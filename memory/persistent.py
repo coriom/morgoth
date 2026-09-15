@@ -159,6 +159,30 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create network_outage_events table (non-fatal): {}", exc)
             try:
+                # Numeric-fidelity gate: one row per gate action taken at
+                # extraction time. Surfaced in `morgoth session-report`.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS numeric_fidelity_events (
+                        event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        occurred_at TIMESTAMPTZ DEFAULT NOW(),
+                        objective_id TEXT,
+                        subject TEXT,
+                        tool TEXT,
+                        action TEXT NOT NULL,
+                        reason TEXT,
+                        cited_value DOUBLE PRECISION,
+                        true_value DOUBLE PRECISION
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS numeric_fidelity_events_ts_idx "
+                    "ON numeric_fidelity_events (occurred_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create numeric_fidelity_events table (non-fatal): {}", exc)
+            try:
                 # Connectivity transitions — one row per online↔offline flip.
                 # NEVER one row per probe (a 30s poll all night is noise);
                 # only the transition matters. duration_secs is filled when
@@ -810,6 +834,35 @@ class PersistentMemory:
         if row is None:
             raise ValueError(f"Objective {objective_id} not found")
         return dict(row)
+
+    async def record_numeric_fidelity_event(
+        self,
+        objective_id: str | None,
+        subject: str,
+        tool: str | None,
+        action: str,
+        reason: str,
+        cited_value: float | None,
+        true_value: float | None,
+    ) -> None:
+        """Persist one gate action so session-report can histogram."""
+        pool = self._require_pool()
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO numeric_fidelity_events "
+                    "(objective_id, subject, tool, action, reason, cited_value, true_value) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    objective_id,
+                    str(subject)[:200],
+                    (str(tool)[:64] if tool else None),
+                    str(action)[:32],
+                    str(reason)[:64],
+                    float(cited_value) if cited_value is not None else None,
+                    float(true_value) if true_value is not None else None,
+                )
+        except Exception as exc:
+            logger.warning("numeric_fidelity_events insert failed (non-fatal): {}", exc)
 
     async def record_connectivity_transition(
         self, direction: str, duration_secs: int | None = None,

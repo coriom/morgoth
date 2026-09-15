@@ -53,6 +53,9 @@ class SessionReport:
     connectivity_state: str = "online"
     connectivity_outages: int = 0
     connectivity_offline_seconds: int = 0
+    fidelity_checked: int = 0
+    fidelity_rewritten: int = 0
+    fidelity_dropped: int = 0
     llm_by_task_provider: list[dict[str, Any]] = field(default_factory=list)
     pending_measurements: dict[str, Any] = field(default_factory=dict)
     proposals_pending: int = 0
@@ -103,6 +106,10 @@ class SessionReport:
         lines.append(
             f"CONNECTIVITY             : {self.connectivity_state} | "
             f"{self.connectivity_outages} outages, total {_off_min}m offline"
+        )
+        lines.append(
+            f"NUMERIC FIDELITY         : {self.fidelity_checked} checked, "
+            f"{self.fidelity_rewritten} corrected, {self.fidelity_dropped} dropped"
         )
         if self.rail_summary:
             lines.append(self.rail_summary)
@@ -236,6 +243,22 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.connectivity_outages = 0
             r.connectivity_offline_seconds = 0
             r.connectivity_state = "online"
+        # Numeric-fidelity gate — count actions in the window.
+        try:
+            fid_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n, "
+                "COUNT(*) FILTER (WHERE action = 'rewrite') AS rw, "
+                "COUNT(*) FILTER (WHERE action = 'drop')    AS dr "
+                "FROM numeric_fidelity_events WHERE occurred_at >= $1",
+                since,
+            )
+            r.fidelity_checked = int(fid_row["n"]) if fid_row else 0
+            r.fidelity_rewritten = int(fid_row["rw"]) if fid_row else 0
+            r.fidelity_dropped = int(fid_row["dr"]) if fid_row else 0
+        except Exception:
+            r.fidelity_checked = 0
+            r.fidelity_rewritten = 0
+            r.fidelity_dropped = 0
         # LLM calls
         try:
             llm_rows = await conn.fetch(
