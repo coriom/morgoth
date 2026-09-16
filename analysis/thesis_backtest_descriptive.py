@@ -740,7 +740,19 @@ def extract_reported_value(evidence: list) -> float | None:
     # tokens ("24h", "5m", "3d") and identifiers ("v2ex") so "24h change
     # of -2.01%" resolves to -2.01, not 24 or 2 (greedy backtrack would
     # otherwise land on the shortest legal digit sequence).
-    pattern = re.compile(r"(?<!\w)-?\d+(?:\.\d+)?(?!\w)")
+    # Number is followed by ANY of: end-of-string, a non-letter, or one of
+    # the magnitude suffix letters T/B/M/K (single letter, kept OUT of the
+    # match so _explicit_scale can read it separately). Excludes trailing
+    # 'h'/'d'/'m' (as in "24h", "5d") so unit-prefixed tokens still don't
+    # contribute a number.
+    # Number must be followed by either a non-word char (space, %, punct,
+    # EOF) OR a magnitude suffix letter T/B/M/K itself followed by a non-
+    # letter. This lets "2.77T" and "$2.77T " match while blocking "24h"
+    # ("h" is not TBMK) and "24hours" (same). Suffix is kept OUT of the
+    # match; _explicit_scale reads it separately.
+    pattern = re.compile(
+        r"(?<!\w)-?\d+(?:\.\d+)?(?=[TBMKtbmk](?![a-zA-Z])|(?!\w))"
+    )
     for e in evidence:
         if not isinstance(e, dict):
             continue

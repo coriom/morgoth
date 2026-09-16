@@ -55,7 +55,24 @@ _REWRITE_LOW = 0.5
 _REWRITE_HIGH = 2.0
 
 
-_NUMBER_REGEX = re.compile(r"(?<!\w)-?\d+(?:\.\d+)?(?![a-zA-Z])")
+_NUMBER_REGEX = re.compile(
+    r"(?<!\w)-?\d+(?:\.\d+)?(?=[TBMKtbmk](?![a-zA-Z])|(?!\w))"
+)
+
+# Magnitude vocabulary — for scale normalisation. Words apply anywhere
+# in the detail (the model doesn't usually chain multiple scales in one
+# thesis). Single-letter suffixes count only when directly attached to
+# the number ("$2.77T"), never as a bare word — otherwise a subject like
+# "M2 money supply" would mis-scale.
+_MAG_WORDS: tuple[tuple[str, float], ...] = (
+    ("trillion", 1e12), ("billion", 1e9), ("million", 1e6), ("thousand", 1e3),
+)
+_MAG_SUFFIX: dict[str, float] = {"T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3}
+# Implicit-scale ladder — tried only when NO explicit word/suffix is
+# present AND the resulting comparison lands within PASS tolerance.
+# Cap: implicit scaling never justifies REWRITE (prevents widening the
+# fabrication drop band).
+_IMPLICIT_SCALES: tuple[float, ...] = (1e3, 1e6, 1e9, 1e12)
 
 
 def _flag_enabled() -> bool:
@@ -94,6 +111,40 @@ def _closest(candidates: list[float], target: float) -> float | None:
     if not candidates:
         return None
     return min(candidates, key=lambda v: abs(v - target))
+
+
+def _looks_like_percentage(detail: str, number_str: str) -> bool:
+    """A number is a percentage if a % sign appears within a few chars
+    AFTER the numeric token. "change of -2.01%" → percent; "-2.01" in a
+    market-cap thesis without % → not percent. Also treats a "%" anywhere
+    in the detail as percentage-context; percentages must NEVER be scaled
+    ("2.01%" is not 2.01e12)."""
+    if "%" not in detail:
+        return False
+    # A % anywhere in the detail is enough — percentage-shaped theses
+    # never legitimately mix with magnitude words in our corpus.
+    return True
+
+
+def _explicit_scale(detail: str, number_str: str) -> float:
+    """Return the multiplier implied by a magnitude word or a single-
+    letter suffix directly attached to `number_str`. 1.0 when none.
+    Percentage-shaped details always return 1.0 (short-circuit)."""
+    if _looks_like_percentage(detail, number_str):
+        return 1.0
+    lowered = detail.lower()
+    for word, mult in _MAG_WORDS:
+        if word in lowered:
+            return mult
+    # Suffix letter directly after the number (no space): "$2.77T".
+    idx = detail.find(number_str)
+    if idx >= 0:
+        j = idx + len(number_str)
+        if j < len(detail):
+            ch = detail[j]
+            if ch in _MAG_SUFFIX:
+                return _MAG_SUFFIX[ch]
+    return 1.0
 
 
 def _tool_digest_for(source: str, findings: list[str]) -> str:
@@ -160,27 +211,59 @@ def check_thesis(
         if not candidates:
             # Only FAILED lines — no numeric candidate to match against.
             return FidelityAction("pass", "no_candidates", subj, tool, cited, None, None)
-        closest = _closest(candidates, cited)
+        # Grab the ORIGINAL number-string as it appears in the detail —
+        # needed by _explicit_scale to test the suffix-letter case.
+        m = _NUMBER_REGEX.search(detail.replace(",", ""))
+        number_str = m.group(0) if m else str(cited)
+        # 1) Bare-value comparison first.
+        bare = cited
+        closest = _closest(candidates, bare)
         if closest is None:
             return FidelityAction("pass", "no_candidates", subj, tool, cited, None, None)
-        # Exact-ish match — transcription is faithful.
-        if closest == 0:
-            if abs(cited) < 1e-9:
-                return FidelityAction("pass", "exact", subj, tool, cited, closest, None)
-        else:
-            rel = abs(cited - closest) / abs(closest)
-            if rel <= _MATCH_TOLERANCE:
-                return FidelityAction("pass", "exact", subj, tool, cited, closest, None)
-            ratio = abs(cited) / abs(closest) if closest else float("inf")
-            if _REWRITE_LOW <= ratio <= _REWRITE_HIGH:
-                # Same-order-of-magnitude drift → rewrite the detail
-                # with the true value. Use repr-style formatting to
-                # keep small numbers readable.
-                new_detail = _substitute_number(detail, cited, closest)
+        def _rel(a, b):
+            return (abs(a - b) / abs(b)) if b else (0.0 if abs(a) < 1e-9 else float("inf"))
+        rel = _rel(bare, closest)
+        if rel <= _MATCH_TOLERANCE:
+            return FidelityAction("pass", "exact", subj, tool, cited, closest, None)
+        # 2) Explicit scale (word or suffix) — re-run the comparison at
+        #    the scaled magnitude. If it now matches, PASS with a distinct
+        #    reason so scale_normalised events are countable separately.
+        mult = _explicit_scale(detail, number_str)
+        if mult != 1.0:
+            scaled = cited * mult
+            closest2 = _closest(candidates, scaled) or closest
+            rel2 = _rel(scaled, closest2)
+            if rel2 <= _MATCH_TOLERANCE:
                 return FidelityAction(
-                    "rewrite", "transcription_drift", subj, tool, cited,
-                    closest, new_detail,
+                    "pass", "scale_normalised", subj, tool, cited, closest2, None,
                 )
+            # In REWRITE band after scaling → rewrite with the true value.
+            ratio2 = abs(scaled) / abs(closest2) if closest2 else float("inf")
+            if _REWRITE_LOW <= ratio2 <= _REWRITE_HIGH:
+                new_detail = _substitute_number(detail, cited, closest2)
+                return FidelityAction(
+                    "rewrite", "transcription_drift_scaled", subj, tool, cited,
+                    closest2, new_detail,
+                )
+        # 3) Implicit scale — try 1e3/1e6/1e9/1e12; ONLY accept as PASS.
+        #    Never used to justify REWRITE (would widen the fabrication
+        #    band). Percentages short-circuit — they must never be scaled.
+        if mult == 1.0 and not _looks_like_percentage(detail, number_str):
+            for imp in _IMPLICIT_SCALES:
+                scaled = cited * imp
+                c = _closest(candidates, scaled) or closest
+                if _rel(scaled, c) <= _MATCH_TOLERANCE:
+                    return FidelityAction(
+                        "pass", "scale_normalised_implicit", subj, tool, cited, c, None,
+                    )
+        # 4) Fall back to the bare-value REWRITE band (unchanged path).
+        ratio = abs(cited) / abs(closest) if closest else float("inf")
+        if _REWRITE_LOW <= ratio <= _REWRITE_HIGH:
+            new_detail = _substitute_number(detail, cited, closest)
+            return FidelityAction(
+                "rewrite", "transcription_drift", subj, tool, cited,
+                closest, new_detail,
+            )
         # No cited number matched → look at other evidence entries too;
         # if none of them match either, DROP after the loop.
     # If we reach here, we had ≥1 cited number and no evidence entry

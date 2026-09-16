@@ -208,6 +208,114 @@ class TestSubstituteNumber:
         assert "[corrected: true value" in out
 
 
+class TestScaleNormalisation:
+    """Real cases from bb2aad7 drops that the operator flagged as
+    scale-mismatch rescues, not fabrication."""
+
+    def test_2_77_trillion_matches_2_694880e12(self):
+        # The flagship case: "2.77 trillion" cited against a tool that
+        # returned 2694880000000. Must PASS via scale_normalised (the
+        # tool value is within tolerance of 2.77e12).
+        payload = ('{"market_cap_usd": 2694880000000, "volume_24h_usd": 1.6e11, '
+                    '"bitcoin_dominance_percentage": 56.32}')
+        act = check_thesis(
+            _thesis("Global crypto mkt cap", "high", "get_crypto_global_market",
+                     "market cap of $2.77 trillion"),
+            _findings("get_crypto_global_market", payload),
+        )
+        # 2.77e12 vs 2.6949e12 → 2.79 % off, outside 1 % PASS tolerance
+        # but comfortably inside REWRITE band after scaling.
+        assert act.action == "rewrite"
+        assert act.reason == "transcription_drift_scaled"
+        assert abs(act.true_value - 2.694880e12) < 1e6
+
+    def test_2_694_trillion_matches_exactly_via_scale(self):
+        # Same payload, tighter reported value → PASS exact via scale.
+        payload = '{"market_cap_usd": 2694880000000}'
+        act = check_thesis(
+            _thesis("X", "high", "get_crypto_global_market",
+                     "market cap $2.694 trillion"),
+            _findings("get_crypto_global_market", payload),
+        )
+        assert act.action == "pass"
+        assert act.reason == "scale_normalised"
+
+    def test_140_billion_matches_1_67e11_within_rewrite(self):
+        # 140 * 1e9 = 1.4e11 vs actual 1.67111e11 → 16 % off → REWRITE.
+        payload = '{"volume_24h_usd": 167111000000}'
+        act = check_thesis(
+            _thesis("Global 24h volume", "high", "get_crypto_global_market",
+                     "$140 billion in 24-hour trading volume"),
+            _findings("get_crypto_global_market", payload),
+        )
+        assert act.action == "rewrite"
+        assert act.reason == "transcription_drift_scaled"
+
+    def test_suffix_letter_T_directly_after_number(self):
+        payload = '{"market_cap_usd": 2694880000000}'
+        act = check_thesis(
+            _thesis("X", "high", "get_crypto_global_market", "cap: $2.77T"),
+            _findings("get_crypto_global_market", payload),
+        )
+        assert act.action in ("pass", "rewrite")
+        assert "scaled" in act.reason or "scale" in act.reason
+
+    def test_percentage_never_scaled_up(self):
+        # -2.01 % change is NOT $2.01T market cap. The gate must NOT
+        # scale a percentage — locked test.
+        payload = '{"market_cap_change_24h": -2.01, "market_cap_usd": 2.7e12}'
+        act = check_thesis(
+            _thesis("X", "declining", "get_crypto_global_market",
+                     "24h change of -2.01%"),
+            _findings("get_crypto_global_market", payload),
+        )
+        # The bare -2.01 matches the -2.01 in the tool output → PASS exact.
+        assert act.action == "pass"
+        assert act.reason == "exact"
+
+    def test_implicit_scale_accepted_when_lands_on_tolerance(self):
+        # No word, no suffix — but 63000 vs 63,120,000,000 (billion)
+        # matches at 1e6 scale within 1 %. Implicit scaling PASSes.
+        payload = '{"market_cap_usd": 63120000000}'
+        act = check_thesis(
+            _thesis("X", "high", "get_crypto_global_market", "cap 63000"),
+            _findings("get_crypto_global_market", payload),
+        )
+        # 63000 * 1e6 = 6.312e10 exactly → PASS.
+        assert act.action == "pass"
+        assert act.reason == "scale_normalised_implicit"
+
+    def test_implicit_scale_never_widens_rewrite_band(self):
+        # No word, no suffix, no implicit scale hits PASS tolerance,
+        # AND bare comparison is well outside REWRITE band → DROP.
+        # Locks the cap: implicit scaling MUST NOT rescue a fabrication.
+        payload = '{"value": 100}'
+        act = check_thesis(
+            _thesis("X", "high", "get_x", "value 12345"),
+            _findings("get_x", payload),
+        )
+        assert act.action == "drop"
+
+    def test_genuine_fabrication_still_drops(self):
+        # No scale word, no implicit scale lands, ratio outside band → DROP.
+        payload = '{"reading": 3}'
+        act = check_thesis(
+            _thesis("X", "high", "get_x", "value 999"),
+            _findings("get_x", payload),
+        )
+        assert act.action == "drop"
+
+    def test_integer_exact_match_unchanged(self):
+        # market_sentiment 63 vs 63 → still PASS exact (no scaling applied
+        # because bare comparison already hits tolerance).
+        payload = '{"value": 63}'
+        act = check_thesis(
+            _thesis("F&G", "high", "get_fear_greed_index", "Index value 63"),
+            _findings("get_fear_greed_index", payload),
+        )
+        assert act.action == "pass" and act.reason == "exact"
+
+
 class TestSessionReportGrepLocks:
     def test_report_renders_fidelity_line(self):
         from analysis.session_report import SessionReport
