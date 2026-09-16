@@ -56,6 +56,9 @@ class SessionReport:
     fidelity_checked: int = 0
     fidelity_rewritten: int = 0
     fidelity_dropped: int = 0
+    session_gaps: int = 0
+    session_gaps_longest_secs: int = 0
+    session_gaps_last_resume: str = ""
     llm_by_task_provider: list[dict[str, Any]] = field(default_factory=list)
     pending_measurements: dict[str, Any] = field(default_factory=dict)
     proposals_pending: int = 0
@@ -110,6 +113,12 @@ class SessionReport:
         lines.append(
             f"NUMERIC FIDELITY         : {self.fidelity_checked} checked, "
             f"{self.fidelity_rewritten} corrected, {self.fidelity_dropped} dropped"
+        )
+        _lg_h = self.session_gaps_longest_secs / 3600.0
+        _last = self.session_gaps_last_resume or "-"
+        lines.append(
+            f"SESSION GAPS             : {self.session_gaps} gaps, "
+            f"longest {_lg_h:.1f}h, last resumed at {_last}"
         )
         if self.rail_summary:
             lines.append(self.rail_summary)
@@ -259,6 +268,23 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.fidelity_checked = 0
             r.fidelity_rewritten = 0
             r.fidelity_dropped = 0
+        # Session gaps — count + longest + latest resume timestamp.
+        try:
+            g_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n, coalesce(MAX(duration_secs), 0) AS lg "
+                "FROM session_gaps WHERE started_at >= $1", since,
+            )
+            r.session_gaps = int(g_row["n"]) if g_row else 0
+            r.session_gaps_longest_secs = int(g_row["lg"]) if g_row else 0
+            last = await conn.fetchrow(
+                "SELECT ended_at FROM session_gaps ORDER BY ended_at DESC LIMIT 1"
+            )
+            if last:
+                r.session_gaps_last_resume = last["ended_at"].isoformat(timespec="minutes")
+        except Exception:
+            r.session_gaps = 0
+            r.session_gaps_longest_secs = 0
+            r.session_gaps_last_resume = ""
         # LLM calls
         try:
             llm_rows = await conn.fetch(

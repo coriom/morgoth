@@ -159,6 +159,28 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create network_outage_events table (non-fatal): {}", exc)
             try:
+                # session_gaps — one row per detected downtime > threshold,
+                # inserted at startup by core.session_gap. Consumed by the
+                # contradiction detector (gap-spanning pairs → supersession
+                # instead of contradiction) and the descriptive backtest
+                # (theses stamped inside a gap SKIP with reason series_gap).
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS session_gaps (
+                        gap_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        started_at TIMESTAMPTZ NOT NULL,
+                        ended_at TIMESTAMPTZ NOT NULL,
+                        duration_secs INTEGER NOT NULL
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS session_gaps_started_idx "
+                    "ON session_gaps (started_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create session_gaps table (non-fatal): {}", exc)
+            try:
                 # metric_series — locally-recorded ground-truth history for
                 # metrics whose upstream has no free historical endpoint
                 # (BTC dominance, global market cap, global 24h volume).

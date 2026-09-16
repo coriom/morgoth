@@ -356,6 +356,15 @@ async def main() -> int:
     dominance_series = await pm.fetch_metric_series("btc_dominance")
     global_mktcap_series = await pm.fetch_metric_series("global_market_cap")
     global_volume_series = await pm.fetch_metric_series("global_volume_24h")
+    # Session-gap awareness for the local series: a thesis stamped INSIDE a
+    # recorded gap has no reliable nearby sample. We filter such rows out
+    # before scoring so the score never compares against a pre-shutdown
+    # sample from before the outage. Reason surfaced in the SKIP histogram
+    # as `series_gap` (bucketed alongside the other value-track reasons).
+    from core.session_gap import load_gaps as _load_gaps, ts_inside_gap as _in_gap
+    _gaps = await _load_gaps(pm)
+    _LOCAL_METRICS = ("btc_dominance", "global_market_cap", "global_volume_24h")
+    _series_gap_skips = 0
     def _series_for_level(metric):
         return {
             "btc_hashrate": hr_series,
@@ -378,6 +387,15 @@ async def main() -> int:
         metric = metric_row_map.get((str(row.get("subject", "")), str(row.get("claim", ""))))
         if metric is None:
             continue
+        # Series-gap skip (local-recorder metrics only): a thesis stamped
+        # inside a recorded downtime has no reliable nearby sample. Skip
+        # cleanly rather than compare against a pre-shutdown reading.
+        if metric in _LOCAL_METRICS and _gaps:
+            _ts = row.get("created_at")
+            if _ts is not None and _in_gap(_ts, _gaps):
+                _series_gap_skips += 1
+                value_skip_reasons["series_gap"] = value_skip_reasons.get("series_gap", 0) + 1
+                continue
         # VALUE track — reporting-accuracy check, independent of the
         # level/directional tracks. Runs on every mapped row regardless
         # of what level/directional does; skip reasons are histogrammed.

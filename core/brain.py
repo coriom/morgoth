@@ -444,6 +444,20 @@ class Brain:
         # Pre-cycle connectivity monitor — one instance per loop. State
         # rides across ticks; transitions persisted once per flip.
         _connectivity = _CM()
+        # Downtime detection — one-shot at startup, before the first cycle.
+        # Uses metric_series as the heartbeat signal (recorder writes every
+        # 15 min while alive). Non-fatal.
+        try:
+            from core.session_gap import compute_and_record_gap as _cg
+            _resumed = await _cg(self._persistent_memory)
+            if _resumed:
+                self._feed_append(
+                    "INFO",
+                    f"resumed after {_resumed['duration_secs'] // 60}m gap "
+                    f"(from {_resumed['started_at'].isoformat(timespec='minutes')})",
+                )
+        except Exception as _gap_exc:
+            logger.warning("session_gap startup probe failed: {}", _gap_exc)
 
         while True:
             try:
@@ -1347,6 +1361,14 @@ class Brain:
             logger.warning("detect_contradictions: failed to load theses: {}", exc)
             self._feed_append("ERROR", f"contradiction load failed: {type(exc).__name__}")
             return []
+        # Session-gap cache — loaded once per detector run; a gap-spanning
+        # pair routes to supersession regardless of wall-clock window
+        # (unobserved wall time doesn't count as agreement).
+        try:
+            from core.session_gap import load_gaps as _load_gaps
+            _thesis_gap_cache = await _load_gaps(self._persistent_memory)
+        except Exception:
+            _thesis_gap_cache = []
         if len(active) < 2:
             return []
         try:
@@ -1406,7 +1428,16 @@ class Brain:
                             ta.get("subject", ""), tb.get("subject", ""),
                         )
                         window_seconds = window_hours * 3600.0
-                        if gap >= window_seconds:
+                        # Guard 2a (2026-09-16): a pair that SPANS a recorded
+                        # session gap describes a stale-vs-fresh belief, not a
+                        # disagreement. Route to supersession even when the
+                        # wall-clock gap sits inside the normal window —
+                        # unobserved wall time doesn't count as agreement.
+                        # Pairs that DO NOT span a gap keep pre-existing
+                        # behaviour byte-identically (grep-locked).
+                        from core.session_gap import pair_spans_gap as _spans
+                        _spans_gap = _spans(ca, cb, _thesis_gap_cache)
+                        if gap >= window_seconds or _spans_gap:
                             # Older → superseded, newer → untouched.
                             if ca <= cb:
                                 older_id, newer_id = id_a, id_b
