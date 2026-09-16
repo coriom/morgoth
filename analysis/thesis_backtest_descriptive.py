@@ -42,6 +42,10 @@ MetricKind = Literal[
     # macro series (monthly cadence, 12-month scoring window).
     "eth_congestion", "eth_base_fee",
     "us_unemployment", "us_cpi", "us_fed_funds",
+    # 2026-09-16 — locally-recorded ground truth from metric_series.
+    # FORWARD-ONLY: theses stamped before the recorder started stay
+    # unscoreable on these three (SKIP reason: series_not_yet_recording).
+    "btc_dominance", "global_market_cap", "global_volume_24h",
 ]
 
 # Subject → metric mapping. Kept explicit (not a regex tangle) because
@@ -108,19 +112,31 @@ _US_FED_FUNDS_MARKERS = ("fed funds", "federal funds rate", "us interest rate")
 # Kept separately from truly-subjective claims — this is triage class
 # "verifiable in principle, unreachable in practice".
 _UNREACHABLE_SUBJECT_MARKERS = (
-    "dominance",       # CoinGecko /global/market_cap_chart is Pro-only (401)
     "long-short",      # no free historical endpoint checked
     "mining profitability",  # composite (revenue × cost) — not one series
     "on-chain metrics",  # too vague to map to a single metric
-    # Global/whole-market mkt cap and volume specifically:
+    # NOTE: "dominance" and global mkt-cap / volume markers used to live
+    # here — the metric_series recorder now writes a forward-only local
+    # series so these subjects route to reachable metrics below (btc_
+    # dominance, global_market_cap, global_volume_24h). Pre-recording
+    # theses SKIP with series_not_yet_recording; new theses score.
+)
+
+# Subject markers for the three metrics the local recorder feeds.
+_DOMINANCE_MARKERS = ("dominance",)
+_GLOBAL_MKTCAP_MARKERS = (
     "global market cap", "global market capitalization",
     "global crypto market cap", "global crypto market capitalization",
     "crypto market cap", "crypto market capitalization",
     "market capitalization of all cryptocurrencies",
     "market capitalization of cryptocurrencies",
+    "cryptocurrency market",
+)
+_GLOBAL_VOLUME_MARKERS = (
     "global crypto market volume", "global market capitalization volume",
     "crypto market volume", "crypto 24-hour trading volume",
-    "cryptocurrency market",
+    "global crypto 24h volume", "crypto global market volume",
+    "global 24h volume",
 )
 
 # Sentiment vocabulary → F&G bucket. The F&G index is 0-100:
@@ -165,8 +181,18 @@ def classify_subject(subject: str) -> tuple[Verifiability, MetricKind | None, st
         return "metric", "btc_hashrate", None
     if any(m in s for m in _DIFFICULTY_SUBJECTS) and "adjustment progress" not in s:
         return "metric", "btc_difficulty", None
-    # Whole-market unreachables checked FIRST (a "global market cap" subject
-    # also contains the bare "market cap" substring — order matters).
+    # Locally-recorded metrics (BTC dominance, global mkt-cap, global volume)
+    # — checked BEFORE the specific BTC/ETH markers so a "global crypto market
+    # cap" doesn't fall into the bare BTC path. Order also matters against
+    # the surviving unreachable markers below.
+    if any(m in s for m in _GLOBAL_MKTCAP_MARKERS):
+        return "metric", "global_market_cap", None
+    if any(m in s for m in _GLOBAL_VOLUME_MARKERS):
+        return "metric", "global_volume_24h", None
+    if any(m in s for m in _DOMINANCE_MARKERS):
+        return "metric", "btc_dominance", None
+    # Remaining whole-market unreachables (long-short, mining profitability,
+    # on-chain metrics) — checked FIRST relative to specific BTC/ETH markers.
     for marker in _UNREACHABLE_SUBJECT_MARKERS:
         if marker in s:
             return "unverifiable", None, f"no free historical source for '{marker}'"

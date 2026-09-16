@@ -52,7 +52,8 @@ class TestClassifySubject:
             ("BTC mining difficulty adjustment", "metric", "btc_difficulty"),
             ("Market sentiment", "metric", "market_sentiment"),
             ("Ethereum hash rate", "unverifiable", None),  # PoS post-merge
-            ("Bitcoin dominance percentage", "unverifiable", None),
+            # 2026-09-16: promoted to reachable via metric_series recorder.
+            ("Bitcoin dominance percentage", "metric", "btc_dominance"),
             # Post-source-wiring these ARE reachable (Binance funding, Owlracle gas).
             ("Bitcoin futures funding rate", "metric", "btc_funding"),
             ("Ethereum gas prices", "metric", "eth_gas"),
@@ -150,11 +151,13 @@ class TestTriage:
         ]
         counts, metric_rows, unreachable_reasons, subjective_subjects = triage(rows)
         assert counts["input"] == 6
-        assert counts["metric"] == 3
-        # dominance = unreachable (no free source), eth hash rate = unreachable (metric doesn't exist)
-        assert counts["unreachable"] == 2
+        # dominance PROMOTED to reachable metric now that metric_series
+        # exists as forward-only ground truth (2026-09-16). eth hash rate
+        # remains unreachable (metric doesn't exist post-merge).
+        assert counts["metric"] == 4
+        assert counts["unreachable"] == 1
         assert counts["subjective"] == 1
-        assert len(metric_rows) == 3
+        assert len(metric_rows) == 4
 
 
 class TestParseLevel:
@@ -312,21 +315,28 @@ class TestClassifySubjectNewMetrics:
         assert v == "metric" and m == expected_metric
 
     @pytest.mark.parametrize(
-        "subject",
+        "subject, expected_metric",
         [
-            "Global market capitalization",
-            "Crypto market capitalization",
-            "Global crypto market volume",
-            "Crypto market volume",
-            "Market cap",  # bare — likely global
-            "Market capitalization of cryptocurrencies",
-            "Bitcoin dominance percentage",  # still paid-only
+            # 2026-09-16: promoted from unreachable — metric_series recorder
+            # now writes a forward-only local ground truth for these.
+            ("Global market capitalization", "global_market_cap"),
+            ("Crypto market capitalization", "global_market_cap"),
+            ("Global crypto market volume", "global_volume_24h"),
+            ("Crypto market volume", "global_volume_24h"),
+            ("Market capitalization of cryptocurrencies", "global_market_cap"),
+            ("Bitcoin dominance percentage", "btc_dominance"),
         ],
     )
-    def test_global_or_bare_stays_unreachable(self, subject):
-        v, m, reason = classify_subject(subject)
+    def test_global_metrics_promoted_to_reachable(self, subject, expected_metric):
+        v, m, _ = classify_subject(subject)
+        assert v == "metric" and m == expected_metric
+
+    def test_bare_market_cap_stays_unreachable(self):
+        # A bare "Market cap" with no global/BTC/ETH qualifier is genuinely
+        # ambiguous — the classifier still refuses to guess.
+        v, m, reason = classify_subject("Market cap")
         assert v == "unverifiable" and m is None
-        assert reason is not None and "no free historical source" in reason
+        assert reason is not None
 
 
 class TestClassifyNewDarkMetrics:

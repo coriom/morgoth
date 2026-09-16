@@ -159,6 +159,29 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create network_outage_events table (non-fatal): {}", exc)
             try:
+                # metric_series — locally-recorded ground-truth history for
+                # metrics whose upstream has no free historical endpoint
+                # (BTC dominance, global market cap, global 24h volume).
+                # FORWARD-ONLY: theses stamped before the recorder started
+                # remain unscoreable on these metrics.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS metric_series (
+                        sample_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        metric TEXT NOT NULL,
+                        value DOUBLE PRECISION NOT NULL,
+                        observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        source TEXT
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS metric_series_metric_ts_idx "
+                    "ON metric_series (metric, observed_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create metric_series table (non-fatal): {}", exc)
+            try:
                 # Numeric-fidelity gate: one row per gate action taken at
                 # extraction time. Surfaced in `morgoth session-report`.
                 await connection.execute(
@@ -834,6 +857,38 @@ class PersistentMemory:
         if row is None:
             raise ValueError(f"Objective {objective_id} not found")
         return dict(row)
+
+    async def record_metric_sample(
+        self, metric: str, value: float, observed_at, source: str,
+    ) -> None:
+        """Insert one metric_series sample. Called by the recorder."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO metric_series (metric, value, observed_at, source) "
+                "VALUES ($1, $2, $3, $4)",
+                str(metric)[:64], float(value), observed_at, str(source)[:64],
+            )
+
+    async def fetch_metric_series(
+        self, metric: str,
+    ) -> tuple[list[int], list[float]]:
+        """Return (sorted_ms, values) for the descriptive scorer. Empty
+        tuple when the recorder has no rows yet (pre-recording theses
+        will skip cleanly via nearest_value returning None)."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT observed_at, value FROM metric_series "
+                "WHERE metric = $1 ORDER BY observed_at ASC",
+                str(metric),
+            )
+        sorted_ms: list[int] = []
+        values: list[float] = []
+        for r in rows:
+            sorted_ms.append(int(r["observed_at"].timestamp() * 1000))
+            values.append(float(r["value"]))
+        return sorted_ms, values
 
     async def record_numeric_fidelity_event(
         self,

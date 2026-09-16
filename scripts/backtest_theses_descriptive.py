@@ -347,6 +347,15 @@ async def main() -> int:
     # Series lookup for level scoring — needs to know which series maps
     # to which metric so the level scorer can compute percentile over
     # the metric's own history (strict < ts_ms, no lookahead).
+    # Locally-recorded ground truth from metric_series (2026-09-16). Forward-
+    # only: rows accumulate from the moment the recorder starts. A thesis
+    # older than the first series sample SKIPs with series_not_yet_recording.
+    from memory.persistent import PersistentMemory as _PM
+    pm = _PM(config)
+    await pm.initialize()
+    dominance_series = await pm.fetch_metric_series("btc_dominance")
+    global_mktcap_series = await pm.fetch_metric_series("global_market_cap")
+    global_volume_series = await pm.fetch_metric_series("global_volume_24h")
     def _series_for_level(metric):
         return {
             "btc_hashrate": hr_series,
@@ -358,6 +367,11 @@ async def main() -> int:
             "eth_gas": gas_series, "eth_base_fee": gas_series, "eth_congestion": gas_series,
             "btc_funding": funding_series,
             "us_unemployment": unrate_series, "us_cpi": cpi_series, "us_fed_funds": fedfunds_series,
+            # Locally-recorded — empty tuple means "no rows yet"; the scorers
+            # then return None (SKIP) for every thesis regardless of ts.
+            "btc_dominance": dominance_series if dominance_series[0] else None,
+            "global_market_cap": global_mktcap_series if global_mktcap_series[0] else None,
+            "global_volume_24h": global_volume_series if global_volume_series[0] else None,
         }.get(metric)
 
     for row in non_directional:
@@ -413,6 +427,15 @@ async def main() -> int:
             r = score_macro(row, cpi_series, NEW_HORIZON, 0.005, now, "us_cpi")
         elif metric == "us_fed_funds":
             r = score_macro(row, fedfunds_series, NEW_HORIZON, 0.05, now, "us_fed_funds")
+        elif metric == "btc_dominance":
+            _s = dominance_series if dominance_series[0] else None
+            r = score_macro(row, _s, NEW_HORIZON, 0.02, now, "btc_dominance") if _s else None
+        elif metric == "global_market_cap":
+            _s = global_mktcap_series if global_mktcap_series[0] else None
+            r = score_macro(row, _s, NEW_HORIZON, MKTCAP_BAND, now, "global_market_cap") if _s else None
+        elif metric == "global_volume_24h":
+            _s = global_volume_series if global_volume_series[0] else None
+            r = score_macro(row, _s, NEW_HORIZON, VOLUME_BAND, now, "global_volume_24h") if _s else None
         else:
             r = None
         if r is not None:

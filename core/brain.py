@@ -428,9 +428,15 @@ class Brain:
             _probe_interval_secs as _cx_interval,
             _flag_enabled as _cx_enabled,
         )
+        from core.metric_recorder import (
+            ScheduleState as _MRState,
+            snapshot_once as _mr_snapshot,
+            recorder_enabled as _mr_enabled,
+        )
         import time as _time
         provider_state: dict[str, str] = {}
         last_heartbeat_ts: float = 0.0
+        _metric_state = _MRState()
         # Rate-limit THRASHING WARN to once per 15 min so a sustained
         # incident doesn't spam the log.
         last_thrash_warn_ts: float = 0.0
@@ -525,6 +531,24 @@ class Brain:
                         last_heartbeat_ts = now_ts
                     except Exception as _hb_exc:
                         logger.warning("provider heartbeat failed: {}", _hb_exc)
+
+                # Metric recorder — forward-only ground-truth capture for
+                # metrics whose upstream has no free historical endpoint.
+                # Scheduled independent of cycle cadence; skipped when the
+                # connectivity probe says offline (no point recording into
+                # an outage). Non-fatal.
+                if (_mr_enabled()
+                        and _metric_state.snapshot_due(now_ts)
+                        and _connectivity.is_online):
+                    try:
+                        written = await _mr_snapshot(
+                            self._persistent_memory, self._tool_router,
+                        )
+                        _metric_state.mark_snapshot(now_ts)
+                        if written:
+                            logger.debug("metric_series: wrote {} rows", written)
+                    except Exception as _mr_exc:
+                        logger.warning("metric recorder failed (non-fatal): {}", _mr_exc)
 
                 # Atomic claim: SELECT ... FOR UPDATE SKIP LOCKED + mark
                 # in_progress in the same transaction. Prevents a
