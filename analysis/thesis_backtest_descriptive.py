@@ -745,20 +745,40 @@ def extract_reported_value(evidence: list) -> float | None:
     # match so _explicit_scale can read it separately). Excludes trailing
     # 'h'/'d'/'m' (as in "24h", "5d") so unit-prefixed tokens still don't
     # contribute a number.
-    # Number must be followed by either a non-word char (space, %, punct,
-    # EOF) OR a magnitude suffix letter T/B/M/K itself followed by a non-
-    # letter. This lets "2.77T" and "$2.77T " match while blocking "24h"
-    # ("h" is not TBMK) and "24hours" (same). Suffix is kept OUT of the
-    # match; _explicit_scale reads it separately.
+    # Number regex — decimal OR scientific ("1.531e10"), followed by
+    # either a non-word char OR a magnitude suffix T/B/M/K itself
+    # followed by a non-letter. Scientific notation was previously
+    # collapsed to a bare "1" because "e" is neither TBMK nor non-word;
+    # the (?:[eE][+-]?\d+)? branch matches "1.531e10" as one token.
     pattern = re.compile(
-        r"(?<!\w)-?\d+(?:\.\d+)?(?=[TBMKtbmk](?![a-zA-Z])|(?!\w))"
+        r"(?<!\w)-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+        r"(?=[TBMKtbmk](?![a-zA-Z])|(?!\w))"
     )
+    # Time-window guard — a number IMMEDIATELY followed by a duration
+    # unit ("24h", "24-hour", "24 hours", "5 min", "7 days") is a
+    # WINDOW, not a value. Skip it and try the next candidate. Also
+    # skip numbers whose local context is a window phrase ("over the
+    # past 24 hours"). If ALL numbers in the detail are windows, the
+    # caller receives None → PASS(no_number_in_detail), NOT drop —
+    # destroying a thesis because its only number was a timeframe is
+    # wrong (the value may live entirely in evidence[].source).
+    _TIME_UNIT_RE = re.compile(
+        r"^[-\s]{0,3}"
+        r"(?:h|hr|hrs|hour|hours|d|day|days|min|minute|minutes|"
+        r"sec|second|seconds|wk|week|weeks|mo|month|months|yr|year|years)"
+        r"(?![a-zA-Z])",
+        re.IGNORECASE,
+    )
+    def _is_time_window(text: str, start: int, end: int) -> bool:
+        tail = text[end : end + 10]
+        return _TIME_UNIT_RE.match(tail) is not None
     for e in evidence:
         if not isinstance(e, dict):
             continue
         detail = str(e.get("detail", "")).replace(",", "")
-        m = pattern.search(detail)
-        if m:
+        for m in pattern.finditer(detail):
+            if _is_time_window(detail, m.start(), m.end()):
+                continue
             try:
                 return float(m.group(0))
             except ValueError:

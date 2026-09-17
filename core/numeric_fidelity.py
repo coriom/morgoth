@@ -56,7 +56,15 @@ _REWRITE_HIGH = 2.0
 
 
 _NUMBER_REGEX = re.compile(
-    r"(?<!\w)-?\d+(?:\.\d+)?(?=[TBMKtbmk](?![a-zA-Z])|(?!\w))"
+    r"(?<!\w)-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+    r"(?=[TBMKtbmk](?![a-zA-Z])|(?!\w))"
+)
+_TIME_UNIT_RE = re.compile(
+    r"^[-\s]{0,3}"
+    r"(?:h|hr|hrs|hour|hours|d|day|days|min|minute|minutes|"
+    r"sec|second|seconds|wk|week|weeks|mo|month|months|yr|year|years)"
+    r"(?![a-zA-Z])",
+    re.IGNORECASE,
 )
 
 # Magnitude vocabulary — for scale normalisation. Words apply anywhere
@@ -95,11 +103,17 @@ class FidelityAction:
 def _all_numbers_in(text: str) -> list[float]:
     """All standalone numbers in text — same word-boundary rules as
     extract_reported_value so the regex used to CITE a number and the
-    one used to SEARCH for it stay in lockstep."""
+    one used to SEARCH for it stay in lockstep. Time-window numbers
+    ("24h", "24 hours") are skipped so a citation whose value happens
+    to equal a duration doesn't spuriously match."""
     if not text:
         return []
+    cleaned = text.replace(",", "")
     out: list[float] = []
-    for m in _NUMBER_REGEX.finditer(text.replace(",", "")):
+    for m in _NUMBER_REGEX.finditer(cleaned):
+        tail = cleaned[m.end() : m.end() + 10]
+        if _TIME_UNIT_RE.match(tail):
+            continue
         try:
             out.append(float(m.group(0)))
         except ValueError:

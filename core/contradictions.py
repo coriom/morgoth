@@ -94,6 +94,32 @@ def subject_is_price_class(subject: str) -> bool:
     return any(tok in low for tok in PRICE_CLASS_TOKENS)
 
 
+# Prefix-stopwords stripped for CONTRADICTION GROUPING ONLY. The 8B
+# emits the same underlying subject in several capitalisations + prefix
+# variants ("Global crypto market cap 24h change", "crypto market cap
+# 24h change", "global crypto market cap 24h change") — the detector
+# counted these as three distinct groups and produced 3× duplicated
+# rows against the SAME belief. This canonicalisation collapses them;
+# genuinely different subjects ("market cap" vs "trading volume") keep
+# distinct root tokens so they stay in separate groups.
+_SUBJECT_PREFIX_STOPWORDS: tuple[str, ...] = ("global", "crypto", "the")
+
+
+def canonicalize_subject_for_grouping(subject: str) -> str:
+    """Case-normalised, prefix-stripped, whitespace-collapsed form of
+    ``subject`` for contradiction-grouping use ONLY. The stored thesis
+    subject is NOT rewritten — this is a grouping-key transform
+    consumed by the detector's subject-cluster step.
+    """
+    if not isinstance(subject, str):
+        return ""
+    s = " ".join(subject.lower().split())
+    words = s.split()
+    while words and words[0] in _SUBJECT_PREFIX_STOPWORDS:
+        words.pop(0)
+    return " ".join(words)
+
+
 def window_for(subject_a: str, subject_b: str) -> float:
     """Return the contradiction window (hours) for a subject pair.
 

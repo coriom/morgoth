@@ -1414,7 +1414,18 @@ class Brain:
 
                     id_a = str(ta.get("thesis_id"))
                     id_b = str(tb.get("thesis_id"))
-                    pair_subject = ta.get("subject")
+                    # Canonicalise for GROUPING only — stored thesis subjects
+                    # unchanged. Collapses "Global crypto market cap 24h
+                    # change" / "crypto market cap 24h change" / "global
+                    # crypto market cap 24h change" into ONE subject_group
+                    # so a single divergence doesn't multiply into three
+                    # duplicated contradiction rows.
+                    from core.contradictions import (
+                        canonicalize_subject_for_grouping as _canon,
+                    )
+                    pair_subject = _canon(str(ta.get("subject") or ""))
+                    if not pair_subject:
+                        pair_subject = ta.get("subject")
 
                     # Guard 2: temporal window — cross-window pairs are
                     # supersessions on a rolling metric, not contradictions.
