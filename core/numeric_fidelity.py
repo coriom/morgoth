@@ -100,6 +100,25 @@ class FidelityAction:
     corrected_detail: str | None  # populated on REWRITE
 
 
+def _find_value_match(text: str) -> "re.Match[str] | None":
+    """Return the first NON-WINDOW number match in text, or None.
+
+    Single source of truth for citation-side scans. finditer walks
+    every candidate; each is checked against the time-unit tail;
+    windows are skipped and the search continues. None only when
+    EVERY number in text is a window (or there are no numbers).
+    """
+    if not text:
+        return None
+    cleaned = text.replace(",", "")
+    for m in _NUMBER_REGEX.finditer(cleaned):
+        tail = cleaned[m.end() : m.end() + 10]
+        if _TIME_UNIT_RE.match(tail):
+            continue
+        return m
+    return None
+
+
 def _all_numbers_in(text: str) -> list[float]:
     """All standalone numbers in text — same word-boundary rules as
     extract_reported_value so the regex used to CITE a number and the
@@ -227,7 +246,10 @@ def check_thesis(
             return FidelityAction("pass", "no_candidates", subj, tool, cited, None, None)
         # Grab the ORIGINAL number-string as it appears in the detail —
         # needed by _explicit_scale to test the suffix-letter case.
-        m = _NUMBER_REGEX.search(detail.replace(",", ""))
+        # Routed through _find_value_match so the same time-window
+        # guard used by extract_reported_value governs this citation
+        # path — no raw regex bypass (2026-09-17 audit).
+        m = _find_value_match(detail)
         number_str = m.group(0) if m else str(cited)
         # 1) Bare-value comparison first.
         bare = cited
@@ -297,17 +319,22 @@ def check_thesis(
 
 
 def _substitute_number(detail: str, old: float, new: float) -> str:
-    """Replace the first plausible standalone number in `detail` with
-    `new`, formatted at the same visual scale. If we can't find the
-    exact `old` value in the string (float rounding), fall back to
-    appending a corrected marker rather than mutating unpredictably."""
-    old_pattern = re.compile(r"(?<!\w)-?\d+(?:\.\d+)?(?!\w)")
-    m = old_pattern.search(detail.replace(",", ""))
+    """Replace the first plausible standalone VALUE number (i.e. not a
+    time-window) in `detail` with `new`, formatted at the same visual
+    scale. If we can't find a value number (only windows or nothing),
+    append a corrected marker rather than mutating unpredictably.
+
+    Routed through _find_value_match so a REWRITE never rewrites a
+    duration (e.g. "24" in "24-hour") into a market-cap value.
+    """
+    cleaned = detail.replace(",", "")
+    m = _find_value_match(cleaned)
     if not m:
         return detail + f" [corrected: true value {new:g}]"
-    # Format with enough precision to preserve significant digits.
     if abs(new) < 1e-3 or abs(new) >= 1e6:
         new_str = f"{new:g}"
     else:
         new_str = f"{new:.6g}"
-    return old_pattern.sub(new_str, detail.replace(",", ""), count=1)
+    # Substitute exactly the matched span (start:end) — safe because
+    # _find_value_match returned that positional match on `cleaned`.
+    return cleaned[: m.start()] + new_str + cleaned[m.end():]

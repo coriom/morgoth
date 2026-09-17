@@ -96,6 +96,72 @@ class TestSubjectCanonicalisation:
         assert _canon("Ethereum 24h trading volume") == "ethereum 24h trading volume"
 
 
+class TestNumericFidelityBypassAudit:
+    """core/numeric_fidelity used _NUMBER_REGEX directly in two spots
+    that bypassed the window guard: line 230 (number_str for scale
+    detection) and _substitute_number (line 326). Both routed through
+    _find_value_match now — grep-locked."""
+
+    def test_check_thesis_uses_find_value_match_not_raw_regex(self):
+        import inspect
+        from core import numeric_fidelity as nf
+        src = inspect.getsource(nf.check_thesis)
+        # No raw regex search inside check_thesis.
+        assert "_NUMBER_REGEX.search" not in src
+        assert "_find_value_match(detail)" in src
+
+    def test_substitute_number_uses_find_value_match(self):
+        import inspect
+        from core import numeric_fidelity as nf
+        src = inspect.getsource(nf._substitute_number)
+        assert "_find_value_match" in src
+        # And drops the old bypass pattern.
+        assert r"(?<!\w)-?\d+(?:\.\d+)?(?!\w)" not in src
+
+
+class TestSkipAndContinueOnWindows:
+    """Extractor must SKIP window-rejected numbers and continue to the
+    next candidate; abandon only when every candidate is a window."""
+
+    @pytest.mark.parametrize("detail, expected", [
+        ("volume over 24h reached 1.5e11", 1.5e11),
+        ("past 7 days the cap hit 2.69e12", 2.69e12),
+        # Real production drops — subject-only detail with no value.
+        ("Crypto 24h trading volume", None),
+        ("Crypto market capitalization", None),
+    ])
+    def test_extractor_skips_windows_and_continues(self, detail, expected):
+        assert extract_reported_value([{"detail": detail}]) == expected
+
+    def test_24h_volume_at_24_extracts_trailing_bare_24_as_value(self):
+        # BEHAVIOUR PICKED: the pattern-based guard only inspects the
+        # IMMEDIATE tail after each number. In "24h volume at 24" the
+        # second "24" has no duration suffix — reads as a value. This
+        # is a conservative structural choice; heuristic "same number
+        # twice → both suspect" would misfire on legitimate repeats
+        # (e.g. "24-hour change: 24 bps"). Downstream fidelity gate
+        # still validates via the tool digest.
+        assert extract_reported_value([{"detail": "24h volume at 24"}]) == 24.0
+
+
+class TestFindValueMatchGuardsWindows:
+    """The shared helper used by check_thesis + _substitute_number."""
+
+    def test_returns_first_non_window_match(self):
+        from core.numeric_fidelity import _find_value_match
+        m = _find_value_match("volume over 24h reached 1.5e11")
+        assert m is not None
+        assert float(m.group(0)) == 1.5e11
+
+    def test_returns_none_when_only_windows(self):
+        from core.numeric_fidelity import _find_value_match
+        assert _find_value_match("24h volume — 7 days observed") is None
+
+    def test_returns_none_on_empty(self):
+        from core.numeric_fidelity import _find_value_match
+        assert _find_value_match("") is None
+
+
 class TestBrainWiresCanonicalizationForGrouping:
     def test_detect_contradictions_uses_canonicalize(self):
         import inspect
