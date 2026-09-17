@@ -300,6 +300,10 @@ class UpdateObjectiveTool(BaseTool):
                 evidence=evidence,
             )
             return self.success(self._serialize(row))
+        except ValueError as exc:
+            # Boundary rejection — surface allowed values so the model
+            # can retry with a valid status on the next turn.
+            return self.failure(f"invalid status: {exc}")
         except Exception as exc:
             return self.failure(str(exc))
 

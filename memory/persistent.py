@@ -826,6 +826,49 @@ class PersistentMemory:
             )
         return [dict(row) for row in rows]
 
+    # Canonical objective statuses. `pending`, `in_progress`, `done` are the
+    # documented lifecycle. `stale_timeout` is the system-set terminal
+    # status written by the freshness sweep at core/brain initialize. Any
+    # other value reaching this method (usually free-text from the 8B —
+    # "completed", "ongoing", "progressing") is coerced by CANONICAL_STATUS_
+    # SYNONYMS or rejected with ValueError. All writers go through here so
+    # system-set values are also validated (a canonical value passes untouched).
+    CANONICAL_STATUSES: frozenset[str] = frozenset({
+        "pending", "in_progress", "done", "stale_timeout",
+    })
+    CANONICAL_STATUS_SYNONYMS: dict[str, str] = {
+        # → done
+        "completed": "done", "complete": "done", "finished": "done",
+        # → in_progress
+        "active": "in_progress", "ongoing": "in_progress",
+        "progressing": "in_progress", "progress": "in_progress",
+        "working": "in_progress",
+    }
+
+    @classmethod
+    def normalize_objective_status(cls, status: str) -> str:
+        """Return the canonical form of a status string, or raise ValueError.
+
+        Case-insensitive. Canonical values pass through unchanged; known
+        synonyms map; anything else raises ValueError with the allowed
+        set in the message so the caller can surface a usable retry hint.
+        """
+        if not isinstance(status, str) or not status.strip():
+            raise ValueError(
+                "objective status must be a non-empty string; "
+                f"allowed values: {sorted(cls.CANONICAL_STATUSES)}"
+            )
+        key = status.strip().lower()
+        if key in cls.CANONICAL_STATUSES:
+            return key
+        if key in cls.CANONICAL_STATUS_SYNONYMS:
+            return cls.CANONICAL_STATUS_SYNONYMS[key]
+        raise ValueError(
+            f"unknown objective status {status!r}; "
+            f"allowed values: {sorted(cls.CANONICAL_STATUSES)} "
+            f"(synonyms accepted: {sorted(cls.CANONICAL_STATUS_SYNONYMS)})"
+        )
+
     async def update_objective(
         self,
         objective_id: str,
@@ -839,6 +882,12 @@ class PersistentMemory:
         """
 
         import uuid as _uuid
+
+        # Boundary enforcement: canonicalise the status BEFORE it reaches
+        # the DB. Applies to EVERY caller (model tool, outage guard, apply,
+        # reclaim). Canonical values pass through unchanged.
+        if status is not None:
+            status = self.normalize_objective_status(status)
 
         pool = self._require_pool()
         async with pool.acquire() as conn:
