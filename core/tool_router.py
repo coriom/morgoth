@@ -9,6 +9,39 @@ from loguru import logger
 from tools.base_tool import BaseTool
 
 
+def _validate_arguments(tool: "BaseTool", arguments: dict[str, Any]) -> str | None:
+    """Check `arguments` against `tool.parameters` (JSON-schema dict).
+
+    Returns an error message string when the call is malformed —
+    missing required param OR unexpected param name — else None.
+    Empty/opaque schemas short-circuit to None (no validation possible).
+    Structural: only inspects top-level required + properties.keys.
+    """
+    schema = getattr(tool, "parameters", None) or {}
+    if not isinstance(schema, dict):
+        return None
+    props = schema.get("properties") or {}
+    if not isinstance(props, dict) or not props:
+        return None  # opaque / free-form schema — do not validate
+    required = schema.get("required") or []
+    if not isinstance(required, list):
+        required = []
+    allowed = set(props.keys())
+    missing = [k for k in required if k not in (arguments or {})]
+    unknown = [k for k in (arguments or {}) if k not in allowed]
+    if not missing and not unknown:
+        return None
+    parts: list[str] = []
+    if missing:
+        parts.append(f"missing required: {sorted(missing)}")
+    if unknown:
+        parts.append(f"unknown param(s): {sorted(unknown)}")
+    return (
+        "invalid arguments — " + "; ".join(parts)
+        + f". Allowed parameters: {sorted(allowed)}."
+    )
+
+
 class ToolRouter:
     """Registry and execution router for tools."""
 
@@ -70,6 +103,21 @@ class ToolRouter:
         call — used by the collector itself to write fresh snapshots.
         """
         logger.info("Executing tool '{}'", name)
+        # Remove the double-fetch below — _validate_arguments already
+        # got the tool via get_tool. Keep the reference for downstream.
+        # (Merged into the pattern that follows.)
+        # ARGUMENT VALIDATION at the router boundary — 123 malformed
+        # calls in ChromaDB history burned cycles on KeyError. Reject
+        # missing-required + unknown-param BEFORE execute; return a
+        # structured failure that names what's wrong + the allowed
+        # parameter names so the model can retry on the next turn.
+        # Never invents defaults — that's the model's error to fix.
+        tool = self.get_tool(name)
+        _val_err = _validate_arguments(tool, arguments)
+        if _val_err is not None:
+            logger.warning("tool-arg reject: {} — {}", name, _val_err)
+            return {"success": False, "result": None,
+                    "error": _val_err, "metadata": {"validation": True}}
         if not bypass_cache and self._persistent_memory is not None:
             from core.source_cache import (
                 is_cached_source, cache_enabled, serve_from_cache,
@@ -87,7 +135,6 @@ class ToolRouter:
                         cached["metadata"]["stale"],
                     )
                     return cached
-        tool = self.get_tool(name)
         return await tool.execute(**arguments)
 
     async def close(self) -> None:
