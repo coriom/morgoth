@@ -289,6 +289,19 @@ class PersistentMemory:
                 await connection.execute(
                     "CREATE INDEX IF NOT EXISTS theses_subject_idx ON theses (subject);"
                 )
+                # canonical_subject (2026-09-18): the grouping canonicalisation
+                # from 0692f87 was already used by the contradiction detector.
+                # Persist it at write time so vault compilation, backtest
+                # subject→metric mapping, and any future reader share ONE
+                # canonicalised key. Raw `subject` is kept for display /
+                # provenance — never overwritten.
+                await connection.execute(
+                    "ALTER TABLE theses ADD COLUMN IF NOT EXISTS canonical_subject TEXT;"
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS theses_canonical_subject_idx "
+                    "ON theses (canonical_subject);"
+                )
             except Exception as exc:
                 logger.warning("Could not ensure theses table (non-fatal): {}", exc)
             try:
@@ -1255,15 +1268,24 @@ class PersistentMemory:
         historical rows are NULL, which the backtest CLI's optional
         --code-version filter excludes explicitly rather than crashes on.
         """
+        # Canonicalise for downstream readers (contradiction detector,
+        # vault compile, backtest subject→metric mapping). Raw subject
+        # kept in `subject`; canonical form in `canonical_subject`.
+        from core.contradictions import (
+            canonicalize_subject_for_grouping as _canon,
+        )
+        canonical = _canon(str(subject))
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO theses "
-                "(subject, claim, confidence, evidence, objective_id, code_version) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5, $6) RETURNING thesis_id",
+                "(subject, claim, confidence, evidence, objective_id, "
+                " code_version, canonical_subject) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7) "
+                "RETURNING thesis_id",
                 subject, claim, confidence,
                 json.dumps(evidence or []),
-                objective_id, code_version,
+                objective_id, code_version, canonical,
             )
         return str(row["thesis_id"]) if row else ""
 
