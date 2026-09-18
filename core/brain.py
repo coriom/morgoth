@@ -433,10 +433,16 @@ class Brain:
             snapshot_once as _mr_snapshot,
             recorder_enabled as _mr_enabled,
         )
+        from core.source_cache import (
+            CollectorState as _SCState,
+            collect_due_sources as _sc_collect,
+            cache_enabled as _sc_enabled,
+        )
         import time as _time
         provider_state: dict[str, str] = {}
         last_heartbeat_ts: float = 0.0
         _metric_state = _MRState()
+        _sc_state = _SCState()
         # Rate-limit THRASHING WARN to once per 15 min so a sustained
         # incident doesn't spam the log.
         last_thrash_warn_ts: float = 0.0
@@ -582,6 +588,24 @@ class Brain:
                             logger.debug("metric_series: wrote {} rows", written)
                     except Exception as _mr_exc:
                         logger.warning("metric recorder failed (non-fatal): {}", _mr_exc)
+
+                # Source cache collector — poll each in-scope slow-moving
+                # source on its own cadence, write the full digest to
+                # source_snapshots. Agents READ the store on the next
+                # tool call, ONE collector WRITES here. API request rate
+                # becomes independent of the agent count.
+                if _sc_enabled() and _connectivity.is_online:
+                    try:
+                        collected = await _sc_collect(
+                            self._persistent_memory, self._tool_router, _sc_state,
+                        )
+                        if collected:
+                            logger.debug(
+                                "source_cache: collected {} source(s): {}",
+                                len(collected), ", ".join(collected),
+                            )
+                    except Exception as _sc_exc:
+                        logger.warning("source_cache collector failed (non-fatal): {}", _sc_exc)
 
                 # Atomic claim: SELECT ... FOR UPDATE SKIP LOCKED + mark
                 # in_progress in the same transaction. Prevents a

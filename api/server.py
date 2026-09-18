@@ -54,7 +54,7 @@ def build_tool_router(
 ) -> ToolRouter:
     """Register all Layer 1 tools and return the router."""
 
-    router = ToolRouter()
+    router = ToolRouter(persistent_memory=persistent_memory)
     router.register(WebSearchTool(config))
     router.register(ExecutePythonTool(config))
     router.register(ReadFileTool(config))

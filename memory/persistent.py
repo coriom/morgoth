@@ -181,6 +181,29 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create session_gaps table (non-fatal): {}", exc)
             try:
+                # source_snapshots — one row per (source, observed_at) with
+                # the tool's full digest as JSONB payload. Read path in
+                # core.source_cache.serve_from_cache returns the newest row
+                # annotated with its age; agents READ the store, ONE
+                # collector WRITES. API request rate becomes independent
+                # of agent count.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS source_snapshots (
+                        snapshot_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        source TEXT NOT NULL,
+                        payload JSONB NOT NULL,
+                        observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS source_snapshots_source_ts_idx "
+                    "ON source_snapshots (source, observed_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create source_snapshots table (non-fatal): {}", exc)
+            try:
                 # metric_series — locally-recorded ground-truth history for
                 # metrics whose upstream has no free historical endpoint
                 # (BTC dominance, global market cap, global 24h volume).
@@ -948,6 +971,31 @@ class PersistentMemory:
         if row is None:
             raise ValueError(f"Objective {objective_id} not found")
         return dict(row)
+
+    async def record_source_snapshot(
+        self, source: str, payload: Any, observed_at,
+    ) -> None:
+        """Insert one full-digest snapshot for a cached source."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO source_snapshots (source, payload, observed_at) "
+                "VALUES ($1, $2, $3)",
+                str(source)[:64], json.dumps(payload), observed_at,
+            )
+
+    async def latest_source_snapshot(
+        self, source: str,
+    ) -> dict[str, Any] | None:
+        """Newest snapshot row for a source, or None."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT source, payload, observed_at FROM source_snapshots "
+                "WHERE source = $1 ORDER BY observed_at DESC LIMIT 1",
+                str(source),
+            )
+        return dict(row) if row else None
 
     async def record_metric_sample(
         self, metric: str, value: float, observed_at, source: str,
