@@ -234,12 +234,71 @@ class CreateObjectiveTool(BaseTool):
                 f"spawning a variant"
             )
 
+        # CAMPAIGN drift/dup guard — active campaign locks title
+        # generation onto its subject. Retry-once semantics: on first
+        # failed check REJECT with a hint; on second call within 90s
+        # ACCEPT + LOG so the loop is never blocked.
+        try:
+            active_campaign = await self._persistent_memory.get_active_campaign()
+        except Exception:
+            active_campaign = None
+        if active_campaign:
+            from core.campaign import (
+                title_matches_subject as _tms,
+                titles_near_duplicate as _tnd,
+            )
+            import time as _time
+            subject = str(active_campaign.get("subject", ""))
+            reasons: list[str] = []
+            if not _tms(title, subject):
+                reasons.append(
+                    f"title has no lexical overlap with campaign subject "
+                    f"{subject!r}"
+                )
+            else:
+                try:
+                    prior = await self._persistent_memory.list_campaign_objectives(
+                        active_campaign["campaign_id"],
+                    )
+                except Exception:
+                    prior = []
+                for o in prior:
+                    if _tnd(title, str(o.get("title", ""))):
+                        reasons.append(
+                            f"near-duplicate of prior campaign title "
+                            f"{o.get('title')!r}"
+                        )
+                        break
+            if reasons:
+                # Retry-once: last reject timestamp per-instance. If a
+                # reject fired within 90 s, accept + log rather than
+                # blocking the loop.
+                last = getattr(self, "_last_drift_reject_ts", 0.0)
+                now = _time.monotonic()
+                if now - last > 90.0:
+                    self._last_drift_reject_ts = now  # type: ignore[attr-defined]
+                    return self.failure(
+                        f"campaign guard: {reasons[0]}. Rewrite the title to "
+                        f"mention {subject!r} and pick a fresh angle."
+                    )
+                logger.warning(
+                    "campaign drift/dup after retry — accepting: title={!r} reason={}",
+                    title, reasons[0],
+                )
         try:
             row = await self._persistent_memory.create_objective(
                 title=title,
                 description=description,
                 priority=priority,
             )
+            # Attach to campaign so downstream state accumulates.
+            if active_campaign and row and row.get("objective_id"):
+                try:
+                    await self._persistent_memory.attach_objective_to_campaign(
+                        str(row["objective_id"]), str(active_campaign["campaign_id"]),
+                    )
+                except Exception as _attach_exc:
+                    logger.warning("attach_objective_to_campaign failed: {}", _attach_exc)
             return self.success(self._serialize(row))
         except Exception as exc:
             return self.failure(str(exc))

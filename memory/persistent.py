@@ -328,6 +328,26 @@ class PersistentMemory:
                     "Could not ensure focus_directives table (non-fatal): {}", exc
                 )
             try:
+                # Campaigns — sustained work on ONE subject for N days.
+                # Reuses focus_directives' single-active + tombstone model.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS campaigns (
+                        campaign_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        subject TEXT NOT NULL,
+                        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        ends_at TIMESTAMPTZ NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        ended_at TIMESTAMPTZ NULL
+                    );
+                    """
+                )
+                await connection.execute(
+                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS campaign_id UUID;"
+                )
+            except Exception as exc:
+                logger.warning("Could not ensure campaigns table (non-fatal): {}", exc)
+            try:
                 await connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS self_modify_proposals (
@@ -1374,6 +1394,129 @@ class PersistentMemory:
                 "WHERE cleared_at IS NULL RETURNING focus_id"
             )
         return row is not None
+
+    # ─────────────────────────────────────────────────────────────────
+    # CAMPAIGNS — sustained, subject-locked work across days. Same
+    # single-active discipline as focus_directives: starting a new
+    # campaign auto-completes any active one.
+    # ─────────────────────────────────────────────────────────────────
+    async def start_campaign(self, subject: str, days: int) -> str:
+        """Auto-complete any active campaign, insert a new one, return id."""
+        from datetime import datetime, timedelta, timezone
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE campaigns SET status='completed', ended_at=NOW() "
+                    "WHERE status='active'"
+                )
+                ends_at = datetime.now(timezone.utc) + timedelta(days=int(days))
+                row = await conn.fetchrow(
+                    "INSERT INTO campaigns (subject, ends_at) "
+                    "VALUES ($1, $2) RETURNING campaign_id",
+                    subject.strip(), ends_at,
+                )
+        return str(row["campaign_id"])
+
+    async def get_active_campaign(self) -> dict[str, Any] | None:
+        """Newest active row (single-active discipline enforced at write)."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT campaign_id, subject, started_at, ends_at "
+                "FROM campaigns WHERE status='active' "
+                "ORDER BY started_at DESC LIMIT 1"
+            )
+        return dict(row) if row else None
+
+    async def end_campaign(
+        self, campaign_id: str | None = None, status: str = "cancelled",
+    ) -> bool:
+        """Close active campaign (or a specific one). Returns True if closed."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            if campaign_id:
+                import uuid as _uuid
+                row = await conn.fetchrow(
+                    "UPDATE campaigns SET status=$2, ended_at=NOW() "
+                    "WHERE campaign_id=$1 AND status='active' "
+                    "RETURNING campaign_id",
+                    _uuid.UUID(str(campaign_id)), status,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "UPDATE campaigns SET status=$1, ended_at=NOW() "
+                    "WHERE status='active' RETURNING campaign_id", status,
+                )
+        return row is not None
+
+    async def expire_active_campaign_if_due(self) -> dict[str, Any] | None:
+        """Called at cycle start — if the active campaign's ends_at is past,
+        auto-complete it and return the closed row (else None)."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE campaigns SET status='completed', ended_at=NOW() "
+                "WHERE status='active' AND ends_at <= NOW() "
+                "RETURNING campaign_id, subject, started_at, ends_at, ended_at"
+            )
+        return dict(row) if row else None
+
+    async def attach_objective_to_campaign(
+        self, objective_id: str, campaign_id: str,
+    ) -> None:
+        import uuid as _uuid
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE objectives SET campaign_id=$2 WHERE objective_id=$1",
+                _uuid.UUID(str(objective_id)), _uuid.UUID(str(campaign_id)),
+            )
+
+    async def get_theses_by_objective(
+        self, objective_id: str,
+    ) -> list[dict[str, Any]]:
+        """All theses attached to one objective (chronological)."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT thesis_id::text AS thesis_id, subject, claim, "
+                "confidence, evidence, status, created_at "
+                "FROM theses WHERE objective_id::text = $1 "
+                "ORDER BY created_at",
+                str(objective_id),
+            )
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("evidence"), str):
+                d["evidence"] = json.loads(d["evidence"])
+            out.append(d)
+        return out
+
+    async def list_campaign_objectives(
+        self, campaign_id: str,
+    ) -> list[dict[str, Any]]:
+        import uuid as _uuid
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT objective_id::text AS objective_id, title, description, "
+                "status, sources_used, updated_at, created_at "
+                "FROM objectives WHERE campaign_id=$1 ORDER BY created_at",
+                _uuid.UUID(str(campaign_id)),
+            )
+        return [dict(r) for r in rows]
+
+    async def list_campaigns(self, limit: int = 20) -> list[dict[str, Any]]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT campaign_id::text AS campaign_id, subject, started_at, "
+                "ends_at, status, ended_at FROM campaigns "
+                "ORDER BY started_at DESC LIMIT $1", int(limit),
+            )
+        return [dict(r) for r in rows]
 
     async def record_contradiction(
         self,

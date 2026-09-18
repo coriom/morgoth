@@ -307,6 +307,29 @@ cmd_focus() {
     fi
 }
 
+cmd_campaign() {
+    #   morgoth campaign              → status
+    #   morgoth campaign "SUBJECT" [--days N]  → start
+    #   morgoth campaign --status     → status
+    #   morgoth campaign --end        → end active
+    #   morgoth campaign --report [ID]→ print report
+    if [[ $# -eq 0 || "$1" == "--status" ]]; then
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py status)
+    elif [[ "$1" == "--end" ]]; then
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py end)
+    elif [[ "$1" == "--report" ]]; then
+        shift
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py report "$@")
+    else
+        subject="$1"; shift
+        days=7
+        while [[ $# -gt 0 ]]; do
+            case "$1" in --days) days="$2"; shift 2;; *) shift;; esac
+        done
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py start "$subject" --days "$days")
+    fi
+}
+
 # ---------- usage + dispatch ------------------------------------------------
 
 usage() {
@@ -372,6 +395,7 @@ case "${1:-help}" in
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;
+    campaign)  shift; cmd_campaign "$@";;
     ui)        shift; cmd_ui "$@";;
     help|-h|--help) usage;;
     *)

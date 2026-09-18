@@ -444,6 +444,25 @@ class Brain:
         # Pre-cycle connectivity monitor — one instance per loop. State
         # rides across ticks; transitions persisted once per flip.
         _connectivity = _CM()
+        # Active-campaign expiry — checked at cycle start (below). One-shot
+        # here to avoid burning even one cycle on a campaign that already
+        # ended between the last cycle and this restart.
+        try:
+            _exp = await self._persistent_memory.expire_active_campaign_if_due()
+            if _exp:
+                logger.info(
+                    "campaign expired at startup: {} (subject={!r})",
+                    _exp["campaign_id"], _exp["subject"],
+                )
+                # Auto-emit report on close.
+                try:
+                    from core.campaign import format_campaign_report as _fr
+                    objs = await self._persistent_memory.list_campaign_objectives(_exp["campaign_id"])
+                    logger.info("\n{}", _fr(_exp, objs, [], []))
+                except Exception:
+                    pass
+        except Exception as _e:
+            logger.warning("campaign expiry probe failed: {}", _e)
         # Downtime detection — one-shot at startup, before the first cycle.
         # Uses metric_series as the heartbeat signal (recorder writes every
         # 15 min while alive). Non-fatal.
@@ -831,7 +850,44 @@ class Brain:
                     generation_ctx = await build_generation_context(
                         self._persistent_memory, self._config,
                     )
-                    if generation_ctx:
+                    # CAMPAIGN — if an active campaign exists, swap the
+                    # DIVERGE instruction for a subject-lock + inject the
+                    # accumulation block. Non-campaign path stays byte-
+                    # identical (grep-locked in tests).
+                    _campaign = None
+                    try:
+                        _campaign = await self._persistent_memory.get_active_campaign()
+                    except Exception:
+                        _campaign = None
+                    if _campaign:
+                        # Also expire in-flight (belt + braces).
+                        try:
+                            _exp = await self._persistent_memory.expire_active_campaign_if_due()
+                            if _exp:
+                                _campaign = None
+                        except Exception:
+                            pass
+                    if _campaign and generation_ctx:
+                        from core.campaign import build_accumulation_block as _bab
+                        c_objs = await self._persistent_memory.list_campaign_objectives(
+                            _campaign["campaign_id"],
+                        )
+                        c_titles = [o["title"] for o in c_objs if o.get("title")]
+                        c_theses = []
+                        for o in c_objs:
+                            try:
+                                ts = await self._persistent_memory.get_theses_by_objective(o["objective_id"])
+                                c_theses.extend(ts)
+                            except Exception:
+                                continue
+                        accum = _bab(str(_campaign["subject"]), c_theses, c_titles)
+                        prompt = (
+                            f"{generation_ctx}\n{accum}\n\n"
+                            "NO ACTIVE OBJECTIVES.\n\n"
+                            "MANDATORY: end this cycle by calling create_objective. "
+                            "Do not narrate. Tool calls only."
+                        )
+                    elif generation_ctx:
                         prompt = (
                             f"{generation_ctx}"
                             "NO ACTIVE OBJECTIVES.\n\n"
