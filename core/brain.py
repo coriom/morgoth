@@ -1025,8 +1025,24 @@ class Brain:
                         objective_id=obj_id,
                     )
                     action_desc = f"worked on objective {obj.get('title', obj_id)}"
+                    _chain_creation = False
                 else:
                     action_desc = "no objectives — created new objective"
+                    # CHAINED CREATION — measured share of cycles spent
+                    # only creating was 50 % (55 creates / 110 events in
+                    # last 24h). Skip the inter-cycle sleep so the next
+                    # iteration claims the fresh objective and does REAL
+                    # work in the same cadence slot. No new plumbing:
+                    # cycle_count still increments exactly once — inside
+                    # the `if objectives:` branch, on the WORK pass.
+                    # Creation cycles don't count against MAX_CYCLES
+                    # (they didn't before either).
+                    _chain_creation = any(
+                        tr.get("tool") == "create_objective"
+                        and isinstance(tr.get("result"), dict)
+                        and tr["result"].get("success")
+                        for tr in (result.tool_results or [])
+                    )
 
                 self._total_cycles_completed += 1
                 self._last_cycle_at = datetime.now(timezone.utc).isoformat()
@@ -1036,6 +1052,12 @@ class Brain:
                     "Autonomous cycle completed: {}",
                     result.message[:200],
                 )
+                # Chain into work on the just-created objective without
+                # waiting the inter-cycle interval. Falls through to the
+                # sleep in every other case.
+                if _chain_creation:
+                    logger.info("chained creation → skipping inter-cycle sleep")
+                    continue
 
             except asyncio.CancelledError:
                 logger.info("Autonomous cycle cancelled")
