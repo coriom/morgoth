@@ -204,6 +204,28 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create source_snapshots table (non-fatal): {}", exc)
             try:
+                # web_search_cache — query-keyed: 85+ near-duplicate queries
+                # in the corpus. Normalised query text is the lookup key,
+                # results is the raw list payload, TTL enforced at read
+                # time. Recency-word queries (today/latest/now/current)
+                # bypass this cache — see core.source_cache.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS web_search_cache (
+                        cache_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        normalized_query TEXT NOT NULL,
+                        results JSONB NOT NULL,
+                        observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS web_search_cache_query_ts_idx "
+                    "ON web_search_cache (normalized_query, observed_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create web_search_cache table (non-fatal): {}", exc)
+            try:
                 # metric_series — locally-recorded ground-truth history for
                 # metrics whose upstream has no free historical endpoint
                 # (BTC dominance, global market cap, global 24h volume).
@@ -996,6 +1018,31 @@ class PersistentMemory:
                 "VALUES ($1, $2, $3)",
                 str(source)[:64], json.dumps(payload), observed_at,
             )
+
+    async def record_web_search_cache(
+        self, normalized_query: str, results: Any,
+    ) -> None:
+        """Insert one query→results row into web_search_cache."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO web_search_cache (normalized_query, results) "
+                "VALUES ($1, $2)",
+                str(normalized_query)[:512], json.dumps(results),
+            )
+
+    async def latest_web_search_cache(
+        self, normalized_query: str,
+    ) -> dict[str, Any] | None:
+        """Newest cached results for a normalised query, or None."""
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT results, observed_at FROM web_search_cache "
+                "WHERE normalized_query = $1 ORDER BY observed_at DESC LIMIT 1",
+                str(normalized_query),
+            )
+        return dict(row) if row else None
 
     async def latest_source_snapshot(
         self, source: str,

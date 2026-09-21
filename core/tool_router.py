@@ -121,6 +121,8 @@ class ToolRouter:
         if not bypass_cache and self._persistent_memory is not None:
             from core.source_cache import (
                 is_cached_source, cache_enabled, serve_from_cache,
+                serve_web_search, record_web_search_hit, normalize_query,
+                query_bypasses_cache,
             )
             if is_cached_source(name) and cache_enabled():
                 try:
@@ -135,6 +137,32 @@ class ToolRouter:
                         cached["metadata"]["stale"],
                     )
                     return cached
+            # Web-search cache — query-keyed, TTL-bounded, recency-bypass.
+            elif name == "web_search" and cache_enabled():
+                query = str((arguments or {}).get("query", ""))
+                try:
+                    cached = await serve_web_search(self._persistent_memory, query)
+                except Exception as exc:
+                    logger.warning("web_search cache read failed: {}", exc)
+                    cached = None
+                if cached is not None:
+                    logger.debug(
+                        "served web_search from cache age={}s query={!r}",
+                        cached["metadata"]["age_seconds"], query[:60],
+                    )
+                    return cached
+                # MISS or bypass → live call, then persist for next time
+                # (only if the query is non-empty and not a recency query).
+                result = await tool.execute(**arguments)
+                if (isinstance(result, dict) and result.get("success")
+                        and query and not query_bypasses_cache(query)):
+                    try:
+                        await record_web_search_hit(
+                            self._persistent_memory, query, result.get("result"),
+                        )
+                    except Exception as exc:
+                        logger.warning("web_search cache write failed: {}", exc)
+                return result
         return await tool.execute(**arguments)
 
     async def close(self) -> None:

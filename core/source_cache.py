@@ -53,6 +53,25 @@ SOURCE_CACHE_CONFIG: dict[str, tuple[int, int]] = {
     "get_bitcoin_futures_funding":  (30 * 60,  2 * 3600),   # 30min poll, 2h stale
     "get_bitcoin_long_short_ratio": (30 * 60,  2 * 3600),
     "fred_series_observations":     (12 * 3600, 48 * 3600),
+    # 2026-09-18 additions — remaining slow sources.
+    # get_coinbase_btc_stats: 24h OHLC + 30d volume, moves per-minute
+    #   but no one queries it at that granularity — 15min covers thesis-
+    #   generation timescales. Coinbase Exchange: 10 req/s public →
+    #   96/day margin ≥ 900000×.
+    "get_coinbase_btc_stats":       (15 * 60,  60 * 60),
+    # get_ethereum_network_stats: block height (~12s blocks), gas +
+    #   base_fee (variable). 5-min poll = 288/day. BlockCypher free:
+    #   ~200/hour → 4800/day margin 17×. Tight but adequate.
+    "get_ethereum_network_stats":   (5 * 60,   20 * 60),
+    # get_news: RSS aggregates; each poll returns a LIST payload (not
+    #   a scalar digest). serve_from_cache returns the list as-is;
+    #   the metadata envelope carries observed_at + age. 20-min poll
+    #   is generous — news moves in minutes but RSS feeds refresh in
+    #   the same window. Aggregate over feeds ≤ 30 req per poll.
+    "get_news":                     (20 * 60,  60 * 60),
+    # get_crypto_price stays LIVE — its value is per-second (spot
+    # price + last-hour move). Caching would serve stale spot to
+    # objectives whose whole point is a directional read.
 }
 
 # Default args for sources whose tool signature requires named parameters.
@@ -74,6 +93,108 @@ def max_stale_secs(name: str) -> int:
 
 def poll_interval_secs(name: str) -> int:
     return SOURCE_CACHE_CONFIG.get(name, (0, 0))[0]
+
+
+# ────────────────────────────────────────────────────────────────────
+# WEB-SEARCH CACHE — query-keyed, TTL-bounded, recency-bypassed.
+#
+# 85+ near-duplicate queries in the corpus; the same "bitcoin fear
+# greed sentiment" fires four times an hour. Normalise the query,
+# store the results list, serve within TTL. Recency-word queries
+# (today, latest, now, current, recent, breaking, tonight) bypass the
+# cache — a "latest news" query MUST hit the live search.
+# ────────────────────────────────────────────────────────────────────
+
+def web_search_ttl_secs() -> int:
+    raw = os.environ.get("WEB_SEARCH_CACHE_TTL_SECS", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v >= 60:
+                return v
+        except ValueError:
+            pass
+    return 60 * 60  # 1 h default
+
+
+_RECENCY_WORDS: frozenset[str] = frozenset({
+    "today", "latest", "now", "current", "recent", "breaking",
+    "tonight", "yesterday", "this hour", "past hour", "past 24h",
+    "this morning", "this afternoon", "just now",
+})
+
+
+def normalize_query(query: str) -> str:
+    """Lowercase, strip, collapse internal whitespace. Intentionally
+    conservative — no stopword removal (would change semantics of
+    'apple stock' ↔ 'the apple stock')."""
+    if not isinstance(query, str):
+        return ""
+    return " ".join(query.strip().lower().split())
+
+
+def query_bypasses_cache(query: str) -> bool:
+    """True iff the query contains a recency word — a live hit is
+    mandatory ("latest news", "current bitcoin price ...")."""
+    if not query:
+        return False
+    q = normalize_query(query)
+    return any(w in q for w in _RECENCY_WORDS)
+
+
+async def record_web_search_hit(
+    persistent_memory, query: str, results: Any,
+) -> None:
+    """Persist one query→results pair for future cache hits.
+    Skipped when the query bypasses the cache (recency word)."""
+    if query_bypasses_cache(query):
+        return
+    nq = normalize_query(query)
+    if not nq:
+        return
+    await persistent_memory.record_web_search_cache(nq, results)
+
+
+async def serve_web_search(
+    persistent_memory, query: str,
+) -> dict[str, Any] | None:
+    """Return a tool envelope from web_search_cache, or None on miss /
+    TTL expiry / recency bypass. Same envelope shape as serve_from_cache
+    so downstream code doesn't branch on source."""
+    if not cache_enabled():
+        return None
+    if query_bypasses_cache(query):
+        return None
+    nq = normalize_query(query)
+    if not nq:
+        return None
+    row = await persistent_memory.latest_web_search_cache(nq)
+    if not row:
+        return None
+    observed_at = row["observed_at"]
+    age = max(0, int((datetime.now(timezone.utc) - observed_at).total_seconds()))
+    ttl = web_search_ttl_secs()
+    if age > ttl:
+        return None  # TTL expiry → fall through to live search
+    results = row["results"]
+    if isinstance(results, str):
+        try:
+            results = json.loads(results)
+        except Exception:
+            pass
+    return {
+        "success": True,
+        "result": results,
+        "error": None,
+        "metadata": {
+            "from_cache": True,
+            "observed_at": observed_at.isoformat(),
+            "age_seconds": age,
+            "stale": False,  # TTL enforcement is at read; served ⇒ fresh
+            "source": "web_search",
+            "normalized_query": nq,
+        },
+    }
 
 
 async def collect_one(persistent_memory, tool_router, source: str) -> bool:

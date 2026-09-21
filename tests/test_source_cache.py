@@ -18,19 +18,24 @@ def _clear_env(monkeypatch):
 
 
 class TestConfig:
-    def test_scope_lists_only_slow_moving_sources(self):
-        # In-scope: F&G, on-chain, funding, long/short, FRED.
+    def test_scope_lists_slow_moving_sources(self):
+        # In-scope (d647524 + phase-A extension): 5 originals + 3 new.
         assert set(sc.SOURCE_CACHE_CONFIG.keys()) == {
             "get_fear_greed_index",
             "get_bitcoin_onchain",
             "get_bitcoin_futures_funding",
             "get_bitcoin_long_short_ratio",
             "fred_series_observations",
+            "get_coinbase_btc_stats",
+            "get_ethereum_network_stats",
+            "get_news",
         }
 
     def test_live_sources_not_cached(self):
-        for name in ("get_crypto_price", "get_coinbase_btc_stats",
-                     "get_ethereum_network_stats", "get_news", "web_search"):
+        # get_crypto_price stays LIVE (per-second value).
+        # web_search has its own query-keyed cache path — not in
+        # SOURCE_CACHE_CONFIG (which is source-name-keyed).
+        for name in ("get_crypto_price", "web_search"):
             assert not sc.is_cached_source(name)
 
     def test_all_intervals_have_room_below_stale_threshold(self):
@@ -56,7 +61,9 @@ class TestConfig:
         # funding = 48/day  — margin > 70000×
         # long/short = 48/day
         # FRED = 2/day      — margin > 86000×
-        assert total_per_day < 400, f"aggregate {total_per_day}/day too high"
+        # Post-extension: 5 originals + 3 new = ~702/day.
+        # BlockCypher is the tightest ceiling at 4800/day → margin >6×.
+        assert total_per_day < 1000, f"aggregate {total_per_day}/day too high"
         assert total_per_day > 200, "aggregate looks suspiciously low"
 
 
