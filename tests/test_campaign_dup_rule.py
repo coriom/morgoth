@@ -70,28 +70,44 @@ class TestIdenticalTitleRejected:
 class TestDeadlockCap:
     async def test_after_N_consecutive_rejects_force_accepts(self):
         # The loop must never block. After CAMPAIGN_DUP_MAX_REJECTS
-        # consecutive rejects on the same tool instance, the next
-        # call force-accepts and logs. Default is 3 → third call
-        # is the force-accept.
+        # consecutive rejects on the same tool instance, the NEXT
+        # call is the force-accept. With MAX_REJECTS=3 → reject
+        # attempts 1,2,3; force-accept attempt 4.
         subject = "BTC dominance"
         dup = "Duplicate title BTC dominance"
         tool, pm = _tool_with_prior(subject, [dup])
-        # Rejects 1..N-1
-        for i in range(CAMPAIGN_DUP_MAX_REJECTS - 1):
+        for i in range(CAMPAIGN_DUP_MAX_REJECTS):
             r = await tool.execute(title=dup, description=f"d{i}")
             assert r["success"] is False, f"attempt {i+1} should reject"
             expected_marker = f"({i+1}/{CAMPAIGN_DUP_MAX_REJECTS})"
             assert expected_marker in r["error"]
-        # The N-th attempt is the deadlock guard: force-accept.
         pm.create_objective.assert_not_called()
+        # Attempt N+1: force-accept.
         r = await tool.execute(title=dup, description="dfinal")
         assert r["success"] is True
         pm.create_objective.assert_awaited_once()
 
+    async def test_force_accept_rearms_the_guard(self):
+        # Regression: the very next duplicate after a force-accept
+        # must REJECT again at 1/N, not slide into permanent auto-
+        # accept. Operator-specified sequence for 6 identical
+        # titles with MAX_REJECTS=3: R R R A R R.
+        subject = "BTC dominance"
+        dup = "Duplicate title BTC dominance"
+        tool, pm = _tool_with_prior(subject, [dup])
+        outcomes = []
+        for i in range(6):
+            r = await tool.execute(title=dup, description=f"d{i}")
+            outcomes.append("A" if r["success"] else "R")
+        assert outcomes == ["R", "R", "R", "A", "R", "R"], (
+            f"6-identical-title sequence broke: {outcomes}"
+        )
+        # Only one force-accept fired → exactly one persistence call.
+        pm.create_objective.assert_awaited_once()
+
     async def test_clean_pass_resets_counter(self):
-        # Two rejects then a clean pass — the counter resets, so the
-        # next duplicate cycle starts fresh (rejects again at 1/3
-        # rather than force-accepting at 3/3).
+        # Two rejects then a clean pass — counter resets, so the next
+        # duplicate rejects at 1/N rather than continuing to N/N.
         subject = "BTC dominance"
         dup = "Duplicate title BTC dominance"
         tool, pm = _tool_with_prior(subject, [dup])
@@ -104,8 +120,7 @@ class TestDeadlockCap:
         r = await tool.execute(title="BTC dominance macro drivers",
                                  description="fresh")
         assert r["success"] is True
-        # Counter reset → next duplicate rejects again at 1/N, not
-        # force-accepts at N/N.
+        # Counter reset → next duplicate rejects again at 1/N.
         pm.list_campaign_objectives = AsyncMock(return_value=[
             {"title": dup},
         ])

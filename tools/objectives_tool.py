@@ -287,7 +287,7 @@ class CreateObjectiveTool(BaseTool):
                 # doesn't burn future budget.
                 consecutive = getattr(self, "_consecutive_drift_rejects", 0) + 1
                 self._consecutive_drift_rejects = consecutive  # type: ignore[attr-defined]
-                if consecutive < CAMPAIGN_DUP_MAX_REJECTS:
+                if consecutive <= CAMPAIGN_DUP_MAX_REJECTS:
                     return self.failure(
                         f"campaign guard ({consecutive}/{CAMPAIGN_DUP_MAX_REJECTS}): "
                         f"{reasons[0]}. Rewrite the title to mention "
@@ -298,8 +298,12 @@ class CreateObjectiveTool(BaseTool):
                     "accepting: title={!r} reason={}",
                     consecutive, title, reasons[0],
                 )
-                # Counter is NOT reset here — that would re-arm and
-                # allow another wave. Reset only on a clean pass.
+                # RE-ARM the guard on force-accept so the very next
+                # duplicate rejects again at 1/N rather than sliding
+                # into permanent auto-accept. Otherwise a stuck model
+                # that produced ONE force-accept would then get every
+                # subsequent duplicate accepted for free.
+                self._consecutive_drift_rejects = 0  # type: ignore[attr-defined]
             else:
                 # Clean pass — reset the consecutive-reject counter.
                 self._consecutive_drift_rejects = 0  # type: ignore[attr-defined]
