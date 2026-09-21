@@ -104,11 +104,39 @@ def build_accumulation_block(
     return "\n".join(lines)
 
 
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    u = len(a | b)
+    return (len(a & b) / u) if u else 0.0
+
+
+def _pairwise_title_similarity(
+    titles: list[str],
+) -> tuple[float, tuple[str, str, float] | None]:
+    """Mean pairwise Jaccard + closest pair (t1, t2, score). Reuses
+    the _tokens helper from the drift/dup guard so the numbers here
+    match what CreateObjectiveTool's dup guard sees."""
+    if len(titles) < 2:
+        return 0.0, None
+    scores: list[float] = []
+    top: tuple[str, str, float] | None = None
+    for i in range(len(titles)):
+        for j in range(i + 1, len(titles)):
+            s = _jaccard(_tokens(titles[i]), _tokens(titles[j]))
+            scores.append(s)
+            if top is None or s > top[2]:
+                top = (titles[i], titles[j], s)
+    mean = sum(scores) / len(scores) if scores else 0.0
+    return mean, top
+
+
 def format_campaign_report(
     campaign: dict[str, Any],
     objectives: list[dict[str, Any]],
     theses: list[dict[str, Any]],
     contradictions: list[dict[str, Any]],
+    prior_canonical_subjects: set[str] | None = None,
 ) -> str:
     """Plain-text campaign report — screenshot-friendly, no LLM prose."""
     subj = campaign.get("subject", "?")
@@ -157,4 +185,60 @@ def format_campaign_report(
         lines.append("CONTRADICTIONS raised within the subject:")
         for c in contradictions:
             lines.append(f"  - {c.get('subject_group')} ({c.get('detected_at')})")
+
+    # (a) ANGLE DIVERGENCE — mean pairwise Jaccard + the closest pair.
+    # Low mean + a low top score → real angle divergence. High top
+    # score = a near-duplicate slipped past CreateObjectiveTool's
+    # retry-once dup guard; operator should see the pair verbatim.
+    titles = [o.get("title", "") for o in objectives if o.get("title")]
+    mean_sim, top_pair = _pairwise_title_similarity(titles)
+    lines.append("")
+    lines.append("ANGLE DIVERGENCE (pairwise Jaccard on titles):")
+    if len(titles) < 2:
+        lines.append("  n/a — need ≥2 objectives")
+    else:
+        lines.append(f"  mean similarity : {mean_sim:.2f}")
+        if top_pair:
+            lines.append(f"  closest pair    : {top_pair[2]:.2f}")
+            lines.append(f"    · {top_pair[0]}")
+            lines.append(f"    · {top_pair[1]}")
+
+    # (b) SCORABILITY — triage the campaign's theses via the backtest
+    # classifier (canonical_subject preferred, falls back to raw).
+    # Do NOT re-implement the classifier here.
+    from analysis.thesis_backtest_descriptive import triage as _triage
+    rows_for_triage = [
+        {
+            "subject": t.get("canonical_subject") or t.get("subject", ""),
+            "claim": t.get("claim", ""),
+        }
+        for t in theses
+    ]
+    counts, _mrs, _un, _subj = _triage(rows_for_triage) if rows_for_triage else (
+        {"input": 0, "metric": 0, "relation": 0, "unreachable": 0, "subjective": 0},
+        [], [], [],
+    )
+    lines.append("")
+    lines.append("SCORABILITY (of the theses this campaign produced):")
+    lines.append(f"  verifiable-metric      : {counts.get('metric', 0)}")
+    lines.append(f"  verifiable-relation    : {counts.get('relation', 0)}")
+    lines.append(f"  unreachable (no source): {counts.get('unreachable', 0)}")
+    lines.append(f"  subjective / unmapped  : {counts.get('subjective', 0)}")
+
+    # (c) NOVELTY — how many campaign theses landed on a canonical
+    # subject that did NOT exist before started_at, vs subjects the
+    # store already carried. Caller supplies the pre-campaign set;
+    # empty set means every canonical is treated as new.
+    prior = prior_canonical_subjects or set()
+    campaign_canonicals = [
+        (t.get("canonical_subject") or "").strip().lower()
+        for t in theses if (t.get("canonical_subject") or "").strip()
+    ]
+    novel = sum(1 for c in campaign_canonicals if c not in prior)
+    reused = sum(1 for c in campaign_canonicals if c in prior)
+    lines.append("")
+    lines.append("NOVELTY (canonical subjects introduced by this campaign):")
+    lines.append(f"  novel (not seen before campaign start) : {novel}")
+    lines.append(f"  reused (already in store)              : {reused}")
+
     return "\n".join(lines) + "\n"

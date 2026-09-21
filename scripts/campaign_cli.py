@@ -74,7 +74,24 @@ async def _cmd_report(pm: PersistentMemory, args: argparse.Namespace) -> int:
     theses: list[dict] = []
     for o in objs:
         theses.extend(await pm.get_theses_by_objective(o["objective_id"]))
-    print(format_campaign_report(row, objs, theses, []))
+    # Prior canonical subjects — anything the store already carried
+    # before this campaign started. Used for the novelty section.
+    prior: set[str] = set()
+    started = row.get("started_at")
+    if started is not None:
+        try:
+            pool = pm._require_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT DISTINCT canonical_subject FROM theses "
+                    "WHERE created_at < $1 AND canonical_subject IS NOT NULL",
+                    started,
+                )
+            prior = {r["canonical_subject"] for r in rows if r["canonical_subject"]}
+        except Exception:
+            prior = set()
+    print(format_campaign_report(row, objs, theses, [],
+                                    prior_canonical_subjects=prior))
     return 0
 
 
