@@ -44,11 +44,47 @@ def _tokens(text: str) -> set[str]:
     return {t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS}
 
 
+# Asset / market qualifiers that are TOO GENERIC to prove the title
+# stays on-subject. "BTC dominance" and "BTC short-term price" share
+# only "btc" — accepting that as a match let 6 of 23 campaign titles
+# drift off the subject. Distinctive tokens are subject tokens MINUS
+# these generics. If the subject is entirely generic (e.g. "BTC")
+# we fall back to requiring ALL tokens instead.
+_GENERIC_SUBJECT_TOKENS: frozenset[str] = frozenset({
+    "btc", "bitcoin", "eth", "ethereum", "crypto", "cryptocurrency",
+    "market", "markets", "price", "prices",
+})
+
+
+def _distinctive_subject_tokens(subject: str) -> set[str]:
+    """Subject tokens MINUS generics. Used to gate title-drift."""
+    return _tokens(subject) - _GENERIC_SUBJECT_TOKENS
+
+
 def title_matches_subject(title: str, subject: str) -> bool:
-    """True iff the title shares ≥1 non-stopword token with the subject.
-    Used as a drift guard on newly-generated campaign objectives —
-    "Ethereum hashrate" fails against subject "BTC dominance"."""
-    return bool(_tokens(title) & _tokens(subject))
+    """Drift guard for campaign objective titles.
+
+    Rule (2026-09-21 tightening — the earlier "≥1 shared token" rule
+    let "BTC short-term price" pass against "BTC dominance" because
+    "btc" is shared):
+
+      1. Compute distinctive subject tokens = subject tokens MINUS
+         the {btc, bitcoin, eth, ethereum, crypto, market, price,…}
+         generics.
+      2. If distinctive tokens exist, require the title to contain
+         AT LEAST ONE of them.
+      3. If the subject is ENTIRELY generic (all its tokens are in
+         the generic set — e.g. subject="BTC"), fall back to
+         requiring ALL of its tokens in the title. That's the
+         only meaningful signal left.
+    """
+    title_tokens = _tokens(title)
+    subject_tokens = _tokens(subject)
+    distinctive = subject_tokens - _GENERIC_SUBJECT_TOKENS
+    if distinctive:
+        return bool(title_tokens & distinctive)
+    # Subject is entirely generic — fall back to require every token.
+    return bool(subject_tokens) and subject_tokens.issubset(title_tokens)
 
 
 def titles_near_duplicate(new_title: str, prior_title: str) -> bool:

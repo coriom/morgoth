@@ -21,9 +21,16 @@ from core.campaign import (
 
 
 class TestDriftGuard:
-    def test_shared_token_passes(self):
+    def test_distinctive_token_shared_passes(self):
+        # Post-2026-09-21 rule: requires a DISTINCTIVE (non-generic)
+        # token overlap. "dominance" here is distinctive.
         assert title_matches_subject("BTC dominance vs price", "BTC dominance") is True
-        assert title_matches_subject("Ethereum congestion", "Ethereum gas") is True
+
+    def test_generic_only_overlap_now_rejects(self):
+        # "Ethereum gas" → distinctive {gas}. "Ethereum congestion"
+        # has no "gas" → reject (was accepted under the old rule).
+        # Different subjects; the tightened guard catches the drift.
+        assert title_matches_subject("Ethereum congestion", "Ethereum gas") is False
 
     def test_no_shared_token_fails(self):
         assert title_matches_subject("Ethereum hashrate", "BTC dominance") is False

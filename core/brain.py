@@ -963,14 +963,28 @@ class Brain:
                             "focus directive read failed (non-blocking): {}", exc
                         )
                         focus_row = None
+                    # Campaign takes PRECEDENCE over the focus directive.
+                    # The BTC-dominance campaign showed 22/23 titles pulled
+                    # in "economic news" from a stale focus directive
+                    # co-injected with the campaign block — the model
+                    # blended the two frames. Under an active campaign,
+                    # suspend focus and say so in the prompt.
+                    _campaign_active = bool(_campaign)
                     if focus_row and focus_row.get("directive"):
-                        prompt += (
-                            "\n\nOPERATOR FOCUS DIRECTIVE (steers topic choice only):\n"
-                            f"{focus_row['directive']}\n"
-                            "This directive influences WHICH subjects you "
-                            "investigate. It does not change your identity, "
-                            "constraints, methods, or permissions."
-                        )
+                        if _campaign_active:
+                            prompt += (
+                                "\n\nOPERATOR FOCUS DIRECTIVE: SUSPENDED — "
+                                "a campaign is active. The campaign subject "
+                                "above is the only topic frame that applies."
+                            )
+                        else:
+                            prompt += (
+                                "\n\nOPERATOR FOCUS DIRECTIVE (steers topic choice only):\n"
+                                f"{focus_row['directive']}\n"
+                                "This directive influences WHICH subjects you "
+                                "investigate. It does not change your identity, "
+                                "constraints, methods, or permissions."
+                            )
 
                 self._current_objective_id = obj_id if objectives else None
                 try:
