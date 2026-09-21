@@ -450,6 +450,16 @@ class Brain:
         # Pre-cycle connectivity monitor — one instance per loop. State
         # rides across ticks; transitions persisted once per flip.
         _connectivity = _CM()
+        # Backup catch-up — the cron fires at 04:00 but the operator now
+        # shuts the PC down at night, so the schedule never runs. This
+        # spawns scripts/backup_morgoth.sh in the background when the
+        # latest backup exceeds MORGOTH_BACKUP_MAX_AGE_HOURS (default
+        # 24). Non-blocking, non-fatal.
+        try:
+            from core.backup_watchdog import catch_up_if_stale as _bcu
+            await _bcu()
+        except Exception as _bwd_exc:
+            logger.warning("backup watchdog failed (non-fatal): {}", _bwd_exc)
         # Active-campaign expiry — checked at cycle start (below). One-shot
         # here to avoid burning even one cycle on a campaign that already
         # ended between the last cycle and this restart.

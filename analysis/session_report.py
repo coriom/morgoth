@@ -59,6 +59,8 @@ class SessionReport:
     session_gaps: int = 0
     session_gaps_longest_secs: int = 0
     session_gaps_last_resume: str = ""
+    backup_age_seconds: float = -1.0
+    backup_size_bytes: int = 0
     llm_by_task_provider: list[dict[str, Any]] = field(default_factory=list)
     pending_measurements: dict[str, Any] = field(default_factory=dict)
     proposals_pending: int = 0
@@ -120,6 +122,16 @@ class SessionReport:
             f"SESSION GAPS             : {self.session_gaps} gaps, "
             f"longest {_lg_h:.1f}h, last resumed at {_last}"
         )
+        if self.backup_age_seconds < 0:
+            lines.append("BACKUP                   : none found (WARNING)")
+        else:
+            from core.backup_watchdog import format_age, format_size
+            age_str = format_age(self.backup_age_seconds)
+            size_str = format_size(self.backup_size_bytes)
+            marker = "  ⚠ >48h" if self.backup_age_seconds > 48 * 3600 else ""
+            lines.append(
+                f"BACKUP                   : last {age_str} ago ({size_str}){marker}"
+            )
         if self.rail_summary:
             lines.append(self.rail_summary)
         if self.fallback_events:
@@ -285,6 +297,17 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.session_gaps = 0
             r.session_gaps_longest_secs = 0
             r.session_gaps_last_resume = ""
+        # Backup age — filesystem probe, no DB.
+        try:
+            from core.backup_watchdog import latest_backup_info
+            info = latest_backup_info()
+            if info:
+                r.backup_age_seconds = float(info["age_seconds"])
+                r.backup_size_bytes = int(info["size_bytes"])
+            else:
+                r.backup_age_seconds = -1.0
+        except Exception:
+            r.backup_age_seconds = -1.0
         # LLM calls
         try:
             llm_rows = await conn.fetch(

@@ -16,6 +16,11 @@ REPO_DIR="$HOME/Morgoth/morgoth"
 BACKUP_ROOT="$HOME/Morgoth/backups"
 LOG_FILE="$BACKUP_ROOT/backup.log"
 RETENTION_DAYS="${MORGOTH_BACKUP_RETENTION_DAYS:-14}"
+# Also cap the keep-count. Combined with RETENTION_DAYS, the two
+# policies guarantee: (a) intermittent-usage catch-up backups can't
+# fill the disk beyond N slots; (b) even a burst of same-day backups
+# doesn't purge older ones the operator may need for recovery.
+RETENTION_COUNT="${MORGOTH_BACKUP_RETENTION_COUNT:-7}"
 CHROMA_DIR="$REPO_DIR/data/chroma_db"
 
 mkdir -p "$BACKUP_ROOT"
@@ -82,11 +87,21 @@ if [[ "$PG_OK" -eq 1 && "$CHROMA_OK" -eq 1 ]]; then
     while IFS= read -r -d '' old; do
         rm -rf "$old"
         PRUNED=$((PRUNED + 1))
-        log "pruned $old"
+        log "pruned age $old"
     done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d \
                   -not -path "$DEST" \
                   -mtime "+$RETENTION_DAYS" -print0)
-    log "prune complete count=$PRUNED retention_days=$RETENTION_DAYS"
+    # Count-based prune — keep only the RETENTION_COUNT most-recent
+    # directories. Names are sortable timestamps (YYYYMMDD_HHMMSS).
+    mapfile -t BACKUPS < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r)
+    if (( ${#BACKUPS[@]} > RETENTION_COUNT )); then
+        for ((i=RETENTION_COUNT; i<${#BACKUPS[@]}; i++)); do
+            rm -rf "$BACKUP_ROOT/${BACKUPS[i]}"
+            PRUNED=$((PRUNED + 1))
+            log "pruned count $BACKUP_ROOT/${BACKUPS[i]}"
+        done
+    fi
+    log "prune complete count=$PRUNED retention_days=$RETENTION_DAYS retention_count=$RETENTION_COUNT"
 else
     log "prune SKIPPED (backup did not fully succeed)"
 fi
