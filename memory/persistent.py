@@ -324,6 +324,13 @@ class PersistentMemory:
                     "CREATE INDEX IF NOT EXISTS theses_canonical_subject_idx "
                     "ON theses (canonical_subject);"
                 )
+                # 2026-09-21 quarantine mechanism: reversibly mark
+                # contaminated theses without deleting them. status is
+                # flipped to 'quarantined' and the reason is stored so
+                # `scripts/quarantine_theses.py undo` can restore.
+                await connection.execute(
+                    "ALTER TABLE theses ADD COLUMN IF NOT EXISTS quarantine_reason TEXT;"
+                )
             except Exception as exc:
                 logger.warning("Could not ensure theses table (non-fatal): {}", exc)
             try:

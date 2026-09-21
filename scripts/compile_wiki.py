@@ -465,8 +465,9 @@ async def _load_tool_usage(
             "SELECT sources_used FROM objectives WHERE sources_used IS NOT NULL"
         )
         thesis_rows = await conn.fetch(
+            # EXCLUDE quarantined (2026-09-21 contamination audit).
             "SELECT subject, evidence FROM theses "
-            "WHERE evidence IS NOT NULL AND status != 'stale'"
+            "WHERE evidence IS NOT NULL AND status NOT IN ('stale', 'quarantined')"
         )
 
     objectives_count: dict[str, int] = {}

@@ -76,9 +76,14 @@ async def _fetch_theses(config) -> list[dict[str, Any]]:
         pool = pm._require_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
+                # EXCLUDE quarantined theses (2026-09-21) — pre-2025 FRED
+                # readings and interestRate-mislabelled funding rates were
+                # marked with status='quarantined' after the audit. They
+                # must not enter backtest scoring.
                 "SELECT thesis_id, subject, claim, confidence, evidence, status, "
                 "objective_id, created_at, code_version "
-                "FROM theses ORDER BY created_at ASC"
+                "FROM theses WHERE status <> 'quarantined' "
+                "ORDER BY created_at ASC"
             )
         out = []
         for r in rows:
