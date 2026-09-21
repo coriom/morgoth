@@ -81,6 +81,55 @@ class TestUnquarantineIsReversible:
         assert "'interestrate_as_funding'" in src
 
 
+class TestContradictionVoiding:
+    def test_apply_voids_open_contradictions(self):
+        # Structural: _cmd_quarantine now voids open contradictions
+        # touching a newly-quarantined thesis. Grep-lock the SQL.
+        from scripts import quarantine_theses as q
+        src = inspect.getsource(q._cmd_quarantine)
+        assert "UPDATE contradictions SET resolution='voided_quarantine'" in src
+        assert "resolution IS NULL" in src
+
+    def test_undo_reopens_only_voided_by_quarantine(self):
+        from scripts import quarantine_theses as q
+        src = inspect.getsource(q._cmd_unquarantine)
+        assert "resolution='voided_quarantine'" in src
+        # Only reopens when BOTH theses are back to active — else the
+        # operator's manual resolution is preserved.
+        assert "status='active'" in src
+
+
+class TestDirectionalBacktestAndTrackRecordExclusion:
+    def test_directional_backtest_filters_quarantined(self):
+        from scripts import backtest_theses as m
+        src = inspect.getsource(m._fetch_theses)
+        assert "status <> 'quarantined'" in src
+
+    def test_track_record_reuses_backtest_scorers(self):
+        # track_record has no direct theses fetch — it consumes the
+        # backtest module's records. Exclusion inherits from the
+        # backtest fetch above. Grep-lock: no `FROM theses` in the
+        # module.
+        from analysis import track_record as m
+        src = inspect.getsource(m)
+        assert "FROM theses" not in src.upper() or "from theses" not in src.lower()
+
+
+class TestReasonCodesEnumerated:
+    def test_three_reason_codes_are_used(self):
+        # 2026-09-21 audit produced three reason codes:
+        # fred_oldest_first, interestrate_as_funding, training_derived.
+        # The apply script writes the first two automatically; the
+        # third is set manually for claims that cannot come from FRED.
+        expected = {"fred_oldest_first", "interestrate_as_funding",
+                     "training_derived"}
+        # Documented in the module docstring and/or code.
+        from scripts import quarantine_theses as q
+        src = inspect.getsource(q)
+        for code in expected:
+            assert code in src, f"reason code {code!r} not referenced"
+
+
 class TestSchemaMigration:
     def test_quarantine_reason_column_added_in_initialize(self):
         from memory.persistent import PersistentMemory

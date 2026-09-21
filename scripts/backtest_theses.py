@@ -62,11 +62,15 @@ async def _fetch_theses(config) -> list[dict[str, Any]]:
     try:
         # Pull ALL statuses so a thesis marked stale after being generated
         # still counts as a prediction that either hit or missed.
+        # EXCEPTION (2026-09-21): quarantined theses are proven-wrong by
+        # audit (fred_oldest_first / interestrate_as_funding) and MUST
+        # NOT contribute to hit-rate — they'd bias the calibration.
         pool = pm._require_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT thesis_id, subject, claim, confidence, evidence, status, "
-                "objective_id, created_at FROM theses ORDER BY created_at ASC"
+                "objective_id, created_at FROM theses "
+                "WHERE status <> 'quarantined' ORDER BY created_at ASC"
             )
         out = []
         for r in rows:

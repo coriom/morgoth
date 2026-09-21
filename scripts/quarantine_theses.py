@@ -1,6 +1,6 @@
 """Reversibly mark contaminated theses as quarantined.
 
-Two reason codes used in the 2026-09-21 audit:
+Three reason codes used in the 2026-09-21 audit:
   fred_oldest_first     — thesis cites a pre-2025 FRED observation as
                            if current (tools/connectors/fred.py used to
                            reverse the desc response, putting May 2018
@@ -9,6 +9,12 @@ Two reason codes used in the 2026-09-21 audit:
                            interestRate = 0.00010000 as the funding
                            rate itself (get_bitcoin_futures_funding
                            digest carried the confusion-source field).
+  training_derived      — claim quotes a specific past date/period
+                           (e.g. hashrate "since early 2023", mining
+                           difficulty "plateauing until 2024") that
+                           the tool couldn't have produced — pure
+                           model-training leakage. Set manually
+                           after the automated FRED sweep.
 
 `quarantine` sets status='quarantined' + quarantine_reason=<code>.
 `unquarantine` restores status='active' and NULLs the reason.
@@ -84,8 +90,19 @@ async def _cmd_quarantine(pm: PersistentMemory, _args) -> int:
                 "quarantine_reason='interestrate_as_funding' WHERE thesis_id=$1",
                 _u.UUID(tid),
             )
+        # Auto-void open contradictions that reference at least one
+        # quarantined thesis. resolution='voided_quarantine' marks
+        # them so `undo` can restore only the ones we voided.
+        voided = await conn.execute(
+            "UPDATE contradictions SET resolution='voided_quarantine' "
+            "WHERE resolution IS NULL AND ("
+            "  thesis_id_a IN (SELECT thesis_id FROM theses WHERE status='quarantined') "
+            "  OR thesis_id_b IN (SELECT thesis_id FROM theses WHERE status='quarantined'))"
+        )
+    voided_n = int(str(voided).split()[-1]) if voided else 0
     print(f"quarantined: fred_oldest_first={len(fred_ids)}  "
-          f"interestrate_as_funding={len(set(funding_ids) - set(fred_ids))}")
+          f"interestrate_as_funding={len(set(funding_ids) - set(fred_ids))}  "
+          f"contradictions voided: {voided_n}")
     return 0
 
 
@@ -104,7 +121,16 @@ async def _cmd_unquarantine(pm: PersistentMemory, args) -> int:
                 "UPDATE theses SET status='active', quarantine_reason=NULL "
                 "WHERE status='quarantined'"
             )
-    print(f"unquarantined: {n}")
+        # Reopen ONLY the contradictions we auto-voided at quarantine
+        # time. Contradictions the operator resolved manually keep
+        # their resolution.
+        reopened = await conn.execute(
+            "UPDATE contradictions SET resolution=NULL "
+            "WHERE resolution='voided_quarantine' AND ("
+            "  thesis_id_a IN (SELECT thesis_id FROM theses WHERE status='active') "
+            "  AND thesis_id_b IN (SELECT thesis_id FROM theses WHERE status='active'))"
+        )
+    print(f"unquarantined: {n}   contradictions reopened: {reopened}")
     return 0
 
 
