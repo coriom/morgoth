@@ -1536,11 +1536,13 @@ class PersistentMemory:
         return str(row["campaign_id"])
 
     async def get_active_campaign(self) -> dict[str, Any] | None:
-        """Newest active row (single-active discipline enforced at write)."""
+        """Newest active row (single-active discipline enforced at write).
+        Includes `status` column so the campaign report renders it
+        instead of None (2026-09-21 report bug fix)."""
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT campaign_id, subject, started_at, ends_at "
+                "SELECT campaign_id, subject, started_at, ends_at, status "
                 "FROM campaigns WHERE status='active' "
                 "ORDER BY started_at DESC LIMIT 1"
             )
@@ -1593,12 +1595,14 @@ class PersistentMemory:
     async def get_theses_by_objective(
         self, objective_id: str,
     ) -> list[dict[str, Any]]:
-        """All theses attached to one objective (chronological)."""
+        """All theses attached to one objective (chronological).
+        Includes `canonical_subject` (2026-09-21 novelty-report fix)
+        so downstream readers can key off the canonicalised form."""
         pool = self._require_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT thesis_id::text AS thesis_id, subject, claim, "
-                "confidence, evidence, status, created_at "
+                "confidence, evidence, status, created_at, canonical_subject "
                 "FROM theses WHERE objective_id::text = $1 "
                 "ORDER BY created_at",
                 str(objective_id),

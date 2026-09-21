@@ -181,10 +181,20 @@ def format_campaign_report(
     dur_h = 0.0
     if isinstance(started, datetime) and isinstance(ended, datetime):
         dur_h = max(0.0, (ended - started).total_seconds() / 3600.0)
+    # C1: sources_used is JSONB and asyncpg may hand it back as a
+    # string. Decode before iterating; the old code was iterating
+    # CHARACTERS of an undecoded JSON string.
+    import json as _json
     src_counts: dict[str, int] = {}
     for o in objectives:
-        for s in (o.get("sources_used") or []):
-            src_counts[s] = src_counts.get(s, 0) + 1
+        raw = o.get("sources_used") or []
+        if isinstance(raw, str):
+            try:
+                raw = _json.loads(raw)
+            except Exception:
+                raw = []
+        for s in raw:
+            src_counts[str(s)] = src_counts.get(str(s), 0) + 1
     lines = [
         f"=== CAMPAIGN REPORT — {subj} ===",
         f"  id           : {campaign.get('campaign_id')}",
@@ -210,10 +220,17 @@ def format_campaign_report(
     lines.append("SOURCES USED (tool → objectives touching it):")
     for name, n in sorted(src_counts.items(), key=lambda kv: -kv[1]):
         lines.append(f"  - {name:<32} {n}")
-    unverif = sum(
-        1 for o in objectives
-        if not (o.get("sources_used") or [])
-    )
+    # C1 (unverif): decode sources_used before checking emptiness,
+    # otherwise '[]' as a string reads as truthy and unverif counts to 0.
+    def _sources_of(o) -> list:
+        raw = o.get("sources_used") or []
+        if isinstance(raw, str):
+            try:
+                return _json.loads(raw)
+            except Exception:
+                return []
+        return raw
+    unverif = sum(1 for o in objectives if not _sources_of(o))
     lines.append("")
     lines.append(f"UNVERIFIABLE (objectives with 0 sources): {unverif}")
     if contradictions:
