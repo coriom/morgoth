@@ -254,11 +254,18 @@ class CreateObjectiveTool(BaseTool):
                 titles_near_duplicate as _tnd,
             )
             subject = str(active_campaign.get("subject", ""))
+            # 2026-09-21: evaluate the FULL text (title + description),
+            # not the truncated 100-char title alone. Three real objectives
+            # (156f2aa8, 435d31f5, 68676388) had "Dominance" cut off the
+            # title and only survived in the description — the guard
+            # would reject them on the truncated title even though the
+            # description proves they are on-subject.
+            full_text = title + " " + (description or "")
             reasons: list[str] = []
-            if not _tms(title, subject):
+            if not _tms(full_text, subject):
                 reasons.append(
-                    f"title has no lexical overlap with campaign subject "
-                    f"{subject!r}"
+                    f"title+description has no distinctive overlap with "
+                    f"campaign subject {subject!r}"
                 )
             else:
                 try:
@@ -267,8 +274,14 @@ class CreateObjectiveTool(BaseTool):
                     )
                 except Exception:
                     prior = []
+                # Compare full text against prior full text so dedup
+                # doesn't spuriously match on the shared truncated stem.
                 for o in prior:
-                    if _tnd(title, str(o.get("title", ""))):
+                    prior_full = (
+                        str(o.get("title", "")) + " "
+                        + str(o.get("description", ""))
+                    )
+                    if _tnd(full_text, prior_full):
                         reasons.append(
                             f"near-duplicate of prior campaign title "
                             f"{o.get('title')!r}"
