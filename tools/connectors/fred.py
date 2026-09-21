@@ -190,7 +190,12 @@ class FredSeriesObservationsTool(BaseTool):
             return self.failure(err, source="fred")
         payload = response.json()
         observations = [self._normalize_observation(item).model_dump() for item in payload.get("observations", [])]
-        observations.reverse()
+        # KEEP the desc order from FRED — newest observation FIRST.
+        # 2026-09-21: previously reversed to oldest-first, which made
+        # `observations[0]` a 2018 point on CPIAUCSL (100-obs default)
+        # and 24 stored theses cited May 2018 CPI as "current inflation".
+        # Newest-first matches the tool description ("recent
+        # observations") and matches how the 8B reads the array.
         return self.success(
             {"series_id": series_id, "observations": observations},
             source="fred",

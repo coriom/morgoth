@@ -19,7 +19,14 @@ _BASE_URL = 'https://fapi.binance.com'
 _ENDPOINT_PATH = '/fapi/v1/premiumIndex?symbol=BTCUSDT'
 _SOURCE_LABEL = 'fapi.binance.com'
 _TOOL_DESCRIPTION = 'Fetch BTC perpetual futures mark price, index price, and current funding rate from Binance to gauge derivatives-market positioning and leverage bias.'
-_DIGEST_FIELDS = ['symbol', 'markPrice', 'indexPrice', 'lastFundingRate', 'nextFundingTime', 'interestRate']
+# 2026-09-21: interestRate REMOVED from the digest. Binance's
+# /fapi/v1/premiumIndex exposes interestRate = 0.00010000 as a
+# CONSTANT component of the funding-rate FORMULA — 10 consecutive
+# source_snapshots showed one distinct value while lastFundingRate
+# varied every 8h window. Its presence in the digest anchored the
+# 8B to "0.00010000 as funding rate" (24 stored theses cite this).
+# Removing it kills the confusion at ingest.
+_DIGEST_FIELDS = ['symbol', 'markPrice', 'indexPrice', 'lastFundingRate', 'nextFundingTime']
 
 
 class GetBitcoinFuturesFundingTool(BaseTool):
