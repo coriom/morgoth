@@ -42,6 +42,12 @@ _TITLE_DERIVATION_WORDS = 8
 # on both sides. Env-overridable so an operator can tighten/loosen
 # without a redeploy.
 DEFAULT_OBJECTIVE_DEDUP_THRESHOLD: float = 0.75
+# Campaign drift/dup deadlock guard: after this many consecutive
+# rejections on a single tool instance, force-accept + log loudly.
+# The loop must never block on a stubborn model, so the counter
+# eventually admits one duplicate. Set to 3 (measured 3 identical
+# titles slipping through the 90-s window at c879767).
+CAMPAIGN_DUP_MAX_REJECTS: int = 3
 
 
 def _resolve_dedup_threshold() -> float:
@@ -247,7 +253,6 @@ class CreateObjectiveTool(BaseTool):
                 title_matches_subject as _tms,
                 titles_near_duplicate as _tnd,
             )
-            import time as _time
             subject = str(active_campaign.get("subject", ""))
             reasons: list[str] = []
             if not _tms(title, subject):
@@ -270,21 +275,34 @@ class CreateObjectiveTool(BaseTool):
                         )
                         break
             if reasons:
-                # Retry-once: last reject timestamp per-instance. If a
-                # reject fired within 90 s, accept + log rather than
-                # blocking the loop.
-                last = getattr(self, "_last_drift_reject_ts", 0.0)
-                now = _time.monotonic()
-                if now - last > 90.0:
-                    self._last_drift_reject_ts = now  # type: ignore[attr-defined]
+                # Retry rule (2026-09-21 replaces the 90 s time-window
+                # retry-once — which accepted IDENTICAL retries):
+                # increment a per-instance consecutive-reject counter
+                # and REJECT with hint. Accept only when the check
+                # ITSELF passes, i.e. reasons is empty. Deadlock guard:
+                # after CAMPAIGN_DUP_MAX_REJECTS consecutive rejections
+                # (default 3), force-accept and log loudly — the loop
+                # must never block on a stubborn model. The counter
+                # resets on any accepted create so a legitimate retry
+                # doesn't burn future budget.
+                consecutive = getattr(self, "_consecutive_drift_rejects", 0) + 1
+                self._consecutive_drift_rejects = consecutive  # type: ignore[attr-defined]
+                if consecutive < CAMPAIGN_DUP_MAX_REJECTS:
                     return self.failure(
-                        f"campaign guard: {reasons[0]}. Rewrite the title to "
-                        f"mention {subject!r} and pick a fresh angle."
+                        f"campaign guard ({consecutive}/{CAMPAIGN_DUP_MAX_REJECTS}): "
+                        f"{reasons[0]}. Rewrite the title to mention "
+                        f"{subject!r} with a fresh angle."
                     )
                 logger.warning(
-                    "campaign drift/dup after retry — accepting: title={!r} reason={}",
-                    title, reasons[0],
+                    "campaign drift/dup after {} consecutive rejects — force-"
+                    "accepting: title={!r} reason={}",
+                    consecutive, title, reasons[0],
                 )
+                # Counter is NOT reset here — that would re-arm and
+                # allow another wave. Reset only on a clean pass.
+            else:
+                # Clean pass — reset the consecutive-reject counter.
+                self._consecutive_drift_rejects = 0  # type: ignore[attr-defined]
         try:
             row = await self._persistent_memory.create_objective(
                 title=title,

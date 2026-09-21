@@ -185,15 +185,20 @@ class TestCreateObjectiveDriftRetry:
         assert "campaign guard" in res["error"]
         pm.create_objective.assert_not_called()
 
-    async def test_drift_second_call_within_90s_accepted(self, monkeypatch):
+    async def test_second_call_with_valid_title_accepted(self, monkeypatch):
+        # Replaces the old within-90s retry-window test. New rule:
+        # a retry is accepted only when it PASSES the drift/dup check
+        # on its own merits, not merely because it came within a
+        # timing window.
         from tools import objectives_tool as ot
         monkeypatch.setattr(ot, "_find_semantic_duplicate",
                              AsyncMock(return_value=None))
         tool, pm = await self._tool_with_campaign("BTC dominance")
-        # First reject.
+        # First reject (drift — title has no subject overlap).
         await tool.execute(title="Ethereum hashrate", description="d")
-        # Second call immediately after → accept + log.
-        res = await tool.execute(title="Ethereum congestion", description="d2")
+        # Second call with a title that MENTIONS the subject → passes.
+        res = await tool.execute(title="BTC dominance short-term",
+                                   description="fresh angle")
         assert res["success"] is True
         pm.create_objective.assert_awaited_once()
         pm.attach_objective_to_campaign.assert_awaited_once()
