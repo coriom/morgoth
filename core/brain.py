@@ -132,6 +132,15 @@ def _compute_tool_sets() -> tuple[frozenset[str], list[str]]:
 DATA_SOURCE_TOOLS, CHAT_TOOL_NAMES = _compute_tool_sets()
 
 
+# Objective-generation cycle: the ONLY mandated action is create_objective;
+# recall is kept so the model can look up prior state if the accumulation
+# block doesn't cover it. Every data-tool schema costs ~350 chars ≈ 100
+# tokens and generation never legitimately fires one — stray fires in the
+# journal were the model auto-completing over the full tool list. Trimming
+# saved 1009 tokens of prompt_eval_count on a real campaign-cycle prompt.
+GENERATION_TOOL_NAMES: tuple[str, ...] = ("create_objective", "recall")
+
+
 def _looks_like_unemitted_tool_intent(text: str | None) -> bool:
     """Return True when terminal-turn text announces a tool action without emitting a tool_call.
 
@@ -1039,9 +1048,16 @@ class Brain:
                             )
 
                 self._current_objective_id = obj_id if objectives else None
+                # Work-cycle (objective claimed) keeps the full tool set so
+                # the model can call data sources. Generation-cycle passes
+                # the trimmed create_objective+recall set — the mandated
+                # action is create_objective and stray data-tool fires
+                # bloat the prompt with 15 unused schemas.
+                _tool_names_for_cycle = None if objectives else GENERATION_TOOL_NAMES
                 try:
                     result = await self.process_message(
-                        prompt, user_id="morgoth_autonomous"
+                        prompt, user_id="morgoth_autonomous",
+                        tool_names=_tool_names_for_cycle,
                     )
                 finally:
                     self._current_objective_id = None
@@ -1781,8 +1797,21 @@ class Brain:
             )
             return await self._llm_client.chat(messages, tools=tools)
 
-    async def process_message(self, content: str, user_id: str = "default") -> BrainResponse:
-        """Process a user chat message and return the assistant response."""
+    async def process_message(
+        self,
+        content: str,
+        user_id: str = "default",
+        *,
+        tool_names: list[str] | tuple[str, ...] | None = None,
+    ) -> BrainResponse:
+        """Process a user chat message and return the assistant response.
+
+        `tool_names` restricts the schemas passed to the LLM. Default (None)
+        exposes the full CHAT_TOOL_NAMES set — used by chat + work-cycle
+        code paths. Generation-mode passes just create_objective + recall
+        so the tool_schemas block drops from ~6.3 KB to ~0.9 KB (measured
+        prompt_eval_count drop: 2927 → 1918 = 1009 tokens saved).
+        """
 
         memory_context = await self._recall_relevant_context(content)
         await self._episodic_memory.add_text(
@@ -1797,7 +1826,9 @@ class Brain:
         if memory_context:
             messages.append(ChatMessage(role="system", content=f"Recent context:\n{memory_context}"))
         messages.append(ChatMessage(role="user", content=content))
-        tool_schemas = self._tool_router.get_schemas(CHAT_TOOL_NAMES)
+        tool_schemas = self._tool_router.get_schemas(
+            list(tool_names) if tool_names is not None else CHAT_TOOL_NAMES
+        )
         try:
             response = await self._chat_with_transient_retry(messages, tools=tool_schemas)
         except httpx.HTTPStatusError as exc:
