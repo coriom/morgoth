@@ -284,7 +284,12 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
         try:
             g_row = await conn.fetchrow(
                 "SELECT COUNT(*) AS n, coalesce(MAX(duration_secs), 0) AS lg "
-                "FROM session_gaps WHERE started_at >= $1", since,
+                # 2026-09-22: filter by ended_at (or overlap), not
+                # started_at. An 11h gap that started BEFORE the window
+                # and ENDED inside it still belongs to this window —
+                # it's the resume event that matters for the report.
+                "FROM session_gaps WHERE ended_at >= $1 "
+                "   OR (started_at <= $1 AND ended_at >= $1)", since,
             )
             r.session_gaps = int(g_row["n"]) if g_row else 0
             r.session_gaps_longest_secs = int(g_row["lg"]) if g_row else 0
