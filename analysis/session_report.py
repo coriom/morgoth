@@ -56,6 +56,7 @@ class SessionReport:
     fidelity_checked: int = 0
     fidelity_rewritten: int = 0
     fidelity_dropped: int = 0
+    field_confusions: int = 0
     session_gaps: int = 0
     session_gaps_longest_secs: int = 0
     session_gaps_last_resume: str = ""
@@ -114,7 +115,8 @@ class SessionReport:
         )
         lines.append(
             f"NUMERIC FIDELITY         : {self.fidelity_checked} checked, "
-            f"{self.fidelity_rewritten} corrected, {self.fidelity_dropped} dropped"
+            f"{self.fidelity_rewritten} corrected, {self.fidelity_dropped} dropped, "
+            f"{self.field_confusions} field-confused"
         )
         _lg_h = self.session_gaps_longest_secs / 3600.0
         _last = self.session_gaps_last_resume or "-"
@@ -280,6 +282,14 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.fidelity_checked = 0
             r.fidelity_rewritten = 0
             r.fidelity_dropped = 0
+        try:
+            fc_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM field_confusion_events "
+                "WHERE occurred_at >= $1", since,
+            )
+            r.field_confusions = int(fc_row["n"]) if fc_row else 0
+        except Exception:
+            r.field_confusions = 0
         # Session gaps — count + longest + latest resume timestamp.
         try:
             g_row = await conn.fetchrow(

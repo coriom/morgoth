@@ -249,6 +249,34 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create metric_series table (non-fatal): {}", exc)
             try:
+                # 2026-09-22 field-confusion audit: one row per detected
+                # cited-value / expected-field mismatch. READ-ONLY: this
+                # commit persists events for measurement; no rewrite,
+                # no drop. Rewriting a value inside a claim whose
+                # DIRECTION rested on the wrong field yields a
+                # nonsensical thesis — enforcement is decided after
+                # the operator reads the audit.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS field_confusion_events (
+                        event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        occurred_at TIMESTAMPTZ DEFAULT NOW(),
+                        thesis_id TEXT,
+                        tool TEXT,
+                        cited_value DOUBLE PRECISION,
+                        expected_field TEXT,
+                        matched_field TEXT,
+                        detail_snippet TEXT
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS field_confusion_events_ts_idx "
+                    "ON field_confusion_events (occurred_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create field_confusion_events table (non-fatal): {}", exc)
+            try:
                 # Numeric-fidelity gate: one row per gate action taken at
                 # extraction time. Surfaced in `morgoth session-report`.
                 await connection.execute(
@@ -1013,6 +1041,29 @@ class PersistentMemory:
         if row is None:
             raise ValueError(f"Objective {objective_id} not found")
         return dict(row)
+
+    async def record_field_confusion_event(
+        self, thesis_id: str | None, tool: str | None,
+        cited_value: float | None, expected_field: str | None,
+        matched_field: str | None, detail_snippet: str | None,
+    ) -> None:
+        """Persist one field-confusion detection. Read-only observation
+        infrastructure — no rewrite / drop in this commit."""
+        pool = self._require_pool()
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO field_confusion_events "
+                    "(thesis_id, tool, cited_value, expected_field, "
+                    " matched_field, detail_snippet) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    thesis_id, tool,
+                    float(cited_value) if cited_value is not None else None,
+                    expected_field, matched_field,
+                    (str(detail_snippet)[:500] if detail_snippet else None),
+                )
+        except Exception as exc:
+            logger.warning("field_confusion_events insert failed (non-fatal): {}", exc)
 
     async def record_source_snapshot(
         self, source: str, payload: Any, observed_at,
