@@ -110,6 +110,18 @@ SINGLE_NUMERIC_FIELD: dict[str, str] = {
 }
 
 
+# Fields that are METADATA (unix epochs, next-window times) and must
+# NEVER count as a candidate for a cited-value match. A model that
+# writes "at timestamp 1789689600" is quoting metadata, not a value.
+# 2026-09-22: without this exclusion, F&G "value" trivial-mapping
+# treated the unix timestamp as a genuine value confusion.
+TIMESTAMP_LIKE_FIELDS: frozenset[str] = frozenset({
+    "timestamp", "nextFundingTime", "next_funding_time",
+    "next_difficulty_adjustment", "observed_at", "occurred_at",
+    "created_at", "updated_at",
+})
+
+
 _NUMBER_RE = re.compile(
     r"(?<!\w)-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
     r"(?=[TBMKtbmk](?![a-zA-Z])|(?!\w))"
@@ -276,6 +288,8 @@ def classify_number(
         return abs(a - b) / abs(b) <= tolerance
     matched: list[str] = []
     for key, ref in tool_payload.items():
+        if key in TIMESTAMP_LIKE_FIELDS:
+            continue  # metadata epochs never count as data values
         try:
             r = float(ref)
         except (TypeError, ValueError):

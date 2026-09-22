@@ -124,6 +124,54 @@ class TestClassifyNumber:
         assert any(o[2] == "market_cap_change_24h" for o in outcomes)
 
 
+class TestTimestampExclusion:
+    """Unix timestamps and next-window epochs must NEVER count as a
+    cited-value candidate. The F&G "1789689600" case surfaced when
+    trivial-mapping treated the timestamp as a value confusion."""
+
+    def test_timestamp_field_never_matches(self):
+        payload = {"value": 63, "timestamp": 1789689600}
+        # Cited number 1789689600 must NOT resolve to any field — it's
+        # metadata, not data. Even under trivial-mapping to F&G value.
+        v, m = classify_number(1789689600, "value", payload)
+        assert v == "value_not_in_reference" and m is None
+
+    def test_next_funding_time_excluded(self):
+        payload = {"lastFundingRate": 0.0001, "nextFundingTime": 1789488000000}
+        v, m = classify_number(1789488000000, "lastFundingRate", payload)
+        # 1789488000000 is nextFundingTime (excluded) → value_not_in_reference.
+        assert v == "value_not_in_reference"
+
+    def test_data_field_still_matches(self):
+        # Regression: excluding timestamp doesn't break normal data values.
+        payload = {"value": 63, "timestamp": 1789689600}
+        v, m = classify_number(63, "value", payload)
+        assert v == "true_pass" and m == "value"
+
+
+class TestCyclePayloadPersistWiring:
+    def test_brain_writes_cycle_payload_entry(self):
+        import inspect
+        from core import brain
+        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        # Structural grep-lock: after cycle work the objective's
+        # evidence gains a cycle_payload entry with the RAW tool_results
+        # list (no [:300] truncation on this path).
+        assert '"type": "cycle_payload"' in src
+        assert "tool_results" in src
+        # Untruncated: no [:300] between the tool_results build and
+        # the update_objective call.
+
+    def test_auto_complete_merges_cycle_payload_into_findings(self):
+        import inspect
+        from core import brain
+        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        # Cycle_payload entries are turned back into TOOL RESULTS
+        # strings and appended to findings before extract_theses runs.
+        assert 'entry.get("type") != "cycle_payload"' in src
+        assert "TOOL RESULTS:" in src
+
+
 class TestSingleFieldTools:
     def test_fear_greed_trivial_mapping(self):
         # get_fear_greed_index has ONE scalar field. Any citation

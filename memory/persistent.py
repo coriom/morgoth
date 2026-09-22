@@ -1544,6 +1544,18 @@ class PersistentMemory:
                 )
         return str(row["focus_id"])
 
+    async def get_objective(self, objective_id: str) -> dict[str, Any] | None:
+        """Fetch a single objective row (needed to read the evidence
+        JSONB array containing cycle_payload entries)."""
+        import uuid as _uuid
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM objectives WHERE objective_id = $1",
+                _uuid.UUID(objective_id),
+            )
+        return dict(row) if row else None
+
     async def get_active_focus(self) -> dict[str, Any] | None:
         """Return the single active directive row or None.
 

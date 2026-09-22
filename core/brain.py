@@ -647,6 +647,31 @@ class Brain:
                         except Exception:
                             findings = []
                             evidence_lines = ""
+                        # 2026-09-22: augment findings with the untruncated
+                        # cycle_payload entries persisted on the objective.
+                        # Rebuild TOOL RESULTS lines from raw payloads so
+                        # the field classifier and the numeric-fidelity gate
+                        # see the FULL per-source JSON, not the 300-char cut.
+                        try:
+                            _obj_full = await self._persistent_memory.get_objective(obj_id)
+                            _ev = _obj_full.get("evidence") if _obj_full else []
+                            if isinstance(_ev, str):
+                                import json as _json
+                                _ev = _json.loads(_ev)
+                            for entry in (_ev or []):
+                                if not isinstance(entry, dict): continue
+                                if entry.get("type") != "cycle_payload": continue
+                                import json as _json
+                                lines = ["TOOL RESULTS:"]
+                                for tr in (entry.get("tool_results") or []):
+                                    tool = tr.get("tool")
+                                    if tr.get("success") and tr.get("result") is not None:
+                                        lines.append(f"- {tool}: {_json.dumps(tr['result'], default=str)}")
+                                    else:
+                                        lines.append(f"- {tool} FAILED: {tr.get('error') or 'unknown'}")
+                                findings.append("\n".join(lines))
+                        except Exception as _cp_exc:
+                            logger.warning("cycle_payload merge failed: {}", _cp_exc)
                         evidence = (
                             f"Auto-completed after {new_count} cycles. Findings:\n"
                             + (evidence_lines or "No prior findings captured.")
@@ -1070,6 +1095,32 @@ class Brain:
                         user_id="morgoth_autonomous",
                         objective_id=obj_id,
                     )
+                    # 2026-09-22: also persist the FULL per-cycle tool
+                    # payloads onto the objective, untruncated. Fed to
+                    # synthesis + numeric-fidelity + field-confusion at
+                    # auto-complete so those subsystems no longer see
+                    # 300-char-cut findings. ChromaDB above keeps its
+                    # 1500-char copy for semantic recall (unchanged).
+                    try:
+                        _tool_results_raw = []
+                        for tr in (result.tool_results or []):
+                            inner = tr.get("result") or {}
+                            _tool_results_raw.append({
+                                "tool": tr.get("tool"),
+                                "success": inner.get("success", True),
+                                "result": inner.get("result"),
+                                "error": inner.get("error"),
+                            })
+                        await self._persistent_memory.update_objective(
+                            objective_id=obj_id,
+                            evidence={
+                                "type": "cycle_payload",
+                                "cycle": int(new_count),
+                                "tool_results": _tool_results_raw,
+                            },
+                        )
+                    except Exception as _pl_exc:
+                        logger.warning("cycle_payload persist failed: {}", _pl_exc)
                     action_desc = f"worked on objective {obj.get('title', obj_id)}"
                     _chain_creation = False
                 else:
