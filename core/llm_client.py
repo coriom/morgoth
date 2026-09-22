@@ -88,6 +88,13 @@ class OllamaLLMClient:
             base_url=str(config.ollama_base_url).rstrip("/"),
             timeout=timeout,
         )
+        # Optional PersistentMemory ref for ctx-saturation events. brain.py
+        # attaches it post-init (avoids circular import). None → warning-only.
+        self._pm = None
+
+    def attach_persistent_memory(self, pm) -> None:
+        """Wire PM in so ctx-saturation events persist. Non-fatal if unset."""
+        self._pm = pm
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -132,15 +139,21 @@ class OllamaLLMClient:
 
         async with _ollama_lock:
             selected_model = model or self._config.ollama_primary_model
+            # 2026-09-22: always send an explicit num_ctx. Ollama default is
+            # 4096 — real cycle prompts hit that ceiling and get silently
+            # truncated FROM THE FRONT (keep=5, dropping most of the system
+            # prompt + tool schemas). Merge caller-supplied options on top.
+            effective_options: dict[str, Any] = {"num_ctx": self._config.ollama_num_ctx}
+            if options:
+                effective_options.update(options)
             payload: dict[str, Any] = {
                 "model": selected_model,
                 "messages": [message.to_ollama_dict() for message in messages],
                 "stream": stream,
+                "options": effective_options,
             }
             if tools:
                 payload["tools"] = tools
-            if options:
-                payload["options"] = options
 
             logger.debug("Sending chat request to Ollama: {}", json.dumps(payload, default=str))
             response = await self._client.post("/api/chat", json=payload)
@@ -154,7 +167,34 @@ class OllamaLLMClient:
                 )
                 raise
             raw_response = response.json()
-            return self._normalize_response(raw_response)
+            normalized = self._normalize_response(raw_response)
+            await self._check_ctx_saturation(
+                normalized, selected_model, effective_options["num_ctx"],
+            )
+            return normalized
+
+    async def _check_ctx_saturation(
+        self, response: "ChatResponse", model: str, num_ctx: int,
+    ) -> None:
+        """Log a WARNING + persist an event when prompt_eval_count is
+        within 5 % of num_ctx. That threshold catches Ollama's front-cut
+        truncation (which fires at prompt >= num_ctx). Non-fatal."""
+        pec = response.prompt_eval_count
+        if pec is None or num_ctx <= 0:
+            return
+        if pec < int(num_ctx * 0.95):
+            return
+        logger.warning(
+            "Ollama context near/at limit: prompt_eval_count={} num_ctx={} model={}",
+            pec, num_ctx, model,
+        )
+        pm = self._pm
+        if pm is None:
+            return
+        try:
+            await pm.record_ctx_saturation_event(model, int(pec), int(num_ctx))
+        except Exception as exc:
+            logger.warning("ctx_saturation_events insert failed (non-fatal): {}", exc)
 
     async def generate_tool_response(
         self,

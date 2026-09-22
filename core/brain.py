@@ -200,6 +200,11 @@ class Brain:
         self._config = config
         self._llm_client = llm_client
         self._persistent_memory = persistent_memory
+        # Wire PM into the LLM client so ctx-saturation events persist.
+        try:
+            self._llm_client.attach_persistent_memory(persistent_memory)
+        except AttributeError:
+            pass  # older client without the hook — warning-only path stays
         self._episodic_memory = episodic_memory
         self._scheduler = scheduler
         self._tool_router = tool_router
@@ -1266,19 +1271,58 @@ class Brain:
             "any 'I will now call X' phrasing.\n"
             "- Begin directly with the analysis."
         )
-        messages = [
-            ChatMessage(role="system", content=build_system_prompt()),
-            ChatMessage(role="user", content=prompt),
-        ]
+        # 2026-09-22: route through the LLM registry (same pattern as
+        # _extract_theses). Default resolves to 'ollama:default' — behavior
+        # byte-identical to pre-refactor. MORGOTH_LLM_SYNTHESIS=claude-cli
+        # becomes a real option that lifts the local-context constraint.
+        from core.llm import registry as _reg
+        from core.llm import providers as _prov, tasks as _tasks
+        from core.llm.logs import log_call as _log_call
+        from core.llm.fallback import call_with_fallback as _fallback
+        provider_name, model = _reg.resolve(_tasks.SYNTHESIS)
+
+        def _build(name: str):
+            try:
+                m = model if name == provider_name else "default"
+                return _prov.get_provider(name, m, ollama_client=self._llm_client)
+            except (ValueError, _prov.HttpApiKeyMissing):
+                return None
+
+        _system_prompt = build_system_prompt()
+
+        async def _complete_with_transient_retry(p):
+            # Preserve the pre-registry transient-retry contract on ollama:
+            # a single httpx timeout/network blip is absorbed here so a
+            # cycle doesn't waste a MAX_CYCLES slot on infra flakes.
+            try:
+                return await p.complete(prompt, system=_system_prompt)
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                logger.warning(
+                    "Synthesis chat hit transient {}; retrying once",
+                    type(exc).__name__,
+                )
+                self._feed_append(
+                    "ERROR",
+                    f"transient synthesis error ({type(exc).__name__}); retrying once",
+                )
+                return await p.complete(prompt, system=_system_prompt)
+
         try:
-            response = await self._chat_with_transient_retry(messages)
-            text = (response.message.content or "").strip()
+            text = await _log_call(
+                self._persistent_memory, _tasks.SYNTHESIS, provider_name, model,
+                lambda: _fallback(
+                    _build, _tasks.SYNTHESIS, provider_name,
+                    _complete_with_transient_retry,
+                    pm=self._persistent_memory,
+                ),
+                prompt_bytes=len(prompt),
+            )
+            text = (text or "").strip()
             return text or "(synthesis produced no content)"
         except Exception as exc:
             logger.warning(
-                "Synthesis chat failed for objective {}: {}",
-                obj.get("objective_id"),
-                exc,
+                "Synthesis chat failed for objective {} (provider={}): {}",
+                obj.get("objective_id"), provider_name, exc,
             )
             self._feed_append("ERROR", f"synthesis failed: {type(exc).__name__}: {exc}")
             return f"(synthesis failed: {type(exc).__name__})"

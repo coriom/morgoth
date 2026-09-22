@@ -277,6 +277,27 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create field_confusion_events table (non-fatal): {}", exc)
             try:
+                # 2026-09-22: Ollama truncation ledger. One row per
+                # prompt_eval_count within 5 % of num_ctx — proves the
+                # /api/chat request rode the ceiling (front-cut).
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ctx_saturation_events (
+                        event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        occurred_at TIMESTAMPTZ DEFAULT NOW(),
+                        model TEXT,
+                        prompt_tokens INT,
+                        num_ctx INT
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS ctx_saturation_events_ts_idx "
+                    "ON ctx_saturation_events (occurred_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create ctx_saturation_events table (non-fatal): {}", exc)
+            try:
                 # Numeric-fidelity gate: one row per gate action taken at
                 # extraction time. Surfaced in `morgoth session-report`.
                 await connection.execute(
@@ -1064,6 +1085,21 @@ class PersistentMemory:
                 )
         except Exception as exc:
             logger.warning("field_confusion_events insert failed (non-fatal): {}", exc)
+
+    async def record_ctx_saturation_event(
+        self, model: str, prompt_tokens: int, num_ctx: int,
+    ) -> None:
+        """Persist one prompt-hit-context-ceiling event. Non-fatal."""
+        pool = self._require_pool()
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO ctx_saturation_events "
+                    "(model, prompt_tokens, num_ctx) VALUES ($1, $2, $3)",
+                    str(model)[:64], int(prompt_tokens), int(num_ctx),
+                )
+        except Exception as exc:
+            logger.warning("ctx_saturation_events insert failed (non-fatal): {}", exc)
 
     async def record_source_snapshot(
         self, source: str, payload: Any, observed_at,

@@ -85,6 +85,12 @@ class AppConfig(BaseModel):
     log_level_thought: bool = Field(alias="LOG_LEVEL_THOUGHT")
     autonomous_cycle_minutes: int = Field(default=10, alias="AUTONOMOUS_CYCLE_MINUTES")
     max_cycles_per_objective: int = Field(default=5, alias="MAX_CYCLES_PER_OBJECTIVE")
+    # 2026-09-22: Ollama's default num_ctx is 4096. Real cycle prompts
+    # (tool schemas + system prompt) sit ~4960 tokens — 20 truncation
+    # events in the last 30 days, all cutting from the front (keep=5).
+    # 8192 gives ~65 % margin; on RTX 3060 6 GB (Q4_K_M 8B ≈ 4.7 GB +
+    # 128 KB/token KV → 1 GB @ 8192) this bumps CPU offload from 7 % → ~15 %.
+    ollama_num_ctx: int = Field(default=8192, alias="OLLAMA_NUM_CTX")
     root_dir: Path = ROOT_DIR
     data_dir: Path = ROOT_DIR / "data"
     logs_dir: Path = ROOT_DIR / "data" / "logs"

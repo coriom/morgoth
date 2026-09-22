@@ -57,6 +57,7 @@ class SessionReport:
     fidelity_rewritten: int = 0
     fidelity_dropped: int = 0
     field_confusions: int = 0
+    ctx_saturations: int = 0
     session_gaps: int = 0
     session_gaps_longest_secs: int = 0
     session_gaps_last_resume: str = ""
@@ -117,6 +118,9 @@ class SessionReport:
             f"NUMERIC FIDELITY         : {self.fidelity_checked} checked, "
             f"{self.fidelity_rewritten} corrected, {self.fidelity_dropped} dropped, "
             f"{self.field_confusions} field-confused"
+        )
+        lines.append(
+            f"CTX SATURATION           : {self.ctx_saturations} prompt(s) at/near num_ctx"
         )
         _lg_h = self.session_gaps_longest_secs / 3600.0
         _last = self.session_gaps_last_resume or "-"
@@ -290,6 +294,14 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.field_confusions = int(fc_row["n"]) if fc_row else 0
         except Exception:
             r.field_confusions = 0
+        try:
+            cs_row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM ctx_saturation_events "
+                "WHERE occurred_at >= $1", since,
+            )
+            r.ctx_saturations = int(cs_row["n"]) if cs_row else 0
+        except Exception:
+            r.ctx_saturations = 0
         # Session gaps — count + longest + latest resume timestamp.
         try:
             g_row = await conn.fetchrow(
