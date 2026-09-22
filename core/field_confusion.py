@@ -100,6 +100,15 @@ AMBIGUOUS_PHRASES: frozenset[str] = frozenset({
     "value", "rate", "change", "price", "volume",
 })
 
+# Tools whose numeric output is effectively ONE scalar. Any number
+# extracted from a citation of such a tool is by construction the
+# single numeric field — no phrase needed to disambiguate.
+# get_fear_greed_index: value ∈ [0,100]; the other keys (timestamp,
+# value_classification) are non-scalar for this purpose.
+SINGLE_NUMERIC_FIELD: dict[str, str] = {
+    "get_fear_greed_index": "value",
+}
+
 
 _NUMBER_RE = re.compile(
     r"(?<!\w)-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
@@ -114,8 +123,16 @@ def phrase_to_field(source: str, context: str) -> str | None:
     context is the local text around the number (e.g. the 40 characters
     preceding it). Longest-first match so "market cap change" wins over
     "market cap".
+
+    Trivial-mapping short-circuit: for tools in SINGLE_NUMERIC_FIELD,
+    the phrase context is irrelevant — the tool has only one scalar
+    field to name.
     """
-    if not source or not context:
+    if not source:
+        return None
+    if source in SINGLE_NUMERIC_FIELD:
+        return SINGLE_NUMERIC_FIELD[source]
+    if not context:
         return None
     mapping = FIELD_PHRASES.get(source)
     if not mapping:
@@ -155,19 +172,104 @@ def iter_numbers_with_context(detail: str, window: int = 40):
         yield v, prefix
 
 
+_TOOL_LINE_RE = re.compile(
+    r"^-\s+([a-z_][a-z0-9_]*)\s*:\s*(\{.*\})\s*$", re.MULTILINE
+)
+# Truncated JSON — the finding text got cut mid-payload (300-char cap).
+# Detect open-brace with no matching close on the tail.
+_TRUNCATION_MARK = "\n- TOOL RESULTS:\n"
+
+
+def parse_findings_payloads(findings: list[str] | str) -> tuple[
+    dict[str, dict[str, Any]], int
+]:
+    """Extract per-source payloads from the TOOL RESULTS blocks that live
+    in each cycle's finding text. Returns (payloads, truncated_count).
+
+    truncated_count is the number of `- <source>: {…` lines that could
+    NOT be parsed as JSON because the 300-char finding cap cut the
+    payload mid-object. Such sources yield NO reference payload for
+    that thesis — the audit reports them separately from clean misses.
+    """
+    import json
+    if isinstance(findings, str):
+        findings = [findings]
+    out: dict[str, dict[str, Any]] = {}
+    truncated = 0
+    for blob in findings or []:
+        if not blob:
+            continue
+        for m in _TOOL_LINE_RE.finditer(blob):
+            source, raw = m.group(1), m.group(2)
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                truncated += 1
+                continue
+            if not isinstance(payload, dict):
+                continue
+            # Merge — later payloads (newer cycles) overwrite; the freshest
+            # value for each key wins.
+            merged = out.get(source, {})
+            merged.update(payload)
+            out[source] = merged
+        # Also count `- source: {` lines whose JSON did NOT close before
+        # end-of-blob (300-char truncation).
+        for m in re.finditer(r"^-\s+([a-z_][a-z0-9_]*)\s*:\s*\{[^}]*$",
+                              blob, re.MULTILINE):
+            truncated += 1
+    return out, truncated
+
+
+def classify_thesis_evidence(
+    evidence: list[dict[str, Any]],
+    findings_payloads: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Run the classifier over every number in every evidence entry
+    of a thesis. Returns one record per number:
+      {source, cited_value, expected_field, verdict, matched_field,
+       detail_snippet}
+    """
+    out: list[dict[str, Any]] = []
+    for e in evidence or []:
+        if not isinstance(e, dict):
+            continue
+        source = str(e.get("source") or "")
+        detail = str(e.get("detail") or "")
+        if not detail:
+            continue
+        payload = findings_payloads.get(source)
+        for value, prefix in iter_numbers_with_context(detail):
+            expected = phrase_to_field(source, prefix)
+            verdict, matched = classify_number(value, expected, payload)
+            out.append({
+                "source": source,
+                "cited_value": value,
+                "expected_field": expected,
+                "matched_field": matched,
+                "verdict": verdict,
+                "detail_snippet": detail[:180],
+            })
+    return out
+
+
 def classify_number(
     value: float, expected_field: str | None,
     tool_payload: dict[str, Any] | None,
     tolerance: float = 0.02,
 ) -> tuple[str, str | None]:
     """Return (verdict, matched_field_or_None). Verdicts:
-      · 'true_pass'         — matches the expected field's value.
-      · 'field_confusion'   — matches a DIFFERENT field of the same tool.
-      · 'no_mapping'        — expected_field is None (phrase ambiguous
-                                or unrecognised) OR value matches no field.
+      · 'true_pass'              — matches the expected field's value.
+      · 'field_confusion'        — matches a DIFFERENT field of the same tool.
+      · 'no_phrase_mapping'      — expected_field is None (phrase absent
+                                    or ambiguous); value may still match
+                                    a field (returned as matched_field).
+      · 'value_not_in_reference' — expected_field is set but the value
+                                    doesn't match any field in the payload.
     """
     if not isinstance(tool_payload, dict):
-        return "no_mapping", None
+        return ("no_phrase_mapping" if expected_field is None
+                else "value_not_in_reference"), None
     def _close(a: float, b: float) -> bool:
         if a == 0.0 or b == 0.0:
             return abs(a - b) < 1e-9
@@ -180,10 +282,12 @@ def classify_number(
             continue
         if _close(value, r):
             matched.append(key)
-    if not matched:
-        return "no_mapping", None
     if expected_field is None:
-        return "no_mapping", matched[0]
+        # No phrase mapping. Still report which field(s) the value
+        # happens to match, useful diagnostic.
+        return "no_phrase_mapping", (matched[0] if matched else None)
+    if not matched:
+        return "value_not_in_reference", None
     if expected_field in matched:
         return "true_pass", expected_field
     return "field_confusion", matched[0]

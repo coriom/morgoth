@@ -701,10 +701,32 @@ class Brain:
                                     check_thesis as _fidelity_check,
                                     _flag_enabled as _fg_enabled,
                                 )
+                                # Field-confusion write-time hook (2026-09-22):
+                                # parse the TOOL RESULTS blocks the thesis
+                                # was derived from and flag every cited number
+                                # whose expected field doesn't match its
+                                # value's field. READ-ONLY: persists events
+                                # only. No rewrite, no drop.
+                                from core.field_confusion import (
+                                    parse_findings_payloads as _parse_fps,
+                                    classify_thesis_evidence as _cfe,
+                                )
+                                _fc_payloads, _fc_trunc = _parse_fps(findings)
                                 gated: list[dict[str, Any]] = []
                                 if _fg_enabled():
                                     for t in theses:
                                         act = _fidelity_check(t, findings)
+                                        # Field-confusion pass on this thesis.
+                                        try:
+                                            for rec in _cfe(t.get("evidence") or [], _fc_payloads):
+                                                if rec["verdict"] == "field_confusion":
+                                                    await self._persistent_memory.record_field_confusion_event(
+                                                        None, rec["source"], rec["cited_value"],
+                                                        rec["expected_field"], rec["matched_field"],
+                                                        rec["detail_snippet"],
+                                                    )
+                                        except Exception:
+                                            pass
                                         try:
                                             await self._persistent_memory.record_numeric_fidelity_event(
                                                 obj_id, act.subject, act.tool, act.action,

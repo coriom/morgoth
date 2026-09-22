@@ -93,16 +93,18 @@ class TestClassifyNumber:
         assert v == "field_confusion"
         assert m == "market_cap_change_24h"
 
-    def test_no_expected_field_no_mapping(self):
+    def test_no_expected_field_returns_no_phrase_mapping(self):
+        # SPLIT: expected_field=None → 'no_phrase_mapping', not 'no_mapping'.
         v, m = classify_number(-2.17, None, self._payload())
-        assert v == "no_mapping"
-        # We DID identify which field it matches; the phrase just
-        # didn't name it. Useful diagnostic.
+        assert v == "no_phrase_mapping"
+        # We DID identify which field it matches; useful diagnostic.
         assert m == "market_cap_change_24h"
 
-    def test_value_matches_nothing(self):
+    def test_expected_but_value_not_in_reference(self):
+        # SPLIT: expected_field set but value matches no field →
+        # 'value_not_in_reference' (distinct from no_phrase_mapping).
         v, m = classify_number(999.999, "bitcoin_dominance_percentage", self._payload())
-        assert v == "no_mapping" and m is None
+        assert v == "value_not_in_reference" and m is None
 
     def test_multi_number_detail_scanned(self):
         # Scan every number in the detail. The dominance one is a
@@ -120,6 +122,72 @@ class TestClassifyNumber:
         # -2.17 preceded by "24-hour change" → expected=market_cap_change_24h → true_pass.
         assert any(o for o in outcomes if o[1] == "true_pass")
         assert any(o[2] == "market_cap_change_24h" for o in outcomes)
+
+
+class TestSingleFieldTools:
+    def test_fear_greed_trivial_mapping(self):
+        # get_fear_greed_index has ONE scalar field. Any citation
+        # from that tool trivially resolves to 'value' regardless of
+        # phrase context.
+        assert phrase_to_field("get_fear_greed_index", "") == "value"
+        assert phrase_to_field("get_fear_greed_index", "the value") == "value"
+
+    def test_trivial_mapping_enables_true_pass(self):
+        # Combined with classify_number: a bare F&G value citation
+        # is scored true_pass, not no_phrase_mapping.
+        payload = {"value": 63}
+        expected = phrase_to_field("get_fear_greed_index", "")
+        v, m = classify_number(63, expected, payload)
+        assert v == "true_pass" and m == "value"
+
+
+class TestParseFindingsAndClassify:
+    def test_parse_findings_extracts_per_source_payload(self):
+        from core.field_confusion import parse_findings_payloads
+        finding = (
+            'TOOL RESULTS:\n'
+            '- get_fear_greed_index: {"value": 63, "value_classification": "Greed"}\n'
+            '- get_crypto_global_market: {"bitcoin_dominance_percentage": 55.92, '
+            '"market_cap_change_24h": -2.17, "volume_24h_usd": 1.67e11}\n'
+        )
+        payloads, truncated = parse_findings_payloads([finding])
+        assert truncated == 0
+        assert payloads["get_fear_greed_index"]["value"] == 63
+        assert payloads["get_crypto_global_market"]["market_cap_change_24h"] == -2.17
+
+    def test_truncated_json_counted_separately(self):
+        # 300-char cap mid-payload → open brace, no close. Line skipped
+        # but truncation counter increments.
+        from core.field_confusion import parse_findings_payloads
+        truncated_line = (
+            '- get_crypto_global_market: {"market_cap_usd": 27000000'
+        )
+        _, trunc = parse_findings_payloads([truncated_line])
+        assert trunc == 1
+
+    def test_write_time_flags_dominance_case_from_real_findings(self):
+        # Reproduce the operator's flagship case using real finding text.
+        from core.field_confusion import (
+            parse_findings_payloads, classify_thesis_evidence,
+        )
+        finding = (
+            'TOOL RESULTS:\n'
+            '- get_crypto_global_market: {"bitcoin_dominance_percentage": 55.92, '
+            '"market_cap_change_24h": -2.17, "market_cap_usd": 2.7e12}\n'
+        )
+        payloads, _ = parse_findings_payloads([finding])
+        thesis_evidence = [{
+            "source": "get_crypto_global_market",
+            "detail": "BTC dominance at -2.17% (24h)",
+        }]
+        recs = classify_thesis_evidence(thesis_evidence, payloads)
+        # The number -2.17 was attributed to a dominance-shaped detail;
+        # phrase "dominance" resolves to bitcoin_dominance_percentage but
+        # the value matches market_cap_change_24h → field_confusion.
+        confusions = [r for r in recs if r["verdict"] == "field_confusion"]
+        assert len(confusions) == 1
+        assert confusions[0]["expected_field"] == "bitcoin_dominance_percentage"
+        assert confusions[0]["matched_field"] == "market_cap_change_24h"
 
 
 class TestSessionReportWiring:
