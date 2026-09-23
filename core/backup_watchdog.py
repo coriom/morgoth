@@ -43,14 +43,26 @@ def backup_max_age_hours() -> int:
 
 
 def _parse_ts_dir(name: str) -> datetime | None:
-    """Parse a backup directory name like 20260913_040001 → datetime."""
+    """Parse a backup directory name like 20260913_040001 → datetime (UTC).
+
+    CONVENTION: backup_morgoth.sh names dirs with `date +…` (LOCAL wall
+    clock — the operator's timezone). Reader treats the parsed name as
+    LOCAL time and converts to UTC for arithmetic. Prior versions parsed
+    as UTC and undercounted age by the local-UTC offset (8 h on this
+    machine → 20260921_142152 showed as 23 h old when real age was 31 h,
+    which suppressed the 24 h catch-up. 2026-09-23.)
+
+    Both writer and reader now agree: LOCAL wall clock in the name, UTC
+    in the returned datetime. Existing directories parse correctly under
+    this convention (they were all written in local time to begin with).
+    """
     m = _TS_RE.match(name)
     if not m:
         return None
     try:
-        return datetime.strptime(m.group(0), "%Y%m%d_%H%M%S").replace(
-            tzinfo=timezone.utc
-        )
+        naive = datetime.strptime(m.group(0), "%Y%m%d_%H%M%S")
+        # naive.astimezone() interprets a naive datetime as LOCAL (Py 3.6+).
+        return naive.astimezone(timezone.utc)
     except ValueError:
         return None
 

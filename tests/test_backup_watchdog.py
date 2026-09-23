@@ -31,16 +31,40 @@ class TestKnobs:
 
 
 class TestParseTsDir:
-    def test_valid_timestamp_parses(self):
+    def test_valid_timestamp_parses_as_local(self):
+        # CONVENTION 2026-09-23: name = LOCAL wall clock, returned dt = UTC.
+        # Round-trip back to local must recover the original components.
         got = bw._parse_ts_dir("20260921_142152")
         assert got is not None
-        assert got.year == 2026 and got.month == 9 and got.day == 21
-        assert got.hour == 14 and got.minute == 21
+        assert got.tzinfo is not None  # tz-aware (UTC)
+        local = got.astimezone()  # ambient local tz
+        assert local.year == 2026 and local.month == 9 and local.day == 21
+        assert local.hour == 14 and local.minute == 21 and local.second == 52
 
     def test_invalid_dirname_returns_none(self):
         assert bw._parse_ts_dir("not-a-timestamp") is None
         assert bw._parse_ts_dir("backup.log") is None
         assert bw._parse_ts_dir("2026-09-21") is None
+
+    def test_age_matches_wall_clock(self):
+        # A directory named for "N hours ago in local time" must report age
+        # ~N hours — regardless of the machine's timezone. Regression lock
+        # for the 8 h drift bug (backup script wrote local time, reader
+        # parsed as UTC → CST machine undercounted by 8 h, catch-up never
+        # fired at the 24 h boundary).
+        from datetime import datetime, timedelta
+        # Build a name from `now_local - 5h` in local wall clock.
+        now_local = datetime.now().astimezone()
+        target_local = now_local - timedelta(hours=5)
+        name = target_local.strftime("%Y%m%d_%H%M%S")
+        got = bw._parse_ts_dir(name)
+        assert got is not None
+        age_s = (datetime.now(timezone.utc) - got).total_seconds()
+        # 5 h ± 10 s slack for the test itself
+        assert 5 * 3600 - 10 <= age_s <= 5 * 3600 + 10, (
+            f"expected ~5h age, got {age_s/3600:.3f}h — writer/reader "
+            "timezone convention drifted"
+        )
 
 
 class TestLatestBackupInfo:

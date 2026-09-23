@@ -25,6 +25,10 @@ CHROMA_DIR="$REPO_DIR/data/chroma_db"
 
 mkdir -p "$BACKUP_ROOT"
 
+# TIMESTAMP CONVENTION: LOCAL wall clock. core/backup_watchdog.py parses
+# this back as local and converts to UTC for age arithmetic. Do NOT switch
+# to `date -u` — existing directories were written in local time; a mixed
+# corpus would misread everything before the switch by the local offset.
 TS="$(date +%Y%m%d_%H%M%S)"
 DEST="$BACKUP_ROOT/$TS"
 mkdir -p "$DEST"
