@@ -8,6 +8,7 @@ from analysis.campaign_quality import (
     classify_unsourced_subject, classify_cross_subject_value,
     measure_fragmentation, score_thesis, title_is_serviceable,
     render_report, QualityReport,
+    _extract_theme_phrases, _angle_residue_tokens_ordered,
 )
 
 
@@ -261,6 +262,123 @@ class TestRailFieldsCatalog:
         from core.field_confusion import FIELD_PHRASES
         for src in FIELD_PHRASES:
             assert src in RAIL_TOOL_FIELDS, f"{src} missing from RAIL_TOOL_FIELDS"
+
+
+class TestThemeExtraction:
+    _CAMPAIGN2_UNSERVABLE_FIXTURES = [
+        "Exploring Bitcoin via Unexplored Stablecoin Issuance Rates",
+        "Exploring via Unexplored Stablecoin Reserve Ratios",
+        "Exploring via Unexplored Stablecoin Market Activity",
+        "Exploring via Unexplored Stablecoin Reserve Balances",
+        "Exploring via Stablecoin Issuance Rates as a Variable",
+        "Exploring via Unexplored Stablecoin Issuance Metrics",
+        "Exploring via Emerging Global Stablecoin Issuance Trends",
+        "Exploring via Unexplored Stablecoin Market Maker Profits",
+        "Bitcoin in the Context of Stablecoin Market Dynamics",
+        "Exploring via Unexplored Global Stablecoin Adoption Trends",
+        "Exploring via Unexplored Central Bank Digital Currencies",
+        "Exploring via Unexplored Central Bank Digital Currency Adoption",
+        "Impact of Central Bank Digital Currencies on BTC",
+        "Exploring via Unexplored Crypto Regulatory Environment News",
+        "Exploring via Unexplored Blockchain Regulatory Compliance Framework",
+        "Exploring via Unexplored Global Crypto Regulatory Frameworks",
+        "Exploring via Unexplored Reddit Sentiment Analysis",
+        "Exploring via Unexplored Bitcoin Social Media Sentiment Analysis",
+        "Exploring via Unexplored Crypto Influencer Sentiment Analysis",
+    ]
+
+    def test_stablecoin_ranks_first_on_campaign2_fixture(self):
+        subj = "BTC funding rate and positioning"
+        residues = [
+            " ".join(_angle_residue_tokens_ordered(t, subj))
+            for t in self._CAMPAIGN2_UNSERVABLE_FIXTURES
+        ]
+        top = _extract_theme_phrases(residues, top_k=10)
+        # stablecoin must rank first — 10 titles cite it in the fixture.
+        assert top[0][0] == "stablecoin"
+
+    def test_multi_word_phrases_surface(self):
+        subj = "BTC funding rate and positioning"
+        residues = [
+            " ".join(_angle_residue_tokens_ordered(t, subj))
+            for t in self._CAMPAIGN2_UNSERVABLE_FIXTURES
+        ]
+        top = _extract_theme_phrases(residues, top_k=15)
+        phrases = [p for p, _ in top]
+        # At least one bigram/trigram must appear — else single tokens are
+        # burying real multi-word signals.
+        assert any(" " in p for p in phrases)
+        # "central bank digital" (trigram) should surface — 3 in fixture.
+        assert any("central bank digital" in p for p in phrases)
+
+    def test_generic_words_are_stopped(self):
+        # "global", "trends", "changes", "adoption" alone must not be
+        # top-ranked themes — they carry no signal about missing rail.
+        subj = "BTC funding rate and positioning"
+        residues = [
+            " ".join(_angle_residue_tokens_ordered(t, subj))
+            for t in self._CAMPAIGN2_UNSERVABLE_FIXTURES
+        ]
+        top = dict(_extract_theme_phrases(residues, top_k=20))
+        for generic in ("global", "trends", "changes", "adoption",
+                         "framework", "frameworks"):
+            assert generic not in top, f"{generic!r} should be stopword"
+
+    def test_redundant_containment_dropped(self):
+        # "bank digital" (bigram) contained in "central bank digital"
+        # (trigram) at same count → shorter one is dropped.
+        residues = ["central bank digital currency"] * 3
+        top = _extract_theme_phrases(residues, top_k=10)
+        phrases = [p for p, _ in top]
+        # trigram survives; the bigram "bank digital" must NOT co-appear.
+        assert "central bank digital" in phrases
+        assert "bank digital" not in phrases
+
+
+class TestReflectDataGapsBlock:
+    def test_empty_block_yields_byte_identical_prompt(self):
+        # LOCK: when data_gaps_block is empty, _reflection_prompt output
+        # must match the pre-data-gaps prompt byte-for-byte. Same
+        # contract as rejections and leads.
+        from self_modify.reflect import _reflection_prompt
+        base_ctx = {
+            "tools_block": "- t (data_source) — objectives_using=0: x",
+            "objectives_block": "- OBJ", "theses_block": "- SUB",
+            "rejections_block": "", "leads_block": "",
+        }
+        with_key = dict(base_ctx, data_gaps_block="")
+        assert _reflection_prompt(base_ctx) == _reflection_prompt(with_key)
+        assert "DATA GAPS" not in _reflection_prompt(with_key)
+
+    def test_non_empty_block_appears(self):
+        from self_modify.reflect import _reflection_prompt
+        ctx = {
+            "tools_block": "- t", "objectives_block": "- o",
+            "theses_block": "- s", "rejections_block": "",
+            "leads_block": "",
+            "data_gaps_block": "- stablecoin  ×24\n- regulatory  ×17",
+        }
+        out = _reflection_prompt(ctx)
+        assert "DATA GAPS" in out
+        assert "stablecoin" in out and "×24" in out
+        # It's evidence, not instruction — the block does NOT tell the
+        # model to propose one of these; it merely reports the counts.
+        assert "MUST propose" not in out
+        assert "REQUIRED to target" not in out
+
+    def test_prompt_cap_size_reasonable(self):
+        # A 12-phrase block (worst case) with 40-char phrases is <1 KB.
+        # Ensure the prompt render doesn't explode past 20 KB. The whole
+        # reflect prompt is designed for the 8B ~8K context budget.
+        from self_modify.reflect import _reflection_prompt
+        big_gaps = "\n".join(f"- theme phrase {i:03d}  ×{100-i}" for i in range(12))
+        ctx = {
+            "tools_block": "- t" * 200, "objectives_block": "- obj\n" * 10,
+            "theses_block": "- th\n" * 15, "rejections_block": "",
+            "leads_block": "", "data_gaps_block": big_gaps,
+        }
+        out = _reflection_prompt(ctx)
+        assert len(out) < 20000
 
 
 class TestRender:

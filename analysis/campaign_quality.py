@@ -134,6 +134,93 @@ _SERVICEABLE_KEYWORDS: frozenset[str] = frozenset({
 # and "greed" narrowly cover the fear_greed_index angle.
 
 
+# Generic filler that shows up on both sides of the real theme.
+# Used ONLY by the phrase-extractor to prune n-grams that contain a
+# generic token at either end. Distinct from _TITLE_TEMPLATE_WORDS
+# (which is used for the SERVICEABILITY residue). A word can legitimately
+# appear here without appearing there: e.g. "trends", "framework" are
+# useful markers when detecting whether an angle is on rail, but as the
+# leading/trailing word of a candidate theme they add no information.
+_PHRASE_STOPWORDS: frozenset[str] = frozenset({
+    # generic template
+    "the", "and", "or", "of", "in", "on", "at", "to", "for", "with",
+    "vs", "versus", "via", "through", "under", "over", "into", "amid",
+    "during", "toward", "against", "within", "between",
+    "exploring", "explore", "analyzing", "analyze", "analysis",
+    "investigating", "investigate", "examining", "examine",
+    "unexplored", "emerging", "evolving", "recent", "current",
+    "new", "novel", "potential",
+    # generic effects
+    "impact", "influence", "context", "correlation", "relationship",
+    "changes", "change", "trends", "trend", "effects", "effect",
+    "adoption", "activities", "activity", "aggregates", "aggregate",
+    "response", "responses",
+    # generic modifiers
+    "global", "major", "recent", "novel", "unspecified",
+    "indicators", "indicator", "drivers", "factors", "dynamics",
+    "patterns", "level", "levels", "state", "share", "shares",
+    "distribution", "distributions", "framework", "frameworks",
+    "environment", "series", "metrics", "metric", "variable",
+    # already stripped as subject / template
+    "btc", "bitcoin", "crypto", "cryptocurrency", "market", "markets",
+    "rate", "rates", "ratio", "ratios",
+})
+
+
+def _extract_theme_phrases(
+    residue_texts: list[str], top_k: int = 10,
+) -> list[tuple[str, int]]:
+    """Rank multi-word noun phrases (bigrams + trigrams) by frequency.
+
+    residue_texts is the LIST of already-cleaned title residues (one per
+    unservable title). Each residue is split into tokens; every n-gram
+    whose first AND last token is non-stopword becomes a candidate.
+    Interior tokens may be stopwords — that preserves "stablecoin
+    reserve ratios" (interior "reserve" is fine) and "central bank
+    digital currency" (long noun compounds).
+
+    Return the top_k phrases with their counts. Single-word phrases
+    are ALSO emitted as a fallback so a purely one-word theme
+    ("stablecoin") still surfaces if the model wrote no bigram.
+    """
+    counter: Counter = Counter()
+    for text in residue_texts:
+        tokens = [t for t in re.findall(r"[a-z][a-z\-]{2,}", (text or "").lower())]
+        if not tokens:
+            continue
+        # bigrams + trigrams
+        for n in (2, 3):
+            for i in range(len(tokens) - n + 1):
+                gram = tokens[i:i + n]
+                if gram[0] in _PHRASE_STOPWORDS:
+                    continue
+                if gram[-1] in _PHRASE_STOPWORDS:
+                    continue
+                counter[" ".join(gram)] += 1
+        # unigrams (fallback for very short residues)
+        for t in tokens:
+            if t not in _PHRASE_STOPWORDS:
+                counter[t] += 1
+    # Post-processing: when a shorter phrase is CONTAINED (word-bounded)
+    # in a longer phrase at the same count, drop the shorter one — the
+    # longer phrase is strictly more informative.
+    items = counter.most_common()
+    kept: list[tuple[str, int]] = []
+    for phrase, n in items:
+        contained_pat = f" {phrase} "
+        redundant = False
+        for other, m in items:
+            if other == phrase:
+                continue
+            if m == n:
+                if contained_pat in f" {other} ":
+                    redundant = True
+                    break
+        if not redundant:
+            kept.append((phrase, n))
+    return kept[:top_k]
+
+
 @dataclass
 class QualityReport:
     campaign_id: str
@@ -360,17 +447,38 @@ def _angle_residue_tokens(
 ) -> set[str]:
     """Return the set of tokens that remain after stripping the campaign
     subject's tokens and generic template words. This is the ANGLE — the
-    part of the title that names what the objective actually explores."""
+    part of the title that names what the objective actually explores.
+
+    NOTE: returns a SET (order-free) for serviceability checks. For
+    phrase extraction, use _angle_residue_tokens_ordered() which
+    preserves title order — bigrams/trigrams need adjacency.
+    """
     subject_tokens = {
         t for t in re.findall(r"[a-z][a-z\-]+", (campaign_subject or "").lower())
     }
     title_tokens = {
         t for t in re.findall(r"[a-z][a-z\-]+", (title or "").lower())
     }
-    residue = title_tokens - subject_tokens - _TITLE_TEMPLATE_WORDS
-    # Also strip standalone "rate", "ratio", "positioning" if the subject
-    # implied them — these follow the subject naturally.
-    return residue
+    return title_tokens - subject_tokens - _TITLE_TEMPLATE_WORDS
+
+
+def _angle_residue_tokens_ordered(
+    title: str, campaign_subject: str,
+) -> list[str]:
+    """Ordered residue: same strip logic as the set version but preserves
+    the original title's word order so downstream bigram/trigram
+    extraction sees real phrases (e.g. "stablecoin reserve ratios")
+    rather than an alphabetically-sorted permutation of the same tokens.
+    """
+    subject_tokens = {
+        t for t in re.findall(r"[a-z][a-z\-]+", (campaign_subject or "").lower())
+    }
+    out: list[str] = []
+    for t in re.findall(r"[a-z][a-z\-]+", (title or "").lower()):
+        if t in subject_tokens or t in _TITLE_TEMPLATE_WORDS:
+            continue
+        out.append(t)
+    return out
 
 
 def title_is_serviceable(
@@ -489,7 +597,7 @@ def render_report(report: QualityReport) -> str:
     lines.append(f"  unservable titles       : {unservable}/{n_titles}  ({share:.0f}%)")
     if report.top_missing_themes:
         lines.append("  top missing themes:")
-        for theme, n in report.top_missing_themes[:5]:
+        for theme, n in report.top_missing_themes[:10]:
             lines.append(f"    · {theme:<40} {n}")
     return "\n".join(lines)
 
@@ -650,18 +758,19 @@ async def score_campaign(
     # after subject / template strip). The campaign subject shows up in
     # every title in a campaign; matching against the whole title
     # trivially returns 0 unservable.
-    theme_counts: Counter = Counter()
+    residues: list[str] = []
     subj = str(row.get("subject") or "")
     for o in objs:
         title = o.get("title") or ""
         if not title_is_serviceable(title, campaign_subject=subj):
             rep.unservable_titles.append(title)
-            # Rank residue tokens (not raw title tokens) as the theme.
-            residue = _angle_residue_tokens(title, subj)
-            for w in sorted(residue):
-                if len(w) < 4:
-                    continue
-                theme_counts[w] += 1
-                break
-    rep.top_missing_themes = theme_counts.most_common(10)
+            # ORDERED residue preserves adjacency so bigrams like
+            # "stablecoin reserve" and "central bank digital" survive.
+            residues.append(" ".join(
+                _angle_residue_tokens_ordered(title, subj)
+            ))
+    # Multi-word noun-phrase ranking (was single-token; single tokens
+    # produced generics like "economic 8, changes 7" and buried the real
+    # signal — "stablecoin" appeared in ~24 titles and never surfaced).
+    rep.top_missing_themes = _extract_theme_phrases(residues, top_k=10)
     return rep

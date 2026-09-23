@@ -298,6 +298,28 @@ class PersistentMemory:
             except Exception as exc:
                 logger.warning("Could not create ctx_saturation_events table (non-fatal): {}", exc)
             try:
+                # 2026-09-23: per-campaign unservable-angle phrases with
+                # counts. Populated by `morgoth campaign --quality`. Read
+                # by self_modify.reflect to render a "DATA GAPS" evidence
+                # block in the new-tool prompt.
+                await connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS campaign_data_gaps (
+                        campaign_id TEXT NOT NULL,
+                        phrase TEXT NOT NULL,
+                        count INT NOT NULL DEFAULT 1,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (campaign_id, phrase)
+                    );
+                    """
+                )
+                await connection.execute(
+                    "CREATE INDEX IF NOT EXISTS campaign_data_gaps_updated_idx "
+                    "ON campaign_data_gaps (updated_at DESC);"
+                )
+            except Exception as exc:
+                logger.warning("Could not create campaign_data_gaps table (non-fatal): {}", exc)
+            try:
                 # Numeric-fidelity gate: one row per gate action taken at
                 # extraction time. Surfaced in `morgoth session-report`.
                 await connection.execute(
@@ -1085,6 +1107,54 @@ class PersistentMemory:
                 )
         except Exception as exc:
             logger.warning("field_confusion_events insert failed (non-fatal): {}", exc)
+
+    async def record_campaign_data_gaps(
+        self, campaign_id: str, phrases: list[tuple[str, int]],
+    ) -> None:
+        """UPSERT (campaign_id, phrase, count) rows. Called by the
+        quality scorer; the reflect prompt aggregates across campaigns.
+        Non-fatal on write failure."""
+        pool = self._require_pool()
+        if not phrases:
+            return
+        try:
+            async with pool.acquire() as conn:
+                await conn.executemany(
+                    "INSERT INTO campaign_data_gaps "
+                    "(campaign_id, phrase, count, updated_at) "
+                    "VALUES ($1, $2, $3, NOW()) "
+                    "ON CONFLICT (campaign_id, phrase) DO UPDATE SET "
+                    "  count = EXCLUDED.count, updated_at = NOW()",
+                    [(str(campaign_id)[:64], str(p)[:160], int(n))
+                     for p, n in phrases if p],
+                )
+        except Exception as exc:
+            logger.warning(
+                "campaign_data_gaps upsert failed (non-fatal): {}", exc,
+            )
+
+    async def top_data_gap_phrases(
+        self, limit: int = 12,
+    ) -> list[tuple[str, int]]:
+        """Aggregate phrases across all campaigns, summing counts.
+        Returns (phrase, total_count) sorted by total_count DESC.
+        Empty list on any error — reflect renders the block only when
+        non-empty (byte-identical prompt on failure/empty state)."""
+        pool = self._require_pool()
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT phrase, SUM(count)::int AS total "
+                    "FROM campaign_data_gaps GROUP BY phrase "
+                    "ORDER BY total DESC LIMIT $1",
+                    int(limit),
+                )
+            return [(r["phrase"], int(r["total"])) for r in rows]
+        except Exception as exc:
+            logger.warning(
+                "top_data_gap_phrases read failed (non-fatal): {}", exc,
+            )
+            return []
 
     async def record_ctx_saturation_event(
         self, model: str, prompt_tokens: int, num_ctx: int,

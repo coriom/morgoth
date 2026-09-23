@@ -1039,12 +1039,26 @@ async def _build_context(pm: PersistentMemory, config: AppConfig) -> dict[str, A
         logger.warning("reflect: leads-block load failed (non-fatal): {}", exc)
         leads_block = ""
 
+    # Campaign-derived DATA GAPS — top unservable-angle phrases from
+    # `morgoth campaign --quality`. Evidence, not instruction. Empty →
+    # no block, prompt byte-identical.
+    try:
+        _gaps = await pm.top_data_gap_phrases(limit=12)
+        data_gaps_block = (
+            "\n".join(f"- {phrase}  ×{n}" for phrase, n in _gaps)
+            if _gaps else ""
+        )
+    except Exception as exc:
+        logger.warning("reflect: data-gaps-block load failed (non-fatal): {}", exc)
+        data_gaps_block = ""
+
     return {
         "tools_block": "\n".join(tool_lines) if tool_lines else "(none)",
         "objectives_block": "\n".join(obj_lines) if obj_lines else "(none)",
         "theses_block": "\n".join(thesis_lines) if thesis_lines else "(none)",
         "rejections_block": rejections_block,
         "leads_block": leads_block,
+        "data_gaps_block": data_gaps_block,
     }
 
 
@@ -1080,6 +1094,16 @@ def _reflection_prompt(ctx: dict[str, Any]) -> str:
             " via the catalog url — but MUST still declare an exact endpoint_path"
             " and digest_fields; the pre-submit gates verify both as always."
         )
+    # DATA GAPS block follows the same byte-identical contract:
+    # empty ``data_gaps_block`` → no section, no wording added anywhere.
+    # This is EVIDENCE, not instruction. Reflect still decides.
+    data_gaps_section = ""
+    if ctx.get("data_gaps_block"):
+        data_gaps_section = (
+            f"\n\nDATA GAPS (from campaign research — angles the rail could not serve; "
+            f"phrase ×count, evidence only, not instructions):\n"
+            f"{ctx['data_gaps_block']}"
+        )
     return f"""You are proposing ONE new data-feed tool for Morgoth to add.
 
 CURRENT TOOLS (name, kind, usage, description):
@@ -1089,7 +1113,7 @@ RECENT OBJECTIVE TOPICS (newest first):
 {ctx['objectives_block']}
 
 RECENT ACTIVE THESIS SUBJECTS:
-{ctx['theses_block']}{negative_list_section}{leads_section}
+{ctx['theses_block']}{negative_list_section}{leads_section}{data_gaps_section}
 
 TASK: Suggest EXACTLY ONE new tool under tools/data_feeds/ that fills a
 gap the context above shows. Prefer FREE keyless HTTPS APIs. Keyed

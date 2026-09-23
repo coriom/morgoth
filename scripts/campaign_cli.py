@@ -124,6 +124,16 @@ async def _cmd_quality(pm: PersistentMemory, args: argparse.Namespace) -> int:
 
     report = await _score_campaign(pm, args.campaign_id, fetch_binance_funding=fetch)
     print(_quality_render(report))
+    # Persist unservable-angle phrases per campaign so reflect can
+    # render them as evidence. Non-fatal on failure — the print above
+    # is the primary output.
+    if not args.no_persist and report.top_missing_themes:
+        try:
+            await pm.record_campaign_data_gaps(
+                report.campaign_id, report.top_missing_themes,
+            )
+        except Exception as exc:
+            print(f"warn: data-gaps persist failed: {exc}", file=sys.stderr)
     return 0
 
 
@@ -142,6 +152,9 @@ async def _main(argv: list[str]) -> int:
     pq.add_argument("campaign_id")
     pq.add_argument("--no-binance", action="store_true",
                      help="skip Binance funding cross-check (B stays 'unknown')")
+    pq.add_argument("--no-persist", action="store_true",
+                     help="do NOT upsert unservable-angle phrases into "
+                          "campaign_data_gaps (reflect reads it as evidence)")
     pq.set_defaults(_fn=_cmd_quality)
     args = p.parse_args(argv)
     config = await load_config()
