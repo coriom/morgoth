@@ -19,6 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.config import load_config  # noqa: E402
 from memory.persistent import PersistentMemory  # noqa: E402
 from core.campaign import format_campaign_report  # noqa: E402
+from analysis.campaign_quality import (  # noqa: E402
+    render_report as _quality_render, score_campaign as _score_campaign,
+)
 
 
 async def _cmd_start(pm: PersistentMemory, args: argparse.Namespace) -> int:
@@ -95,6 +98,35 @@ async def _cmd_report(pm: PersistentMemory, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_quality(pm: PersistentMemory, args: argparse.Namespace) -> int:
+    """Read-only quality scorer — classifies every thesis in a campaign
+    into 6 error classes so two campaigns are comparable on the same
+    scale. No writes.
+    """
+    fetch = None
+    if not args.no_binance:
+        import httpx
+
+        async def _fetch():
+            async with httpx.AsyncClient(timeout=20.0) as c:
+                r = await c.get(
+                    "https://fapi.binance.com/fapi/v1/fundingRate",
+                    params={"symbol": "BTCUSDT", "limit": 1000},
+                )
+                r.raise_for_status()
+                data = r.json()
+                ms = [int(d["fundingTime"]) for d in data]
+                vs = [float(d["fundingRate"]) for d in data]
+                paired = sorted(zip(ms, vs))
+                return [m for m, _ in paired], [v for _, v in paired]
+
+        fetch = _fetch
+
+    report = await _score_campaign(pm, args.campaign_id, fetch_binance_funding=fetch)
+    print(_quality_render(report))
+    return 0
+
+
 async def _main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="campaign", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -106,6 +138,11 @@ async def _main(argv: list[str]) -> int:
     pr = sub.add_parser("report", help="print the campaign report")
     pr.add_argument("campaign_id", nargs="?")
     pr.set_defaults(_fn=_cmd_report)
+    pq = sub.add_parser("quality", help="score a campaign on 6 error classes (read-only)")
+    pq.add_argument("campaign_id")
+    pq.add_argument("--no-binance", action="store_true",
+                     help="skip Binance funding cross-check (B stays 'unknown')")
+    pq.set_defaults(_fn=_cmd_quality)
     args = p.parse_args(argv)
     config = await load_config()
     pm = PersistentMemory(config); await pm.initialize()
