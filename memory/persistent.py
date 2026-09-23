@@ -1111,26 +1111,32 @@ class PersistentMemory:
     async def record_campaign_data_gaps(
         self, campaign_id: str, phrases: list[tuple[str, int]],
     ) -> None:
-        """UPSERT (campaign_id, phrase, count) rows. Called by the
-        quality scorer; the reflect prompt aggregates across campaigns.
-        Non-fatal on write failure."""
+        """REPLACE (campaign_id, *) rows with the supplied phrase set.
+        Delete-then-insert so a stale run's phrases (e.g. from an older
+        serviceability vocabulary that flagged news/economic as gaps)
+        don't linger after the scorer is re-run with a corrected
+        classifier. Non-fatal on write failure.
+        """
         pool = self._require_pool()
-        if not phrases:
-            return
+        cid = str(campaign_id)[:64]
         try:
             async with pool.acquire() as conn:
-                await conn.executemany(
-                    "INSERT INTO campaign_data_gaps "
-                    "(campaign_id, phrase, count, updated_at) "
-                    "VALUES ($1, $2, $3, NOW()) "
-                    "ON CONFLICT (campaign_id, phrase) DO UPDATE SET "
-                    "  count = EXCLUDED.count, updated_at = NOW()",
-                    [(str(campaign_id)[:64], str(p)[:160], int(n))
-                     for p, n in phrases if p],
-                )
+                async with conn.transaction():
+                    await conn.execute(
+                        "DELETE FROM campaign_data_gaps WHERE campaign_id = $1",
+                        cid,
+                    )
+                    if phrases:
+                        await conn.executemany(
+                            "INSERT INTO campaign_data_gaps "
+                            "(campaign_id, phrase, count, updated_at) "
+                            "VALUES ($1, $2, $3, NOW())",
+                            [(cid, str(p)[:160], int(n))
+                             for p, n in phrases if p],
+                        )
         except Exception as exc:
             logger.warning(
-                "campaign_data_gaps upsert failed (non-fatal): {}", exc,
+                "campaign_data_gaps replace failed (non-fatal): {}", exc,
             )
 
     async def top_data_gap_phrases(

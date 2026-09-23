@@ -115,23 +115,89 @@ METRIC_FAMILIES: dict[str, tuple[str, ...]] = {
 }
 
 
-# Rail-tool keyword hints for angle serviceability. A title mentioning any
-# of these keywords is "serviceable" — the rail can produce the data.
-_SERVICEABLE_KEYWORDS: frozenset[str] = frozenset({
-    "funding", "long-short", "long/short", "positioning", "long account",
-    "short account", "hashrate", "hash rate", "difficulty", "mempool",
-    "unconfirmed", "gas", "gwei", "dominance", "market cap", "trading volume",
-    "24h volume", "fear", "greed", "price", "high", "low",
-    "block height", "base fee", "premium", "mark price", "index price",
-    "network stats", "onchain", "on-chain",
-    # FRED macro rail (fred_series_observations):
-    "fred", "federal reserve", "cpi", "unemployment", "gdp", "treasury",
-    # Coinbase spot rail (get_coinbase_btc_stats):
-    "coinbase", "spot",
-})
-# "sentiment" is intentionally excluded — too broad (fear-greed measures
-# MARKET sentiment; "influencer sentiment" is not on the rail). "fear"
-# and "greed" narrowly cover the fear_greed_index angle.
+# Per-tool served-concept phrases. PHRASE-LEVEL (not single-word) so
+# "market sentiment" (F&G) resolves separately from "social media
+# sentiment" (unservable). Serviceability checks this map first for a
+# match against the residue's PHRASE text.
+TOOL_SERVED_PHRASES: dict[str, tuple[str, ...]] = {
+    "get_news": (
+        "news", "news headlines", "headlines", "news events",
+        "news impact", "economic news", "major news", "news sentiment",
+        "market news", "crypto news",
+    ),
+    "get_fear_greed_index": (
+        "fear", "greed", "fear and greed", "fear & greed",
+        "market sentiment", "sentiment index", "crypto sentiment",
+    ),
+    "fred_series_observations": (
+        "fred", "federal reserve", "cpi", "unemployment", "gdp",
+        "treasury", "economic indicators", "economic data",
+        "inflation", "inflation rates", "us inflation",
+        "macro indicators", "macroeconomic", "oecd series",
+        "banking system confidence",
+    ),
+    "get_coinbase_btc_stats": (
+        "coinbase", "coinbase exchange", "coinbase spot",
+        "spot market", "spot price",
+    ),
+    "get_crypto_global_market": (
+        "market cap", "market capitalization", "dominance",
+        "btc dominance", "bitcoin dominance", "trading volume",
+        "24h volume", "24-hour volume", "global crypto",
+        "global market", "crypto market volume",
+    ),
+    "get_bitcoin_futures_funding": (
+        "funding", "funding rate", "funding rates", "perpetual funding",
+        "mark price", "index price", "premium", "futures funding",
+    ),
+    "get_bitcoin_long_short_ratio": (
+        "long-short", "long/short", "long short", "positioning",
+        "long account", "short account", "long-short ratio",
+        "long/short ratio", "long short ratio",
+    ),
+    "get_bitcoin_onchain": (
+        "hashrate", "hash rate", "network hashrate", "mining difficulty",
+        "difficulty", "difficulty adjustment", "mempool", "mempool size",
+        "unconfirmed transactions", "onchain", "on-chain",
+        "bitcoin on-chain",
+    ),
+    "get_ethereum_network_stats": (
+        "gas", "gwei", "ethereum gas", "base fee", "block height",
+        "ethereum network", "ethereum network stats",
+    ),
+    "get_crypto_price": (
+        "crypto price", "spot price", "short-term price",
+        "short-term crypto price",
+    ),
+    "technical_analysis": (
+        "technical analysis", "technical indicators", "moving average",
+    ),
+}
+
+# Concepts the rail CANNOT serve — override wins over any coincidental
+# served-phrase match. Phrase-level: "market sentiment" is served by
+# F&G, but "reddit sentiment" / "social media sentiment" are not.
+NOT_SERVED_OVERRIDES: tuple[str, ...] = (
+    # social / off-rail sentiment
+    "social media sentiment", "social media", "reddit sentiment",
+    "reddit", "influencer sentiment", "influencer", "twitter sentiment",
+    "twitter",
+    # off-rail stablecoin data
+    "stablecoin", "stablecoin issuance", "stablecoin reserve",
+    "stablecoin reserves", "stablecoin market",
+    # off-rail policy / regulation
+    "central bank digital", "cbdc", "digital currency", "digital currencies",
+    "regulatory", "regulation", "regulations", "compliance",
+    "regulatory framework", "regulatory frameworks",
+    "regulatory environment", "regulatory compliance",
+    "tax compliance", "blockchain governance",
+    # off-rail structural data
+    "mining pool", "mining pools",
+    "exchange listing", "exchange listings", "exchange share",
+    "market share", "market microstructure",
+    "supply chain",
+    "market maker",
+)
 
 
 # Generic filler that shows up on both sides of the real theme.
@@ -481,19 +547,60 @@ def _angle_residue_tokens_ordered(
     return out
 
 
+def _residue_text_ordered(title: str, campaign_subject: str) -> str:
+    """Word-order-preserving residue as one space-separated string. Used
+    by phrase-level matching (bigrams / trigrams need adjacency)."""
+    return " ".join(_angle_residue_tokens_ordered(title, campaign_subject))
+
+
+def _all_served_phrases() -> list[str]:
+    """Flat list of every served phrase from every rail tool, longest
+    first — so "market sentiment" matches before "sentiment" ever could
+    (and any served-phrase collision is deterministic)."""
+    seen: set[str] = set()
+    flat: list[str] = []
+    for phrases in TOOL_SERVED_PHRASES.values():
+        for p in phrases:
+            if p not in seen:
+                seen.add(p)
+                flat.append(p)
+    return sorted(flat, key=lambda p: -len(p))
+
+
+_SERVED_PHRASES_ORDERED = _all_served_phrases()
+
+
 def title_is_serviceable(
     title: str, campaign_subject: str | None = None,
 ) -> bool:
-    """Serviceable ⇔ at least one rail-keyword appears in the ANGLE
-    (title residue after subject/template strip). If campaign_subject
-    is None, fall back to the legacy whole-title match — preserves
-    behavior for callers who don't have a subject on hand."""
+    """Serviceable ⇔ the title's ANGLE (residue after subject / template
+    strip) contains a phrase that some rail tool serves, AND does not
+    contain a phrase in NOT_SERVED_OVERRIDES.
+
+    PHRASE-LEVEL (2026-09-23 rewrite). A word-level check made "news",
+    "economic", "sentiment" false-serviceable when the actual angle was
+    "reddit sentiment" or "influencer sentiment" — those need a
+    dedicated source. Overrides win: any off-rail phrase in the residue
+    → unservable, even if a served phrase co-occurs. Reason: a title
+    "Explore social media sentiment via news headlines" is proposing
+    NEW social-media-sentiment data, not repurposing get_news.
+
+    Legacy no-subject signature (campaign_subject=None) checks the
+    whole title against served phrases only — kept so callers without
+    the subject on hand still work.
+    """
     if campaign_subject is None:
         low = (title or "").lower()
-        return any(kw in low for kw in _SERVICEABLE_KEYWORDS)
-    residue = _angle_residue_tokens(title, campaign_subject)
-    residue_text = " ".join(residue)
-    return any(kw in residue_text for kw in _SERVICEABLE_KEYWORDS)
+        # Overrides don't apply in the legacy path — no subject strip.
+        return any(p in low for p in _SERVED_PHRASES_ORDERED)
+    residue_text = _residue_text_ordered(title, campaign_subject)
+    if not residue_text:
+        return False
+    # Off-rail overrides win. Any override match → unservable.
+    for off in NOT_SERVED_OVERRIDES:
+        if off in residue_text:
+            return False
+    return any(p in residue_text for p in _SERVED_PHRASES_ORDERED)
 
 
 def score_thesis(

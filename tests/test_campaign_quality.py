@@ -196,6 +196,75 @@ class TestServiceability:
         )
 
 
+class TestPhraseLevelServiceability:
+    """2026-09-23: phrase-level check with per-tool served-concept map
+    and off-rail overrides. Word-level check made "news", "economic",
+    "sentiment" false-serviceable when the actual angle was reddit /
+    influencer / social-media sentiment."""
+
+    def test_market_sentiment_served_by_fear_greed(self):
+        assert title_is_serviceable(
+            "Angle X via Market Sentiment shift",
+            campaign_subject="Angle X",
+        )
+
+    def test_reddit_sentiment_unservable_despite_the_word_sentiment(self):
+        assert not title_is_serviceable(
+            "Angle X via Reddit Sentiment Analysis",
+            campaign_subject="Angle X",
+        )
+
+    def test_social_media_sentiment_unservable(self):
+        assert not title_is_serviceable(
+            "Angle X via Social Media Sentiment",
+            campaign_subject="Angle X",
+        )
+
+    def test_influencer_sentiment_unservable(self):
+        assert not title_is_serviceable(
+            "Angle X via Crypto Influencer Sentiment",
+            campaign_subject="Angle X",
+        )
+
+    def test_economic_news_served_by_get_news(self):
+        assert title_is_serviceable(
+            "Angle X via Major Economic News Impact",
+            campaign_subject="Angle X",
+        )
+
+    def test_fred_inflation_served(self):
+        assert title_is_serviceable(
+            "Angle X via US Inflation Rates Impact",
+            campaign_subject="Angle X",
+        )
+
+    def test_override_wins_over_served_phrase(self):
+        # A title that mentions BOTH a served concept AND an off-rail
+        # concept is UNSERVABLE — the model is proposing new data,
+        # not repurposing get_news.
+        assert not title_is_serviceable(
+            "Angle X via Social Media Sentiment inferred from News",
+            campaign_subject="Angle X",
+        )
+
+
+class TestServedPhrasesCatalog:
+    def test_every_rail_tool_has_served_phrases(self):
+        from analysis.campaign_quality import TOOL_SERVED_PHRASES, RAIL_TOOL_FIELDS
+        # The scorer's rail tool set is the source of truth. Every rail
+        # tool with a payload MUST declare at least one served phrase —
+        # otherwise the serviceability check silently drops it.
+        for src, fields in RAIL_TOOL_FIELDS.items():
+            if not fields:
+                continue  # qualitative sources (news, web_search) handled elsewhere
+            if src == "get_stablecoin_market_activity":
+                continue  # legacy label, no server
+            assert src in TOOL_SERVED_PHRASES, (
+                f"{src} has no entry in TOOL_SERVED_PHRASES"
+            )
+            assert TOOL_SERVED_PHRASES[src], f"{src} declares no served phrases"
+
+
 class TestCrossSubjectTightening:
     def test_cross_subject_tolerance_is_narrow(self):
         # LOCK: tolerance stays ≤ 0.1 %. A wider window flags order-of-
