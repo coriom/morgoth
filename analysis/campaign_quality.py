@@ -121,10 +121,17 @@ _SERVICEABLE_KEYWORDS: frozenset[str] = frozenset({
     "funding", "long-short", "long/short", "positioning", "long account",
     "short account", "hashrate", "hash rate", "difficulty", "mempool",
     "unconfirmed", "gas", "gwei", "dominance", "market cap", "trading volume",
-    "24h volume", "fear", "greed", "sentiment", "price", "high", "low",
+    "24h volume", "fear", "greed", "price", "high", "low",
     "block height", "base fee", "premium", "mark price", "index price",
     "network stats", "onchain", "on-chain",
+    # FRED macro rail (fred_series_observations):
+    "fred", "federal reserve", "cpi", "unemployment", "gdp", "treasury",
+    # Coinbase spot rail (get_coinbase_btc_stats):
+    "coinbase", "spot",
 })
+# "sentiment" is intentionally excluded — too broad (fear-greed measures
+# MARKET sentiment; "influencer sentiment" is not on the rail). "fear"
+# and "greed" narrowly cover the fear_greed_index angle.
 
 
 @dataclass
@@ -194,14 +201,22 @@ def classify_scope_misattribution(
     return False, ""
 
 
+# Cross-source numeric collision tolerance. TIGHTENED 2026-09-23: the
+# earlier 2 % window flagged "mark price 85776.9 matches onchain hash
+# rate 8.5e20" — two vastly different scales that only agree on their
+# first three significant digits. 0.1 % keeps genuine field-swap
+# collisions (values only differ by trailing noise) while rejecting
+# order-of-magnitude coincidences.
+CROSS_SUBJECT_TOL: float = 0.001
+
+
 def classify_cross_subject_value(
     thesis: dict[str, Any],
     findings_payloads: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[bool, str]:
     """Cited value matches a field of a DIFFERENT rail tool than the one
-    named. Only fires when the named source IS a rail tool but no field
-    of that tool matches the value, AND another rail tool's payload
-    field does match. Requires findings_payloads (from source_snapshots).
+    named — EXACT match preferred, otherwise tolerance CROSS_SUBJECT_TOL.
+    Requires findings_payloads.
     """
     if not findings_payloads:
         return False, ""
@@ -218,20 +233,22 @@ def classify_cross_subject_value(
             if abs(v) < 1.0:
                 continue
             matches_own = any(
-                _close(v, float(r)) for r in own.values()
-                if isinstance(r, (int, float))
+                _close(v, float(r), CROSS_SUBJECT_TOL)
+                for r in own.values() if isinstance(r, (int, float))
             )
             if matches_own:
                 continue
             for other_src, other_pl in findings_payloads.items():
                 if other_src == src or not isinstance(other_pl, dict):
                     continue
-                if any(_close(v, float(r)) for r in other_pl.values()
-                       if isinstance(r, (int, float))):
-                    return True, (
-                        f"value {v} attributed to {src} matches "
-                        f"{other_src}: {detail[:80]}"
-                    )
+                for k, r in other_pl.items():
+                    if not isinstance(r, (int, float)):
+                        continue
+                    if _close(v, float(r), CROSS_SUBJECT_TOL):
+                        return True, (
+                            f"cited={v} src={src} → matches "
+                            f"{other_src}.{k}={r}"
+                        )
     return False, ""
 
 
@@ -291,13 +308,19 @@ def classify_unsourced_subject(thesis: dict[str, Any]) -> tuple[bool, str]:
 
 
 def measure_fragmentation(
-    canonical_subjects: list[str | None],
+    raw_subjects: list[str | None],
 ) -> tuple[dict[str, list[str]], int]:
-    """Group canonical subjects by METRIC_FAMILY keyword; return
-    (family → variants) and the count of extra variants beyond the
-    first. n=1 contributes 0 to fragmentation; n=k contributes k-1."""
+    """Group RAW subjects (the model's own naming — NOT canonical_subject)
+    by METRIC_FAMILY keyword; return (family → variants) and the count of
+    extra variants beyond the first. n=1 contributes 0; n=k contributes k-1.
+
+    Uses raw subjects intentionally so a future change to the
+    canonicalisation function cannot fake an improvement here — the
+    metric measures what the model wrote, not what a normaliser reduces
+    it to. Grep-locked in tests/test_campaign_quality.py.
+    """
     families: dict[str, set[str]] = defaultdict(set)
-    for cs in canonical_subjects:
+    for cs in raw_subjects:
         if not cs:
             continue
         low = cs.lower()
@@ -309,9 +332,60 @@ def measure_fragmentation(
     return {k: sorted(v) for k, v in families.items() if len(v) > 1}, extra
 
 
-def title_is_serviceable(title: str) -> bool:
-    low = (title or "").lower()
-    return any(kw in low for kw in _SERVICEABLE_KEYWORDS)
+# Template / narrative words that objective titles use as filler around the
+# actual angle. Strip these plus the campaign-subject tokens before matching
+# the residue against the rail. Otherwise every title contains the subject
+# ("BTC Funding Rate and Positioning" → "funding" always matches) and the
+# check reports 0 unservable.
+_TITLE_TEMPLATE_WORDS: frozenset[str] = frozenset({
+    "exploring", "explore", "analyzing", "analyze", "analysis",
+    "investigating", "investigate", "examining", "examine",
+    "impact", "influence", "context", "correlation", "relationship",
+    "between", "via", "through", "under", "over", "into", "amid",
+    "during", "toward", "against", "within",
+    "unexplored", "emerging", "evolving", "recent", "current",
+    "new", "novel", "potential", "the", "and", "or", "of", "in",
+    "on", "at", "to", "for", "with", "vs", "versus",
+    "level", "levels", "state", "trend", "trends", "crypto",
+    "cryptocurrency", "btc", "bitcoin",
+})
+# NOT in the template set (kept in residue on purpose):
+#   · "market" — collides with the "market cap" rail keyword; stripping it
+#     would strand "cap" alone. The angle "via Market Cap Changes" is
+#     servable and must not be false-flagged.
+
+
+def _angle_residue_tokens(
+    title: str, campaign_subject: str,
+) -> set[str]:
+    """Return the set of tokens that remain after stripping the campaign
+    subject's tokens and generic template words. This is the ANGLE — the
+    part of the title that names what the objective actually explores."""
+    subject_tokens = {
+        t for t in re.findall(r"[a-z][a-z\-]+", (campaign_subject or "").lower())
+    }
+    title_tokens = {
+        t for t in re.findall(r"[a-z][a-z\-]+", (title or "").lower())
+    }
+    residue = title_tokens - subject_tokens - _TITLE_TEMPLATE_WORDS
+    # Also strip standalone "rate", "ratio", "positioning" if the subject
+    # implied them — these follow the subject naturally.
+    return residue
+
+
+def title_is_serviceable(
+    title: str, campaign_subject: str | None = None,
+) -> bool:
+    """Serviceable ⇔ at least one rail-keyword appears in the ANGLE
+    (title residue after subject/template strip). If campaign_subject
+    is None, fall back to the legacy whole-title match — preserves
+    behavior for callers who don't have a subject on hand."""
+    if campaign_subject is None:
+        low = (title or "").lower()
+        return any(kw in low for kw in _SERVICEABLE_KEYWORDS)
+    residue = _angle_residue_tokens(title, campaign_subject)
+    residue_text = " ".join(residue)
+    return any(kw in residue_text for kw in _SERVICEABLE_KEYWORDS)
 
 
 def score_thesis(
@@ -363,8 +437,12 @@ def render_report(report: QualityReport) -> str:
         n = report.class_counts.get(name, 0)
         share = (n / report.n_theses * 100) if report.n_theses else 0.0
         lines.append(f"  {name:<25} {n:>4}  ({share:.0f}%)")
-        for ex in report.class_examples.get(name, [])[:2]:
-            lines.append(f"    · {ex.get('example','')[:110]}")
+        # cross_subject_value: print ALL examples so each collision is
+        # visible with both payload values. Other classes: keep 2.
+        cap = None if name == "cross_subject_value" else 2
+        seq = report.class_examples.get(name, [])
+        for ex in (seq if cap is None else seq[:cap]):
+            lines.append(f"    · {ex.get('example','')[:140]}")
     lines.append(
         f"  subject_fragmentation    {report.fragmentation_extra:>4} extra variants "
         f"across {len(report.fragmentation_families)} families"
@@ -487,15 +565,22 @@ async def score_campaign(
         for cls, (hit, ex) in verdicts.items():
             if hit:
                 rep.class_counts[cls] += 1
-                if len(rep.class_examples[cls]) < 2:
+                # Cap examples per class at 2 — EXCEPT cross_subject_value,
+                # where the operator asked for the full list so each match
+                # is visible with both payload values.
+                cap = None if cls == "cross_subject_value" else 2
+                if cap is None or len(rep.class_examples[cls]) < cap:
                     rep.class_examples[cls].append({
                         "thesis_id": str(t.get("thesis_id"))[:8],
                         "example": (
                             f"{t.get('subject','?')} :: {ex}"
                         ),
                     })
-    canon_subs = [t.get("canonical_subject") for t in theses]
-    rep.fragmentation_families, rep.fragmentation_extra = measure_fragmentation(canon_subs)
+    # FRAGMENTATION: intentionally use RAW subjects (the model's naming),
+    # not canonical_subject. A canonicalisation change must not be able to
+    # improve this metric by folding variants together.
+    raw_subs = [t.get("subject") for t in theses]
+    rep.fragmentation_families, rep.fragmentation_extra = measure_fragmentation(raw_subs)
 
     # B: 0.0001 hits + quarantined cross-check
     for t in theses:
@@ -561,18 +646,22 @@ async def score_campaign(
                 entry["error"] = str(exc)[:80]
         rep.quarantined_interestrate.append(entry)
 
-    # C: angle serviceability
+    # C: angle serviceability — extract the ANGLE first (title residue
+    # after subject / template strip). The campaign subject shows up in
+    # every title in a campaign; matching against the whole title
+    # trivially returns 0 unservable.
     theme_counts: Counter = Counter()
+    subj = str(row.get("subject") or "")
     for o in objs:
         title = o.get("title") or ""
-        if not title_is_serviceable(title):
+        if not title_is_serviceable(title, campaign_subject=subj):
             rep.unservable_titles.append(title)
-            # Extract salient noun-ish tokens as the "theme"
-            words = re.findall(r"[a-z][a-z\-]{3,}", title.lower())
-            for w in words[:3]:
-                if w not in {"the", "and", "with", "from", "over", "into", "for",
-                              "against", "during", "under", "between"}:
-                    theme_counts[w] += 1
-                    break
+            # Rank residue tokens (not raw title tokens) as the theme.
+            residue = _angle_residue_tokens(title, subj)
+            for w in sorted(residue):
+                if len(w) < 4:
+                    continue
+                theme_counts[w] += 1
+                break
     rep.top_missing_themes = theme_counts.most_common(10)
     return rep
