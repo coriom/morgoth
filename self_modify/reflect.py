@@ -522,13 +522,30 @@ def _spec_is_well_formed(spec: dict[str, Any]) -> str | None:
     if path and not URL_ALLOWED_CHARS_RE.match(_html_normalize(path)):
         return "endpoint_path contains characters outside the RFC 3986 URL set"
     digest = spec.get("digest_fields")
-    if not (isinstance(digest, list) and 3 <= len(digest) <= 6):
-        return "digest_fields must be a list of 3-6 items"
+    from self_modify.digest_path import (
+        parse_digest_entry as _parse_digest_entry,
+        DigestPathError as _DigestPathError,
+        MAX_DIGEST_FIELDS as _MAX_DIGEST_FIELDS,
+    )
+    if not isinstance(digest, list) or not (3 <= len(digest) <= _MAX_DIGEST_FIELDS):
+        return (
+            f"digest_fields must be a list of 3-{_MAX_DIGEST_FIELDS} items "
+            f"(plain snake_case strings OR {{name, path}} dicts)"
+        )
+    seen_names: set[str] = set()
     for f in digest:
-        if not (isinstance(f, str) and DIGEST_FIELD_RE.match(f)):
-            return f"digest field {f!r} is not a snake-case identifier"
-    if len(digest) != len(set(digest)):
-        return "digest_fields must be unique"
+        if isinstance(f, str):
+            if not DIGEST_FIELD_RE.match(f):
+                return f"digest field {f!r} is not a snake-case identifier"
+            name = f
+        else:
+            try:
+                name, _p = _parse_digest_entry(f)
+            except _DigestPathError as exc:
+                return f"digest_fields entry {f!r} invalid: {exc}"
+        if name in seen_names:
+            return f"digest_fields duplicate name {name!r}"
+        seen_names.add(name)
     desc = spec.get("description")
     if not isinstance(desc, str) or len(desc.strip()) < 10:
         return "description too short"
@@ -871,45 +888,55 @@ def _freshness_check(body: Any) -> str | None:
     return None
 
 
-def _shape_check(body: Any, digest_fields: list[str]) -> str | None:
-    """Return None if every ``digest_field`` is extractable AND scalar
-    at the template's chosen site; otherwise return a reason string.
+def _shape_check(body: Any, digest_fields: list[Any]) -> str | None:
+    """Return None if every ``digest_field`` resolves to a SCALAR at
+    the correct extraction site; otherwise return a reason string
+    naming the exact failing segment.
 
-    Contract enforced (documents the rejects):
-
-    1. **Extractability**: field must exist at the extraction site the
-       template will actually use. Missing → rejected.
-    2. **Scalarity**: extracted value must not be ``list`` or ``dict``.
-       Array-valued fields (e.g. ``fee_histogram: [[...], [...]]``)
-       ARE extractable but break the digest's compact-findings
-       contract — the tool's ``findings`` string is truncated by
-       downstream consumers, and dumping a nested list makes the
-       digest useless. Reject rather than silently produce garbage.
+    2026-09-24: entries may be plain strings (top-level keys, backward-
+    compatible) OR {name, path} dicts whose path uses the grammar in
+    self_modify.digest_path (dotted keys, [k=v] selection, [*] under
+    sum/count/min/max). String entries route through the legacy site-
+    based check (keeps prior semantics for list-shaped bodies where
+    the template reads [0]). Dict entries resolve against the whole
+    body — that IS how nested sources like DefiLlama /stablecoins are
+    unlocked (`sum(peggedAssets[*].circulating.peggedUSD)`).
     """
-    site, desc = _template_extraction_site(body, digest_fields)
-    if site is None:
-        return desc
-    missing = [f for f in digest_fields if f not in site]
-    non_scalar = [
-        f for f in digest_fields
-        if f in site and isinstance(site[f], (list, dict))
-    ]
-    problems: list[str] = []
-    if missing:
-        problems.append(f"missing at {desc}: {missing}")
-    if non_scalar:
-        problems.append(
-            f"array/dict-valued at {desc} (breaks compact digest): {non_scalar}"
-        )
-    if not problems:
-        return None
-    keys = list(site.keys())
-    keys_shown = keys[:_SHAPE_KEYS_SHOWN]
-    more = f", …(+{len(keys) - _SHAPE_KEYS_SHOWN} more)" if len(keys) > _SHAPE_KEYS_SHOWN else ""
-    return (
-        f"{'; '.join(problems)} — real keys at {desc}: "
-        f"[{', '.join(keys_shown)}{more}]"
-    )
+    string_entries = [f for f in digest_fields if isinstance(f, str)]
+    path_entries = [f for f in digest_fields if not isinstance(f, str)]
+    if string_entries:
+        site, desc = _template_extraction_site(body, string_entries)
+        if site is None:
+            return desc
+        missing = [f for f in string_entries if f not in site]
+        non_scalar = [
+            f for f in string_entries
+            if f in site and isinstance(site[f], (list, dict))
+        ]
+        problems: list[str] = []
+        if missing:
+            problems.append(f"missing at {desc}: {missing}")
+        if non_scalar:
+            problems.append(
+                f"array/dict-valued at {desc} (breaks compact digest): {non_scalar}"
+            )
+        if problems:
+            keys = list(site.keys())
+            keys_shown = keys[:_SHAPE_KEYS_SHOWN]
+            more = f", …(+{len(keys) - _SHAPE_KEYS_SHOWN} more)" if len(keys) > _SHAPE_KEYS_SHOWN else ""
+            return (
+                f"{'; '.join(problems)} — real keys at {desc}: "
+                f"[{', '.join(keys_shown)}{more}]"
+            )
+    if path_entries:
+        from self_modify.digest_path import resolve_digest_fields, MAX_DIGEST_FIELDS
+        total = len(digest_fields)
+        if total > MAX_DIGEST_FIELDS:
+            return f"digest_fields cap exceeded: {total} > {MAX_DIGEST_FIELDS}"
+        _values, errors = resolve_digest_fields(path_entries, body)
+        if errors:
+            return "; ".join(f"path {n!r} — {msg}" for n, msg in errors)
+    return None
 
 
 # ---------- context ---------------------------------------------------------
@@ -1138,24 +1165,41 @@ OUTPUT FORMAT — a single JSON object OR the word NONE. Nothing else.
 }}"""
 
 
-def _corrective_prompt(prompt: str, spec: dict[str, Any] | None, reason: str) -> str:
+def _corrective_prompt(
+    prompt: str, spec: dict[str, Any] | None, reason: str,
+    *, reject_status: str | None = None,
+) -> str:
     """Append a CORRECTION block to the original prompt.
 
-    The corrective attempt sees EVERYTHING the original attempt saw
-    plus the rejected spec and the exact gate reason. For shape
-    rejects the reason already contains the real API keys the model
-    needed — the retry is the model's chance to use them.
+    2026-09-24: after rejected_shape the corrective attempt MUST keep
+    the SAME data target (host + metric) — the fix belongs in
+    digest_fields (use the new {name, path} grammar), not in a
+    substituted metric. Prior retries silently swapped in a different
+    metric to pass the gate (e.g. DefiLlama stablecoin_supply →
+    Gemini USDT/USD peg). ABSTAIN (NONE) is preferred to a
+    substituted target.
     """
     spec_block = json.dumps(spec, indent=2) if spec is not None else "(no spec produced)"
+    lock_line = ""
+    if reject_status == "rejected_shape":
+        lock_line = (
+            "TARGET LOCK: your CORRECTED spec MUST keep the SAME api_base_url "
+            "(host) AND the SAME data target as above. Fix the digest_fields — "
+            "each entry may be a plain snake_case string (top-level scalar) "
+            "OR a {\"name\": \"<snake>\", \"path\": \"<expr>\"} dict whose "
+            "path uses the grammar: dotted keys, [k=v] selection, [*] under "
+            "sum/count/min/max. If the target cannot be shaped this way, "
+            "answer the literal word NONE (abstain) — do NOT substitute a "
+            "different metric to pass the gate.\n"
+        )
     return (
         f"{prompt}\n\n"
         "YOUR PREVIOUS ATTEMPT WAS REJECTED.\n"
         f"spec:\n{spec_block}\n"
         f"reason: {reason}\n\n"
-        "Produce a CORRECTED spec addressing the reason (fix the failing "
-        "field(s); pick a different endpoint if the response shape can't "
-        "carry a compact scalar digest), or the literal word NONE if no "
-        "correction is honest."
+        f"{lock_line}"
+        "Produce a CORRECTED spec addressing the reason, or the literal "
+        "word NONE if no correction is honest."
     )
 
 
@@ -1740,7 +1784,10 @@ async def run_reflection(
     # to the first attempt's row via retry_of, so calibration can slice
     # correction-success rate per engine.
     log(f"retry: eligible outcome {first_out!r} — building corrective prompt")
-    corrective = _corrective_prompt(prompt, first.get("spec"), first["reason"])
+    corrective = _corrective_prompt(
+        prompt, first.get("spec"), first["reason"],
+        reject_status=first_out,
+    )
     retry = await _one_reflect_attempt(
         config, pm, llm, store, corrective, provider,
         retry_of=first.get("proposal_id"),

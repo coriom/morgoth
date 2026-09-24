@@ -106,6 +106,44 @@ async def _resolve_or_bail(
     return pid, 0
 
 
+def _target_change_note(orig: dict, retry: dict) -> str:
+    """Return "" if the retry keeps the same host + tool_name as the
+    original, else a short summary of the divergence. Compares the
+    stored spec-content (pre-submit rows carry JSON) or the assembled
+    template body (gate-3 rows carry Python — extract via regex)."""
+    import json as _json
+    import re as _re
+    from urllib.parse import urlparse as _urlparse
+
+    def _host_tool(row: dict) -> tuple[str, str]:
+        content = row.get("content") or ""
+        if not isinstance(content, str):
+            return "", ""
+        stripped = content.lstrip()
+        if stripped.startswith("{"):
+            try:
+                s = _json.loads(content)
+            except Exception:
+                return "", ""
+            if isinstance(s, dict):
+                url = s.get("api_base_url") or ""
+                host = _urlparse(url).hostname or ""
+                return host, str(s.get("tool_name") or "")
+        m_url = _re.search(r"^_BASE_URL\s*=\s*['\"]([^'\"]+)['\"]", content, _re.M)
+        host = _urlparse(m_url.group(1)).hostname if m_url else ""
+        tp = row.get("target_path") or ""
+        tool = tp.split("/")[-1].replace(".py", "") if tp else ""
+        return host or "", tool
+    h1, t1 = _host_tool(orig)
+    h2, t2 = _host_tool(retry)
+    diffs = []
+    if h1 and h2 and h1 != h2:
+        diffs.append(f"host {h1!r} → {h2!r}")
+    if t1 and t2 and t1 != t2:
+        diffs.append(f"tool_name {t1!r} → {t2!r}")
+    return "; ".join(diffs)
+
+
 async def _cmd_show(store: P.ProposalStore, args: argparse.Namespace) -> int:
     pid, rc = await _resolve_or_bail(store, args.proposal_id)
     if pid is None:
@@ -122,6 +160,22 @@ async def _cmd_show(store: P.ProposalStore, args: argparse.Namespace) -> int:
     print(f"status:        {row['status']}")
     print(f"status_reason: {row.get('status_reason') or ''}")
     print(f"rationale:     {row.get('rationale') or ''}")
+    # Retry-target lock (2026-09-24): if this row is a retry, compare its
+    # host + tool_name against the original's; a divergence means the
+    # retry SUBSTITUTED a different metric to pass the gate, which the
+    # rejected_shape corrective prompt now forbids. Loud gate-3 note.
+    retry_of = row.get("retry_of")
+    if retry_of:
+        try:
+            orig = await store.get(str(retry_of))
+        except Exception:
+            orig = None
+        if orig is not None:
+            note = _target_change_note(orig, row)
+            if note:
+                print(f"TARGET CHANGED: {note}")
+            else:
+                print(f"retry_of:      {str(retry_of)[:8]} (target UNCHANGED)")
     # Shadow verdicts (Gate 2.5) — recorded, never enforced.
     try:
         verdicts = await store._pm.get_shadow_verdicts(str(row["proposal_id"]))  # noqa: SLF001
