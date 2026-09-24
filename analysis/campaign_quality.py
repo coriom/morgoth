@@ -568,10 +568,65 @@ def _residue_text_ordered(title: str, campaign_subject: str) -> str:
     return " ".join(_angle_residue_tokens_ordered(title, campaign_subject))
 
 
+def _split_camel_or_snake(s: str) -> list[str]:
+    """Split a digest field name like 'lastFundingRate' or 'hash_rate'
+    into lowercase word tokens: ['last', 'funding', 'rate']."""
+    if not s:
+        return []
+    # camelCase → snake_case first
+    with_ = re.sub(r"(?<!^)(?=[A-Z])", "_", s)
+    return [w.lower() for w in re.split(r"[_\s]+", with_) if w]
+
+
+def learned_served_phrases() -> list[str]:
+    """Phrases learned automatically from every currently-discovered
+    data_feed tool's digest_fields + description. A newly-applied
+    tool (e.g. get_defillama_stablecoins with digest names like
+    total_supply, usdt_supply, asset_count) registers at import time
+    — no manual edit to TOOL_SERVED_PHRASES needed, so the next
+    campaign scorer no longer calls its angles unservable.
+
+    Best-effort: any discovery error is silently swallowed so the
+    scorer keeps working on hosts where tools import differently.
+    """
+    out: list[str] = []
+    try:
+        from tools.discovery import discover_data_feed_tools
+        for cls in discover_data_feed_tools():
+            for field in getattr(cls, "digest_fields", ()) or ():
+                # Whole field name as-is (lowercased) — supports paths
+                # like "usdt_supply" that model titles may repeat.
+                out.append(str(field).lower())
+                # And split into tokens: "lastFundingRate" →
+                # "last funding rate" so "funding rate" matches.
+                tokens = _split_camel_or_snake(str(field))
+                if len(tokens) >= 2:
+                    out.append(" ".join(tokens))
+                # And the tail bigram/trigram if long enough — helps
+                # "long_short_ratio" → also emit "short ratio".
+                if len(tokens) >= 3:
+                    out.append(" ".join(tokens[1:]))
+            # Description keywords: pull noun-ish phrases 2+ words long.
+            desc = getattr(cls, "description", "") or ""
+            for m in re.finditer(r"\b([a-zA-Z][a-zA-Z\-]{3,}(?:\s+[a-zA-Z][a-zA-Z\-]{3,}){1,2})\b", desc):
+                out.append(m.group(1).lower())
+    except Exception:
+        pass
+    return out
+
+
 def _all_served_phrases() -> list[str]:
     """Flat list of every served phrase from every rail tool, longest
     first — so "market sentiment" matches before "sentiment" ever could
-    (and any served-phrase collision is deterministic)."""
+    (and any served-phrase collision is deterministic).
+
+    Includes the hand-curated TOOL_SERVED_PHRASES table AND the
+    auto-learned phrases from every discovered data_feed tool's
+    digest_fields + description (2026-09-24). A brand-new tool applied
+    via `morgoth reflect` registers its concepts here at import time,
+    so the next campaign's serviceability check no longer classifies
+    its angles as unservable — no manual edit required.
+    """
     seen: set[str] = set()
     flat: list[str] = []
     for phrases in TOOL_SERVED_PHRASES.values():
@@ -579,6 +634,10 @@ def _all_served_phrases() -> list[str]:
             if p not in seen:
                 seen.add(p)
                 flat.append(p)
+    for p in learned_served_phrases():
+        if p and p not in seen:
+            seen.add(p)
+            flat.append(p)
     return sorted(flat, key=lambda p: -len(p))
 
 

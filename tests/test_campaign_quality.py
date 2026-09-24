@@ -516,6 +516,58 @@ class TestLengthControl:
         assert '[:limit_first_n]' in src
 
 
+class TestLearnedServedPhrases:
+    """Phase 4 lock: an applied tool's digest names + description
+    register in the served-concept vocabulary AUTOMATICALLY. Otherwise
+    the next campaign scorer classifies angles the tool CAN serve as
+    unservable, defeating the whole feedback loop."""
+
+    def test_discovered_tool_digest_fields_are_learned(self):
+        from analysis.campaign_quality import learned_served_phrases
+        phrases = learned_served_phrases()
+        # Every discovered rail tool exposes AT LEAST ONE digest field;
+        # its whole-lowercase form must appear as a served phrase.
+        assert any("funding" in p for p in phrases), (
+            f"discovered tool phrases missing 'funding': sample={phrases[:5]}"
+        )
+
+    def test_split_camel_or_snake_splits_tokens(self):
+        from analysis.campaign_quality import _split_camel_or_snake
+        assert _split_camel_or_snake("lastFundingRate") == ["last", "funding", "rate"]
+        assert _split_camel_or_snake("hash_rate") == ["hash", "rate"]
+        assert _split_camel_or_snake("usdt_supply") == ["usdt", "supply"]
+
+    def test_all_served_includes_learned(self):
+        # LOCK: _all_served_phrases MUST call learned_served_phrases().
+        import inspect
+        from analysis import campaign_quality as cq
+        src = inspect.getsource(cq._all_served_phrases)
+        assert "learned_served_phrases" in src
+
+    def test_new_tool_shape_registers_automatically(self, monkeypatch):
+        # Simulate a newly-applied get_defillama_stablecoins tool:
+        # its digest_fields are usdt_supply, usdc_supply, total_supply,
+        # asset_count. After registration, a title angle citing any of
+        # these must classify as SERVICEABLE.
+        from analysis import campaign_quality as cq
+
+        class _FakeTool:
+            name = "get_defillama_stablecoins"
+            digest_fields = ("usdt_supply", "usdc_supply", "total_supply", "asset_count")
+            description = "Fetch DefiLlama stablecoin total supply per pegged asset."
+
+        def _fake_discover():
+            return [_FakeTool]
+
+        monkeypatch.setattr(
+            "tools.discovery.discover_data_feed_tools", _fake_discover,
+        )
+        # Rebuild the ordered list picking up the fake tool.
+        rebuilt = cq._all_served_phrases()
+        assert "usdt_supply" in rebuilt or "usdt supply" in rebuilt
+        assert "asset_count" in rebuilt or "asset count" in rebuilt
+
+
 class TestReflectDataGapsBlock:
     def test_empty_block_yields_byte_identical_prompt(self):
         # LOCK: when data_gaps_block is empty, _reflection_prompt output
