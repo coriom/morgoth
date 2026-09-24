@@ -463,6 +463,40 @@ class TestScorerFalsePositiveFixes:
         assert tol <= 0.01, f"verdict tolerance {tol} exceeds gate PASS band 1 %"
 
 
+class TestExactMatchGenuineAt1Percent:
+    """Phase 1 lock: an exact-match 0.0001 cited vs 0.0001 Binance
+    reference MUST verdict 'genuine' at the 1 % tolerance. Regression
+    against a bug where a set change (quarantine release) made these
+    invisible in the report."""
+
+    def test_exact_0_0001_match_is_genuine_at_1pct(self):
+        # Emulates the verdict math the scorer applies inline.
+        from analysis.campaign_quality import _close
+        assert _close(0.0001, 0.0001, 0.01)
+        assert _close(0.00010, 0.00010, 0.01)
+
+    def test_29pct_off_is_confused_at_1pct(self):
+        # 9242a8a2: cited 0.0001 vs Binance 7.77e-05 → 28.7 % off.
+        # Under old 5 % tol this was mislabelled 'genuine'; at 1 %
+        # the correct verdict is 'confused'.
+        from analysis.campaign_quality import _close
+        assert not _close(0.0001, 7.77e-05, 0.01)
+
+    def test_scorer_includes_released_theses(self):
+        # Grep-lock: the SQL that pulls the cross-check set MUST
+        # include theses whose evidence cites 0.0001 sourced from
+        # get_bitcoin_futures_funding, regardless of quarantine_reason
+        # (which is cleared when a thesis is released). Prior code
+        # only queried quarantine_reason='interestrate_as_funding' →
+        # a released exact-match thesis silently disappeared.
+        import inspect
+        from analysis.campaign_quality import score_campaign
+        src = inspect.getsource(score_campaign)
+        assert "get_bitcoin_futures_funding" in src
+        assert "'%0.0001%'" in src or "0.0001" in src
+        assert "OR (evidence::text LIKE" in src
+
+
 class TestLengthControl:
     def test_score_campaign_accepts_limit_first_n(self):
         import inspect

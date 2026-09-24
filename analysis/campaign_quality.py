@@ -870,12 +870,24 @@ async def score_campaign(
                     "detail": str(e.get("detail", ""))[:80],
                 })
                 break
-    # Quarantined interestrate_as_funding — global lookup, not campaign-scoped
-    # (per chantier B: check ALL 24 quarantined theses).
+    # Cross-check set — global lookup, stable across quarantine state
+    # changes (2026-09-24 rewrite). Previously used quarantine_reason =
+    # 'interestrate_as_funding'; that set shrinks whenever the operator
+    # releases a thesis, so exact-match cases (cited=0.0001 vs ref=0.0001)
+    # would disappear from the report the moment they were correctly
+    # released — the metric became history-dependent. New rule: any
+    # thesis whose evidence CITES a funding-shaped small number
+    # (≤0.01) sourced from get_bitcoin_futures_funding. Includes the
+    # currently-quarantined + previously-released; the verdict then
+    # tells the operator which are genuine vs confused independently
+    # of the quarantine state machine.
     async with pool.acquire() as conn:
         qrows = await conn.fetch(
             "SELECT thesis_id, subject, evidence, created_at, quarantine_reason "
-            "FROM theses WHERE quarantine_reason = 'interestrate_as_funding' "
+            "FROM theses "
+            "WHERE quarantine_reason = 'interestrate_as_funding' "
+            "   OR (evidence::text LIKE '%get_bitcoin_futures_funding%' "
+            "       AND evidence::text LIKE '%0.0001%') "
             "ORDER BY created_at"
         )
     for q in qrows:

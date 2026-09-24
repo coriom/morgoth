@@ -158,6 +158,50 @@ def test_no_env_file_in_copied_tree(tmp_path: Path) -> None:
     assert not hits, f".env leaked into sandbox copy: {[str(h) for h in hits]}"
 
 
+def test_canary_tcp_loopback_and_external_unreachable(tmp_path: Path) -> None:
+    """PERMANENT NETWORK CANARY. `--share-net` on the bwrap side does
+    NOT cut network — the outer `unshare --net` layer does. Prove it
+    from INSIDE the sandbox: TCP connect() to typical loopback host
+    services and to an external IP must ALL fail.
+
+    Loopback: 5432 (postgres) · 8000 (morgoth API) · 11434 (ollama)
+              · 3010 (UI dev server). Fresh netns lo has no listeners
+              → connect() → ECONNREFUSED.
+    External: 1.1.1.1:443 → no route out → ENETUNREACH.
+
+    Any CONNECT line = the outer netns layer failed, and the operator
+    must stop before running reflect on LLM-authored code.
+    """
+    _need_bwrap()
+    targets = [
+        ("127.0.0.1", 5432), ("127.0.0.1", 8000),
+        ("127.0.0.1", 11434), ("127.0.0.1", 3010),
+        ("1.1.1.1", 443),
+    ]
+    probe = tmp_path / "tcp_probe.py"
+    probe.write_text(textwrap.dedent(f"""
+        import socket
+        for host, port in {targets!r}:
+            s = socket.socket()
+            s.settimeout(2)
+            try:
+                s.connect((host, port))
+                print("CONNECT", host, port)
+                s.close()
+            except Exception as e:
+                print("REFUSED", host, port, type(e).__name__)
+    """).strip(), encoding="utf-8")
+    argv = _bwrap_wrap(tmp_path, f"python3 {shlex.quote(str(probe))}")
+    r = subprocess.run(argv, env=gates._hardened_outer_env(),
+                        capture_output=True, text=True, timeout=30)
+    lines = [ln for ln in r.stdout.splitlines() if ln]
+    connects = [ln for ln in lines if ln.startswith("CONNECT ")]
+    assert not connects, (
+        f"TCP reached from inside sandbox — netns cut FAILED:\n{connects}"
+    )
+    assert len(lines) == len(targets)
+
+
 def test_canary_host_unix_sockets_unreachable(tmp_path: Path) -> None:
     """A netns does NOT isolate Unix sockets — a socket is a filesystem
     object. The ONLY defense is the bwrap allowlist. Prove each host
