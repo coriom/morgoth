@@ -646,6 +646,21 @@ class Brain:
 
                     new_count = await self._persistent_memory.increment_cycle_count(obj_id)
                     if new_count >= self._config.max_cycles_per_objective:
+                        # 2026-09-24 (findings_current vs recalled): SPLIT.
+                        # The numeric-fidelity gate and field-confusion
+                        # classifier MUST reference only the CURRENT
+                        # objective's cycle_payload snapshots — the
+                        # authoritative tool output at cycle time.
+                        # ChromaDB semantic recall is objective-scoped by
+                        # metadata_filter but is HISTORICAL: an old
+                        # cycle's value can match a fresher citation and
+                        # silently pass ("stale recall" — hypothesis (a)
+                        # confirmed for theses f549eabf/ad93de91 whose
+                        # objective had NO cycle_payloads; the gate
+                        # matched cited=0.0001 to a 0.0001 line pulled
+                        # from ChromaDB memory).
+                        findings_current: list[str] = []
+                        findings_recalled: list[str] = []
                         try:
                             past_matches = await self._episodic_memory.query(
                                 "conversations",
@@ -654,18 +669,14 @@ class Brain:
                                 max_distance=2.0,
                                 metadata_filter={"objective_id": obj_id},
                             )
-                            findings = [m.content for m in past_matches if m.content]
+                            findings_recalled = [
+                                m.content for m in past_matches if m.content
+                            ]
                             evidence_lines = "\n".join(
                                 f"- {m.content[:200]}" for m in past_matches[:3]
                             )
                         except Exception:
-                            findings = []
                             evidence_lines = ""
-                        # 2026-09-22: augment findings with the untruncated
-                        # cycle_payload entries persisted on the objective.
-                        # Rebuild TOOL RESULTS lines from raw payloads so
-                        # the field classifier and the numeric-fidelity gate
-                        # see the FULL per-source JSON, not the 300-char cut.
                         try:
                             _obj_full = await self._persistent_memory.get_objective(obj_id)
                             _ev = _obj_full.get("evidence") if _obj_full else []
@@ -683,9 +694,19 @@ class Brain:
                                         lines.append(f"- {tool}: {_json.dumps(tr['result'], default=str)}")
                                     else:
                                         lines.append(f"- {tool} FAILED: {tr.get('error') or 'unknown'}")
-                                findings.append("\n".join(lines))
+                                findings_current.append("\n".join(lines))
                         except Exception as _cp_exc:
                             logger.warning("cycle_payload merge failed: {}", _cp_exc)
+                        # Synthesis gets both, clearly labeled — the model
+                        # may still summarise historical trends, but the
+                        # extraction prompt is meant to cite current values.
+                        findings = list(findings_current)
+                        if findings_recalled:
+                            findings.append(
+                                "HISTORICAL (from prior cycles' recall — "
+                                "do NOT cite as current values):\n"
+                                + "\n".join(f"- {c[:220]}" for c in findings_recalled)
+                            )
                         evidence = (
                             f"Auto-completed after {new_count} cycles. Findings:\n"
                             + (evidence_lines or "No prior findings captured.")
@@ -750,11 +771,16 @@ class Brain:
                                     parse_findings_payloads as _parse_fps,
                                     classify_thesis_evidence as _cfe,
                                 )
-                                _fc_payloads, _fc_trunc = _parse_fps(findings)
+                                # GATE REFERENCE = CURRENT CYCLE PAYLOADS ONLY.
+                                # Historical recall must NEVER supply the
+                                # reference numbers a citation is checked
+                                # against — see 2026-09-24 diagnosis for
+                                # f549eabf/ad93de91.
+                                _fc_payloads, _fc_trunc = _parse_fps(findings_current)
                                 gated: list[dict[str, Any]] = []
                                 if _fg_enabled():
                                     for t in theses:
-                                        act = _fidelity_check(t, findings)
+                                        act = _fidelity_check(t, findings_current)
                                         # Field-confusion pass on this thesis.
                                         try:
                                             for rec in _cfe(t.get("evidence") or [], _fc_payloads):
