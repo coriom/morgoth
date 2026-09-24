@@ -933,7 +933,7 @@ def _shape_check(body: Any, digest_fields: list[Any]) -> str | None:
         total = len(digest_fields)
         if total > MAX_DIGEST_FIELDS:
             return f"digest_fields cap exceeded: {total} > {MAX_DIGEST_FIELDS}"
-        _values, errors = resolve_digest_fields(path_entries, body)
+        _values, errors, _meta = resolve_digest_fields(path_entries, body)
         if errors:
             return "; ".join(f"path {n!r} — {msg}" for n, msg in errors)
     return None

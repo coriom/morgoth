@@ -949,50 +949,76 @@ async def score_campaign(
             "       AND evidence::text LIKE '%0.0001%') "
             "ORDER BY created_at"
         )
+    # 2026-09-24: prefer source_snapshots for theses stamped AFTER
+    # commit d647524 (when the source cache started recording live
+    # premiumIndex responses). Binance /fapi/v1/fundingRate is the
+    # SETTLEMENT series — the live premiumIndex lastFundingRate can
+    # clamp to 0.01% while the settled value differs, so the
+    # settlement series is the WRONG reference for reporting
+    # fidelity. For pre-d647524 theses no snapshots exist → fall
+    # back to Binance.
+    from datetime import datetime as _dt, timezone as _tz
+    _D647524 = _dt(2026, 9, 18, 6, 32, 38, tzinfo=_tz.utc)
+    async with pool.acquire() as conn:
+        _snap_rows = await conn.fetch(
+            "SELECT observed_at, payload FROM source_snapshots "
+            "WHERE source='get_bitcoin_futures_funding' "
+            "ORDER BY observed_at"
+        )
+    import json as _json
+    _snap_index: list[tuple[int, float]] = []
+    for s in _snap_rows:
+        pl = s["payload"] if isinstance(s["payload"], dict) else _json.loads(s["payload"] or "{}")
+        try:
+            _snap_index.append((int(s["observed_at"].timestamp() * 1000),
+                                float(pl.get("lastFundingRate"))))
+        except (TypeError, ValueError):
+            continue
     for q in qrows:
         entry = {
             "thesis_id": str(q["thesis_id"])[:8],
             "ts": q["created_at"].isoformat(timespec="minutes"),
             "subject": q["subject"],
             "verdict": "unknown",
+            "quarantine_status": (
+                "quarantined" if q["quarantine_reason"] else "active"
+            ),
         }
-        if fetch_binance_funding is not None:
-            try:
+        try:
+            t_ms = int(q["created_at"].timestamp() * 1000)
+            ref = None
+            ref_src = None
+            # Post-d647524: prefer source_snapshots within ±6 h.
+            if q["created_at"] >= _D647524 and _snap_index:
+                best = min(_snap_index, key=lambda mv: abs(mv[0] - t_ms))
+                if abs(best[0] - t_ms) <= 6 * 3600 * 1000:
+                    ref = best[1]
+                    entry["reference_ts_ms"] = best[0]
+                    ref_src = "snap"
+            # Pre-d647524 OR no snapshot in range: Binance settlement series.
+            if ref is None and fetch_binance_funding is not None:
                 ms, vals = await fetch_binance_funding()
-                # Find funding rate at the thesis creation timestamp.
-                t_ms = int(q["created_at"].timestamp() * 1000)
-                # Nearest funding event
-                closest = None
-                min_dt = None
-                for i, m in enumerate(ms):
-                    dt = abs(m - t_ms)
-                    if min_dt is None or dt < min_dt:
-                        min_dt = dt
-                        closest = (m, vals[i])
-                if closest is not None:
-                    m, ref = closest
-                    entry["reference_rate"] = ref
-                    entry["reference_ts_ms"] = m
-                    # Genuine iff the CITED value equals the reference within 5 %.
-                    import json as _json
-                    ev = q["evidence"] if isinstance(q["evidence"], list) else _json.loads(q["evidence"] or "[]")
-                    cited = None
-                    for e in ev:
-                        if isinstance(e, dict):
-                            for v in _extract_numbers(str(e.get("detail",""))):
-                                if abs(v) < 0.01:
-                                    cited = v; break
-                        if cited is not None: break
-                    entry["cited"] = cited
-                    if cited is not None:
-                        # 2026-09-24: tighten tolerance to 1 % to match
-                        # the PASS band of the numeric-fidelity gate.
-                        # Was 5 % — 9242a8a2 cited 0.0001 vs Binance
-                        # 7.77e-05 = 29 % off, wrongly labelled genuine.
-                        entry["verdict"] = "genuine" if _close(cited, ref, 0.01) else "confused"
-            except Exception as exc:
-                entry["verdict"] = "unknown"
-                entry["error"] = str(exc)[:80]
+                if ms:
+                    best_i = min(range(len(ms)), key=lambda i: abs(ms[i] - t_ms))
+                    ref = vals[best_i]
+                    entry["reference_ts_ms"] = ms[best_i]
+                    ref_src = "binance"
+            entry["reference_rate"] = ref
+            entry["reference_source"] = ref_src
+            ev = q["evidence"] if isinstance(q["evidence"], list) else _json.loads(q["evidence"] or "[]")
+            cited = None
+            for e in ev:
+                if isinstance(e, dict):
+                    for v in _extract_numbers(str(e.get("detail", ""))):
+                        if abs(v) < 0.01:
+                            cited = v; break
+                if cited is not None: break
+            entry["cited"] = cited
+            if cited is not None and ref is not None:
+                entry["verdict"] = "genuine" if _close(cited, ref, 0.01) else "confused"
+        except Exception as exc:
+            entry["verdict"] = "unknown"
+            entry["error"] = str(exc)[:80]
         rep.quarantined_interestrate.append(entry)
 
     # C: angle serviceability — extract the ANGLE first (title residue

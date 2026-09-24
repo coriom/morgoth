@@ -265,7 +265,19 @@ def _resolve_scalar(
 
 
 def _resolve_aggregate(path: ParsedPath, body: Any) -> Any:
-    # Split segments at the [*] into (prefix, tail).
+    """Resolve an aggregate expression. Returns the scalar value.
+
+    FAIL-CLOSED on ZERO RESOLVED ELEMENTS (2026-09-24): sum/count/min/
+    max over an empty list — or a list where every element fails the
+    tail path — raises DigestPathError. Silent zero would produce a
+    plausible-looking number that the numeric-fidelity gate would
+    then validate (the tool itself says 0), masking upstream schema
+    drift (e.g. a renamed nested key that skips every element).
+
+    Side-channel: attaches `.resolved` and `.skipped` counts on the
+    raised error so the caller can surface them; on success, the same
+    counts are stashed on _resolve_aggregate.last_meta as a dict.
+    """
     prefix: list[Any] = []
     tail: list[Any] = []
     seen_star = False
@@ -275,12 +287,14 @@ def _resolve_aggregate(path: ParsedPath, body: Any) -> Any:
             continue
         (tail if seen_star else prefix).append(seg)
     if path.aggregate == "count" and not seen_star:
-        # count(path) with no [*] → 1 if path resolves, 0 if it misses
         try:
-            _resolve_scalar(prefix, body)
+            _resolve_scalar(prefix, body, require_scalar=False)
+            _resolve_aggregate.last_meta = {"resolved": 1, "skipped": 0}
             return 1
-        except DigestPathError:
-            return 0
+        except DigestPathError as exc:
+            raise DigestPathError(
+                f"count(): path did not resolve — {exc}", segment=exc.segment,
+            ) from None
     try:
         listy = (
             _resolve_scalar(prefix, body, require_scalar=False)
@@ -293,23 +307,42 @@ def _resolve_aggregate(path: ParsedPath, body: Any) -> Any:
             f"[*] target is {type(listy).__name__}, not list",
             segment="[*]",
         )
+    # count(listy[*]) with NO tail is a plain list-length query: the
+    # elements need not be numeric. Fail only on an empty list.
+    if path.aggregate == "count" and not tail:
+        if not listy:
+            _resolve_aggregate.last_meta = {"resolved": 0, "skipped": 0}
+            raise DigestPathError(
+                "count(): ZERO elements in list. Refusing to return a "
+                "silent 0 — possible upstream schema drift.",
+                segment="[*]",
+            )
+        _resolve_aggregate.last_meta = {"resolved": len(listy), "skipped": 0}
+        return len(listy)
     values: list[float | int] = []
+    skipped = 0
     for el in listy:
         try:
             v = _resolve_scalar(tail, el) if tail else el
         except DigestPathError:
+            skipped += 1
             continue
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             values.append(v)
-    if path.aggregate == "count":
-        return len(values) if tail else len(listy)
-    if not values:
-        if path.aggregate == "sum":
-            return 0
+        else:
+            skipped += 1
+    resolved = len(values)
+    if resolved == 0:
+        _resolve_aggregate.last_meta = {"resolved": 0, "skipped": skipped}
         raise DigestPathError(
-            f"{path.aggregate}(): no numeric elements after [*]",
+            f"{path.aggregate}(): ZERO resolved elements out of "
+            f"{len(listy)} list items (skipped={skipped}). Refusing "
+            f"to return a silent 0 — possible upstream schema drift.",
             segment="[*]",
         )
+    _resolve_aggregate.last_meta = {"resolved": resolved, "skipped": skipped}
+    if path.aggregate == "count":
+        return resolved
     if path.aggregate == "sum":
         return sum(values)
     if path.aggregate == "min":
@@ -349,27 +382,36 @@ def parse_digest_entry(entry: Any) -> tuple[str, ParsedPath]:
 
 def resolve_digest_fields(
     digest_fields: list[Any], body: Any,
-) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+) -> tuple[dict[str, Any], list[tuple[str, str]], dict[str, dict[str, int]]]:
     """Resolve every entry in ``digest_fields``. Returns
-    ``(values, errors)`` where values maps name → scalar for the
-    successful entries and errors is [(name, message)] for the failures.
-    The shape gate wraps this: any non-empty ``errors`` → rejected_shape.
+    ``(values, errors, metadata)`` where:
+      · values   maps name → scalar for successful entries
+      · errors   is [(name, message)] for failures (any non-empty →
+                 rejected_shape at the gate)
+      · metadata maps name → {"resolved": N, "skipped": N} for
+                 aggregate entries. Tool runtime surfaces these in the
+                 findings string so a legitimate "zero resolved" (i.e.
+                 an empty upstream list) is still visible at the
+                 numeric-fidelity gate.
     """
     values: dict[str, Any] = {}
     errors: list[tuple[str, str]] = []
+    meta: dict[str, dict[str, int]] = {}
     if not isinstance(digest_fields, list):
-        return values, [("<digest_fields>", "must be a list")]
+        return values, [("<digest_fields>", "must be a list")], meta
     if len(digest_fields) > MAX_DIGEST_FIELDS:
         return values, [(
             "<digest_fields>",
             f"cap exceeded: {len(digest_fields)} > MAX_DIGEST_FIELDS={MAX_DIGEST_FIELDS}",
-        )]
+        )], meta
     for entry in digest_fields:
         try:
             name, path = parse_digest_entry(entry)
         except DigestPathError as exc:
             errors.append((str(entry)[:60], f"parse: {exc}"))
             continue
+        # Reset per-call so aggregate metadata doesn't leak between fields.
+        _resolve_aggregate.last_meta = None
         try:
             v = resolve(path, body)
         except DigestPathError as exc:
@@ -379,4 +421,7 @@ def resolve_digest_fields(
             errors.append((name, "resolves to non-scalar"))
             continue
         values[name] = v
-    return values, errors
+        m = getattr(_resolve_aggregate, "last_meta", None)
+        if path.aggregate and isinstance(m, dict):
+            meta[name] = m
+    return values, errors, meta

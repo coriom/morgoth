@@ -146,16 +146,72 @@ class TestResolver:
             dp.resolve(dp.parse("a.b"), {"a": {"b": {"nested": 1}}})
 
 
+class TestSilentZeroFailClosed:
+    """2026-09-24: an aggregate over ZERO resolved elements now FAILS
+    (was silently returning 0). Silent zero produced a plausible-
+    looking number that the numeric-fidelity gate would then validate
+    — masking upstream schema drift (renamed key skipping every
+    element)."""
+
+    def test_sum_over_all_skipped_fails(self):
+        # Every element misses the tail key → 0 resolved → must raise.
+        body = {"peggedAssets": [{"noKey": 1}, {"noKey": 2}]}
+        with pytest.raises(dp.DigestPathError) as exc:
+            dp.resolve(
+                dp.parse("sum(peggedAssets[*].circulating.peggedUSD)"),
+                body,
+            )
+        assert "ZERO resolved" in str(exc.value)
+        # Silent zero MUST NOT be returned.
+        assert "0" not in str(exc.value).split("ZERO")[0][-4:]
+
+    def test_min_over_empty_fails(self):
+        body = {"xs": []}
+        with pytest.raises(dp.DigestPathError):
+            dp.resolve(dp.parse("min(xs[*].v)"), body)
+
+    def test_max_over_all_skipped_fails(self):
+        body = {"xs": [{"noKey": 1}]}
+        with pytest.raises(dp.DigestPathError):
+            dp.resolve(dp.parse("max(xs[*].v)"), body)
+
+    def test_count_over_all_skipped_fails(self):
+        # count with tail: all elements missing the tail → fail.
+        body = {"xs": [{"noKey": 1}, {"noKey": 2}]}
+        with pytest.raises(dp.DigestPathError):
+            dp.resolve(dp.parse("count(xs[*].v)"), body)
+
+    def test_resolved_and_skipped_metadata_exposed(self):
+        # Partial skip: 2 of 3 elements resolve; metadata reports 2, 1.
+        body = {"xs": [{"v": 1}, {"noKey": 2}, {"v": 3}]}
+        v, err, meta = dp.resolve_digest_fields(
+            [{"name": "total", "path": "sum(xs[*].v)"}], body,
+        )
+        assert err == []
+        assert v["total"] == 4
+        assert meta["total"] == {"resolved": 2, "skipped": 1}
+
+    def test_shape_gate_reports_silent_zero_as_error(self):
+        # End-to-end: shape gate returns a reason mentioning ZERO.
+        from self_modify.reflect import _shape_check
+        body = {"peggedAssets": [{"noKey": 1}, {"noKey": 2}]}
+        err = _shape_check(body, [
+            {"name": "total", "path": "sum(peggedAssets[*].circulating.peggedUSD)"},
+        ])
+        assert err is not None
+        assert "ZERO" in err or "zero" in err
+
+
 class TestDigestFieldsCap:
     def test_cap_enforced(self):
         many = [{"name": f"f{i}", "path": "top"} for i in range(dp.MAX_DIGEST_FIELDS + 1)]
-        _v, err = dp.resolve_digest_fields(many, {"top": 1})
+        _v, err, _m = dp.resolve_digest_fields(many, {"top": 1})
         assert err and "cap exceeded" in err[0][1]
 
 
 class TestBackCompatStringEntry:
     def test_string_entry_still_supported(self):
-        v, err = dp.resolve_digest_fields(
+        v, err, _m = dp.resolve_digest_fields(
             ["symbol", "price"],
             {"symbol": "BTC", "price": 100},
         )
@@ -180,12 +236,16 @@ class TestDictEntry:
             {"name": "usdc_supply",  "path": "peggedAssets[symbol=USDC].circulating.peggedUSD"},
             {"name": "asset_count",  "path": "count(peggedAssets[*])"},
         ]
-        v, err = dp.resolve_digest_fields(spec_fields, body)
+        v, err, meta = dp.resolve_digest_fields(spec_fields, body)
         assert err == []
         assert v["total_supply"] == 165_000_000_000
         assert v["usdt_supply"]  == 120_000_000_000
         assert v["usdc_supply"]  ==  40_000_000_000
         assert v["asset_count"]  == 3
+        # Aggregate metadata surfaces resolved/skipped counts.
+        assert meta["total_supply"]["resolved"] == 3
+        assert meta["total_supply"]["skipped"] == 0
+        assert meta["asset_count"]["resolved"] == 3
 
 
 class TestShapeGateWiring:
