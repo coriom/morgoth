@@ -79,8 +79,17 @@ FIELD_PHRASES: dict[str, dict[str, tuple[str, ...]]] = {
                    "f&g value", "sentiment value"),
     },
     "get_bitcoin_long_short_ratio": {
-        "longShortRatio": ("long/short ratio", "long-short ratio", "longShortRatio",
-                             "long short ratio"),
+        "longShortRatio": (
+            # 2026-09-24: Binance's own name for this field is
+            # "long/short account ratio". Include LONGEST forms so the
+            # longest-match resolver wins over the bare "short account"
+            # phrase mapped to shortAccount below (was incorrectly
+            # attributing longShortRatio citations to shortAccount).
+            "long/short account ratio", "long-short account ratio",
+            "long short account ratio",
+            "long/short ratio", "long-short ratio", "longShortRatio",
+            "long short ratio",
+        ),
         "longAccount": ("long account", "longAccount"),
         "shortAccount": ("short account", "shortAccount"),
     },

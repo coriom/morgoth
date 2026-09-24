@@ -149,11 +149,26 @@ TOOL_SERVED_PHRASES: dict[str, tuple[str, ...]] = {
     "get_bitcoin_futures_funding": (
         "funding", "funding rate", "funding rates", "perpetual funding",
         "mark price", "index price", "premium", "futures funding",
+        # 2026-09-24: derivatives-side vocabulary the campaign 3 titles
+        # actually use. Basis = mark − index premium, which IS what
+        # this tool reports.
+        "derivatives", "perpetuals", "perp", "perpetual",
+        "leverage", "leveraged positions", "leverage ratio",
+        "basis", "mark-index basis", "mark/index basis",
+        "index basis", "futures basis", "premium index",
     ),
     "get_bitcoin_long_short_ratio": (
         "long-short", "long/short", "long short", "positioning",
         "long account", "short account", "long-short ratio",
         "long/short ratio", "long short ratio",
+        # Binance's own long-form label; the field-confusion classifier
+        # matches this via the FIELD_PHRASES table too.
+        "long/short account ratio", "long-short account ratio",
+        # Retail/whale positioning — the same table is the only source
+        # for these on the rail.
+        "retail positioning", "retail long", "retail short",
+        "whale positioning", "whale long", "whale short",
+        "trader positioning", "account positioning",
     ),
     "get_bitcoin_onchain": (
         "hashrate", "hash rate", "network hashrate", "mining difficulty",
@@ -570,33 +585,67 @@ def _all_served_phrases() -> list[str]:
 _SERVED_PHRASES_ORDERED = _all_served_phrases()
 
 
+_CLICHE_WORDS: tuple[str, ...] = (
+    "exploring", "explore", "analyzing", "analysis",
+    "investigating", "examining",
+    "unexplored", "emerging", "evolving",
+    "via", "through", "under", "for", "on", "in", "at", "with",
+    "of", "the", "a", "an", "and", "or", "to",
+)
+_CLICHE_PHRASES: tuple[str, ...] = (
+    "impact of", "influence of", "the context of",
+    "as a variable", "as indicators of",
+)
+_CLICHE_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in _CLICHE_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _residue_text_for_phrase_match(title: str, campaign_subject: str) -> str:
+    """Phrase-preserving residue: strip the campaign subject as a WHOLE
+    SUBSTRING (not per token) so a title angle like "Retail Positioning
+    Divergence" doesn't lose "positioning" when the subject contains
+    that word too. Also drops the boilerplate wrapping ("Exploring … via
+    …") so served-phrase matches see the meaningful text only.
+
+    Cliche stripping uses word-boundary regex — a naive .replace("on",
+    " ") would mangle "positioning" into "positi g".
+    """
+    low = (title or "").lower()
+    subj_low = (campaign_subject or "").lower()
+    if subj_low and subj_low in low:
+        low = low.replace(subj_low, " ")
+    for phrase in _CLICHE_PHRASES:
+        low = low.replace(phrase, " ")
+    low = _CLICHE_WORD_RE.sub(" ", low)
+    return " ".join(low.split())
+
+
 def title_is_serviceable(
     title: str, campaign_subject: str | None = None,
 ) -> bool:
-    """Serviceable ⇔ the title's ANGLE (residue after subject / template
-    strip) contains a phrase that some rail tool serves, AND does not
-    contain a phrase in NOT_SERVED_OVERRIDES.
+    """Serviceable ⇔ after stripping the campaign subject and generic
+    wrapping, the residue contains a rail-served phrase AND no phrase
+    in NOT_SERVED_OVERRIDES.
 
-    PHRASE-LEVEL (2026-09-23 rewrite). A word-level check made "news",
-    "economic", "sentiment" false-serviceable when the actual angle was
-    "reddit sentiment" or "influencer sentiment" — those need a
-    dedicated source. Overrides win: any off-rail phrase in the residue
-    → unservable, even if a served phrase co-occurs. Reason: a title
-    "Explore social media sentiment via news headlines" is proposing
-    NEW social-media-sentiment data, not repurposing get_news.
+    PHRASE-LEVEL, SUBSTRING-STRIP (2026-09-24). Prior token-level strip
+    dropped "positioning" from a "retail positioning" angle whenever
+    the campaign subject contained "positioning" — false negative.
+    Now the subject is stripped as a whole substring so multi-word
+    angles like "retail positioning" survive intact.
 
-    Legacy no-subject signature (campaign_subject=None) checks the
-    whole title against served phrases only — kept so callers without
-    the subject on hand still work.
+    Overrides win: any off-rail phrase → unservable, even if a served
+    phrase co-occurs. Reason: a title "Explore social media sentiment
+    via news headlines" proposes NEW social-media data, not a
+    repurposing of get_news.
     """
     if campaign_subject is None:
         low = (title or "").lower()
-        # Overrides don't apply in the legacy path — no subject strip.
         return any(p in low for p in _SERVED_PHRASES_ORDERED)
-    residue_text = _residue_text_ordered(title, campaign_subject)
+    residue_text = _residue_text_for_phrase_match(title, campaign_subject)
     if not residue_text:
         return False
-    # Off-rail overrides win. Any override match → unservable.
     for off in NOT_SERVED_OVERRIDES:
         if off in residue_text:
             return False
@@ -714,12 +763,18 @@ async def score_campaign(
     campaign_id: str,
     *,
     fetch_binance_funding=None,
+    limit_first_n: int | None = None,
 ) -> QualityReport:
     """Assemble a QualityReport by querying the store.
 
     `fetch_binance_funding`, if provided, is an async callable returning
     `(sorted_ms, values)` — used for B's genuine/confused verdict. When
     None (unit tests), each quarantined thesis is reported as 'unknown'.
+
+    `limit_first_n` restricts scoring to the FIRST N objectives by
+    created_at ascending. Used for length-controlled comparison (a
+    long campaign accumulates more of every metric than a short one;
+    the fair comparison is the first N of both).
     """
     row = None
     for r in await pm.list_campaigns(limit=200):
@@ -730,6 +785,10 @@ async def score_campaign(
         raise ValueError(f"campaign {campaign_id!r} not found")
     cid = str(row["campaign_id"])
     objs = await pm.list_campaign_objectives(cid)
+    if limit_first_n is not None and limit_first_n > 0:
+        # Oldest-first, take N. list_campaign_objectives already sorts
+        # newest-first — reverse then slice.
+        objs = sorted(objs, key=lambda o: o.get("created_at") or "")[:limit_first_n]
     theses: list[dict[str, Any]] = []
     for o in objs:
         for t in await pm.get_theses_by_objective(o["objective_id"]):
@@ -855,7 +914,11 @@ async def score_campaign(
                         if cited is not None: break
                     entry["cited"] = cited
                     if cited is not None:
-                        entry["verdict"] = "genuine" if _close(cited, ref, 0.05) else "confused"
+                        # 2026-09-24: tighten tolerance to 1 % to match
+                        # the PASS band of the numeric-fidelity gate.
+                        # Was 5 % — 9242a8a2 cited 0.0001 vs Binance
+                        # 7.77e-05 = 29 % off, wrongly labelled genuine.
+                        entry["verdict"] = "genuine" if _close(cited, ref, 0.01) else "confused"
             except Exception as exc:
                 entry["verdict"] = "unknown"
                 entry["error"] = str(exc)[:80]

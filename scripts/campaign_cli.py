@@ -122,7 +122,11 @@ async def _cmd_quality(pm: PersistentMemory, args: argparse.Namespace) -> int:
 
         fetch = _fetch
 
-    report = await _score_campaign(pm, args.campaign_id, fetch_binance_funding=fetch)
+    report = await _score_campaign(
+        pm, args.campaign_id,
+        fetch_binance_funding=fetch,
+        limit_first_n=args.first_n,
+    )
     print(_quality_render(report))
     # Persist unservable-angle phrases per campaign so reflect can
     # render them as evidence. Non-fatal on failure — the print above
@@ -155,6 +159,10 @@ async def _main(argv: list[str]) -> int:
     pq.add_argument("--no-persist", action="store_true",
                      help="do NOT upsert unservable-angle phrases into "
                           "campaign_data_gaps (reflect reads it as evidence)")
+    pq.add_argument("--first-n", type=int, default=None,
+                     help="length-control: score only the FIRST N objectives "
+                          "by created_at (fair comparison across campaigns of "
+                          "different lengths)")
     pq.set_defaults(_fn=_cmd_quality)
     args = p.parse_args(argv)
     config = await load_config()

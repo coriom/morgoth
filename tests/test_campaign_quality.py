@@ -404,6 +404,84 @@ class TestThemeExtraction:
         assert "bank digital" not in phrases
 
 
+class TestScorerFalsePositiveFixes:
+    """2026-09-24: three false positives distorted the campaign 2 vs 3
+    comparison. Lock each so a later change can't reintroduce them."""
+
+    def test_long_short_account_ratio_maps_to_long_short_ratio(self):
+        # Binance's own field name is "long/short account ratio". The
+        # longest-match resolver must map this to longShortRatio, NOT
+        # shortAccount (which is a shorter, wrongly-winning substring).
+        from core.field_confusion import phrase_to_field
+        assert phrase_to_field(
+            "get_bitcoin_long_short_ratio",
+            "the long/short account ratio dropped to 0.85 today",
+        ) == "longShortRatio"
+        # Also with variant separators.
+        assert phrase_to_field(
+            "get_bitcoin_long_short_ratio",
+            "long-short account ratio print of 1.12",
+        ) == "longShortRatio"
+
+    def test_short_account_alone_still_maps_to_short_account(self):
+        # Regression guard: the plain "short account" phrase (no "long/
+        # short" prefix) still legitimately resolves to shortAccount.
+        from core.field_confusion import phrase_to_field
+        assert phrase_to_field(
+            "get_bitcoin_long_short_ratio",
+            "the short account share is 44 %",
+        ) == "shortAccount"
+
+    def test_derivatives_and_leverage_are_served(self):
+        # Derivatives / leverage / basis are on the rail (futures_funding
+        # + long_short_ratio provide the underlying data). Titles that
+        # cite these must NOT be classified unservable.
+        subj = "BTC funding rate and positioning"
+        for angle in (
+            "Angle X via BTC Derivatives Leverage Ratios",
+            "Angle X via Mark-Index Basis Divergence",
+            "Angle X via Retail Positioning Divergence",
+            "Angle X via Whale Long/Short Positioning",
+        ):
+            assert title_is_serviceable(angle, campaign_subject=subj), (
+                f"{angle!r} should be serviceable — rail covers it"
+            )
+
+    def test_0_0001_verdict_tolerance_is_one_percent(self):
+        # 9242a8a2 cited 0.0001 vs Binance funding 7.77e-05 at that
+        # timestamp — 29 % off. Under the previous 5 % tolerance this
+        # was mislabelled 'genuine'. The gate's PASS band is 1 %, so
+        # the verdict tolerance MUST match. Grep-lock via source.
+        import inspect
+        from analysis.campaign_quality import score_campaign
+        src = inspect.getsource(score_campaign)
+        # The `_close(cited, ref, X)` call must use ≤ 0.01.
+        import re
+        m = re.search(r'_close\(cited,\s*ref,\s*([\d.]+)\)', src)
+        assert m, "verdict tolerance line missing"
+        tol = float(m.group(1))
+        assert tol <= 0.01, f"verdict tolerance {tol} exceeds gate PASS band 1 %"
+
+
+class TestLengthControl:
+    def test_score_campaign_accepts_limit_first_n(self):
+        import inspect
+        from analysis.campaign_quality import score_campaign
+        sig = inspect.signature(score_campaign)
+        assert "limit_first_n" in sig.parameters
+        # keyword-only so a stray positional caller can't mask the default.
+        assert sig.parameters["limit_first_n"].kind == inspect.Parameter.KEYWORD_ONLY
+
+    def test_scorer_slices_first_n_oldest(self):
+        # Grep-lock: score_campaign sorts by created_at ASC and slices.
+        import inspect
+        from analysis.campaign_quality import score_campaign
+        src = inspect.getsource(score_campaign)
+        assert "limit_first_n" in src
+        assert 'key=lambda o: o.get("created_at")' in src
+        assert '[:limit_first_n]' in src
+
+
 class TestReflectDataGapsBlock:
     def test_empty_block_yields_byte_identical_prompt(self):
         # LOCK: when data_gaps_block is empty, _reflection_prompt output

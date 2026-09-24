@@ -158,6 +158,62 @@ def test_no_env_file_in_copied_tree(tmp_path: Path) -> None:
     assert not hits, f".env leaked into sandbox copy: {[str(h) for h in hits]}"
 
 
+def test_canary_host_unix_sockets_unreachable(tmp_path: Path) -> None:
+    """A netns does NOT isolate Unix sockets — a socket is a filesystem
+    object. The ONLY defense is the bwrap allowlist. Prove each host
+    socket path is not reachable via connect() from inside the sandbox.
+
+    Regression-lock: if a future refactor binds /run, /var/run, or the
+    XDG_RUNTIME_DIR into the sandbox, this canary starts CONNECTING
+    (rather than getting FileNotFoundError) and fails.
+    """
+    _need_bwrap()
+    uid = os.getuid()
+    targets = [
+        # Postgres — carries the whole store; MORGOTH's persistent memory.
+        "/var/run/postgresql/.s.PGSQL.5432",
+        "/run/postgresql/.s.PGSQL.5432",
+        # systemd user bus — DBus session for the user.
+        f"/run/user/{uid}/bus",
+        # systemd user manager private socket — permits `systemd-run
+        # --user` outside the sandbox if reachable. HIGH IMPACT.
+        f"/run/user/{uid}/systemd/private",
+        # Docker daemon — full root escape if reachable.
+        "/var/run/docker.sock",
+        "/run/docker.sock",
+        # Ollama — locally exposed on 127.0.0.1:11434 usually, but
+        # some hosts add a Unix socket. Belt+braces.
+        "/var/run/ollama/ollama.sock",
+    ]
+    probe = tmp_path / "socket_probe.py"
+    probe.write_text(textwrap.dedent(f"""
+        import socket
+        for p in {targets!r}:
+            s = socket.socket(socket.AF_UNIX)
+            s.settimeout(1)
+            try:
+                s.connect(p)
+                print("CONNECT", p)
+                s.close()
+            except Exception as e:
+                print("REFUSED", p, type(e).__name__)
+    """).strip(), encoding="utf-8")
+    argv = _bwrap_wrap(tmp_path, f"python3 {shlex.quote(str(probe))}")
+    r = subprocess.run(argv, env=gates._hardened_outer_env(),
+                        capture_output=True, text=True, timeout=15)
+    lines = [ln for ln in r.stdout.splitlines() if ln]
+    connects = [ln for ln in lines if ln.startswith("CONNECT ")]
+    assert not connects, (
+        f"host unix socket(s) reachable inside sandbox — allowlist has a "
+        f"hole:\n{connects}\nfull stdout:\n{r.stdout}"
+    )
+    # Every target must have produced a REFUSED line (proof the probe
+    # ran end-to-end, not truncated early).
+    assert len(lines) == len(targets), (
+        f"probe did not report on all targets: {lines}"
+    )
+
+
 def _tcp_probe_argv(host: str, port: int) -> list[str]:
     """Try to open a TCP connection inside a fresh netns. Python is
     used (not bash /dev/tcp) so we can assert exit code cleanly —
