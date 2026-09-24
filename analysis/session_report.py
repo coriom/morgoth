@@ -122,6 +122,21 @@ class SessionReport:
         lines.append(
             f"CTX SATURATION           : {self.ctx_saturations} prompt(s) at/near num_ctx"
         )
+        # Sandbox posture — from cheap probe. UNAVAILABLE means every
+        # future `morgoth reflect` will land on rejected_sandbox_unavailable
+        # until the operator installs the missing layer(s).
+        try:
+            from self_modify.gates import sandbox_posture as _sp_fn
+            _sp = _sp_fn()
+            if _sp["ok"]:
+                lines.append("SANDBOX                  : confined (netns + bwrap + cgroup)")
+            else:
+                lines.append(
+                    f"SANDBOX                  : UNAVAILABLE ({_sp['reason']}) "
+                    f"— gate_tests fails closed"
+                )
+        except Exception:
+            pass
         _lg_h = self.session_gaps_longest_secs / 3600.0
         _last = self.session_gaps_last_resume or "-"
         lines.append(

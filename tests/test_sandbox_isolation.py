@@ -223,46 +223,35 @@ def test_run_pytest_in_sandbox_full_hardening_when_all_layers_available() -> Non
     assert result.cgroup_bound is True  # type: ignore[attr-defined]
 
 
-def test_run_pytest_in_sandbox_partial_degrade_warns_per_missing_layer() -> None:
-    fake_completed = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr="",
-    )
+def test_run_pytest_in_sandbox_raises_when_bwrap_missing() -> None:
+    # POST-2026-09-24: fail-closed. A missing bwrap layer must RAISE,
+    # not warn-and-run. subprocess.run MUST NOT be called.
     with patch.object(gates, "_isolation_available", return_value=True), \
          patch.object(gates, "_bwrap_available", return_value=False), \
-         patch.object(gates, "_cgroup_limits_available", return_value=False), \
-         patch.object(gates.subprocess, "run", return_value=fake_completed), \
-         patch.object(gates.logger, "warning") as warn_mock:
-        result = gates._run_pytest_in_sandbox(Path("/tmp/sbx/x"))
-    # One warning per missing layer (bwrap + cgroup); not for isolation.
-    assert warn_mock.call_count == 2
-    messages = [c.args[0] for c in warn_mock.call_args_list]
-    assert any("filesystem confinement UNAVAILABLE" in m for m in messages)
-    assert any("cgroup limits UNAVAILABLE" in m for m in messages)
-    assert result.confined is False  # type: ignore[attr-defined]
-    assert result.cgroup_bound is False  # type: ignore[attr-defined]
-
-
-def test_run_pytest_in_sandbox_falls_open_when_isolation_unavailable() -> None:
-    fake_completed = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr="",
-    )
-    with patch.object(gates, "_isolation_available", return_value=False), \
-         patch.object(gates, "_bwrap_available", return_value=True), \
          patch.object(gates, "_cgroup_limits_available", return_value=True), \
-         patch.object(gates.subprocess, "run", return_value=fake_completed) as m, \
-         patch.object(gates.logger, "warning") as warn_mock:
-        result = gates._run_pytest_in_sandbox(Path("/tmp/sbx/x"))
-    argv = m.call_args.args[0]
-    # Without isolation the whole hardening stack is skipped — the fresh
-    # netns is what makes bwrap's --share-net meaningful, and without
-    # unshare there's no user_ns for bwrap either. Plain venv pytest.
-    assert argv[0] == gates._VENV_PYTHON
-    assert argv[1:] == ["-m", "pytest", "-q", "-n", "auto"]
-    assert m.call_args.kwargs["cwd"] == "/tmp/sbx/x"
-    warn_mock.assert_called_once()
-    warned = warn_mock.call_args.args[0]
-    assert "isolation UNAVAILABLE" in warned
-    assert result.isolated is False  # type: ignore[attr-defined]
+         patch.object(gates.subprocess, "run") as run_mock:
+        with pytest.raises(gates.SandboxUnavailableError):
+            gates._run_pytest_in_sandbox(Path("/tmp/sbx/x"))
+        run_mock.assert_not_called()
+
+
+def test_run_pytest_in_sandbox_raises_when_isolation_missing() -> None:
+    # No netns → the whole hardening stack is moot. Fail closed.
+    with patch.object(gates, "_isolation_available", return_value=False), \
+         patch.object(gates.subprocess, "run") as run_mock:
+        with pytest.raises(gates.SandboxUnavailableError):
+            gates._run_pytest_in_sandbox(Path("/tmp/sbx/x"))
+        run_mock.assert_not_called()
+
+
+def test_run_pytest_in_sandbox_raises_when_cgroup_missing() -> None:
+    with patch.object(gates, "_isolation_available", return_value=True), \
+         patch.object(gates, "_bwrap_available", return_value=True), \
+         patch.object(gates, "_cgroup_limits_available", return_value=False), \
+         patch.object(gates.subprocess, "run") as run_mock:
+        with pytest.raises(gates.SandboxUnavailableError):
+            gates._run_pytest_in_sandbox(Path("/tmp/sbx/x"))
+        run_mock.assert_not_called()
 
 
 # ---------- gate_tests: isolation marker appears in status_reason -------

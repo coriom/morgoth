@@ -3,13 +3,19 @@ wrappers gate_tests uses and prove each independent security property:
 
   * canary env absent under bwrap --clearenv
   * canary file unreachable under bwrap --tmpfs+--ro-bind view
+  * canary secret files (~/.env, ~/.ssh, ~/.deopt, claude-cli creds)
+    unreadable from inside the sandbox
   * network unreachable to external + loopback host services
   * runaway allocator killed by cgroup MemoryMax (fast — 200 MB cap)
   * fork-bomb bounded by cgroup TasksMax
 
-Each test skips itself if the layer's tool isn't available on the host,
-so CI stays green on kernels/images without the tool. Locally on WSL2
-all should run.
+2026-09-24: canaries FAIL, never skip. A missing confinement layer is
+a failed test, not a "green pass because we didn't check". If the host
+lacks bwrap/unshare/systemd-run, install them — this suite is the
+control that proves gate_tests is safe to run. Setting
+MORGOTH_ALLOW_SANDBOX_TESTS_SKIP=1 in the environment permits skipping
+(for CI images that genuinely can't install these tools); the default
+is DENY.
 """
 
 from __future__ import annotations
@@ -38,6 +44,22 @@ def _has(cmd: str) -> bool:
 _HAS_UNSHARE = gates._isolation_available()
 _HAS_BWRAP = _has("bwrap")
 _HAS_SYSTEMD_RUN = _has("systemd-run")
+_ALLOW_SKIP = os.environ.get("MORGOTH_ALLOW_SANDBOX_TESTS_SKIP") == "1"
+
+
+def _require(tool_present: bool, tool_name: str) -> None:
+    """Hard-fail if the tool is absent. Skips only when the operator
+    has explicitly opted in via MORGOTH_ALLOW_SANDBOX_TESTS_SKIP=1."""
+    if tool_present:
+        return
+    msg = (
+        f"{tool_name} unavailable — gate_tests fails closed without it. "
+        f"Install {tool_name} (see docs) or set "
+        f"MORGOTH_ALLOW_SANDBOX_TESTS_SKIP=1 to skip locally."
+    )
+    if _ALLOW_SKIP:
+        pytest.skip(msg)
+    pytest.fail(msg)
 
 
 def _bwrap_wrap(sandbox: Path, inner_cmd: str) -> list[str]:
@@ -63,10 +85,13 @@ def _bwrap_wrap(sandbox: Path, inner_cmd: str) -> list[str]:
     return ["unshare", "--user", "--map-root-user", "--net", "sh", "-c", inner]
 
 
-@pytest.mark.skipif(not (_HAS_UNSHARE and _HAS_BWRAP),
-                    reason="unshare or bwrap unavailable")
+def _need_bwrap():
+    _require(_HAS_UNSHARE, "unshare"); _require(_HAS_BWRAP, "bwrap")
+
+
 def test_canary_env_absent_under_bwrap(tmp_path: Path) -> None:
     """A canary env var set in the parent MUST not reach the sandbox."""
+    _need_bwrap()
     argv = _bwrap_wrap(tmp_path, "env")
     parent_env = {
         **gates._hardened_outer_env(),
@@ -79,10 +104,9 @@ def test_canary_env_absent_under_bwrap(tmp_path: Path) -> None:
     assert "leaked-token-do-not-reveal" not in r.stdout
 
 
-@pytest.mark.skipif(not (_HAS_UNSHARE and _HAS_BWRAP),
-                    reason="unshare or bwrap unavailable")
 def test_canary_file_unreachable_under_bwrap(tmp_path: Path) -> None:
     """A canary file at a known host path MUST be invisible inside."""
+    _need_bwrap()
     canary = Path.home() / ".morgoth-sandbox-canary"
     canary.write_text("canary-content-must-not-leak\n", encoding="utf-8")
     try:
@@ -96,6 +120,44 @@ def test_canary_file_unreachable_under_bwrap(tmp_path: Path) -> None:
         canary.unlink(missing_ok=True)
 
 
+def test_canary_home_dotfiles_unreadable(tmp_path: Path) -> None:
+    """The allowlist confinement must hide $HOME dotfiles that carry
+    secrets: ~/Morgoth/morgoth/.env, ~/.ssh, ~/.deopt, and the
+    claude-cli credential dir ~/.claude*. Each target is probed
+    inside the sandbox; NONE may be readable."""
+    _need_bwrap()
+    targets = [
+        Path.home() / "Morgoth" / "morgoth" / ".env",
+        Path.home() / ".ssh",
+        Path.home() / ".deopt",
+        Path.home() / ".claude",
+        Path.home() / ".config" / "claude",
+    ]
+    for t in targets:
+        argv = _bwrap_wrap(
+            tmp_path,
+            f"if [ -r {shlex.quote(str(t))} ]; then echo LEAK; else echo OK; fi",
+        )
+        r = subprocess.run(argv, env=gates._hardened_outer_env(),
+                            capture_output=True, text=True, timeout=15)
+        assert "LEAK" not in r.stdout, (
+            f"sandbox could read {t} — allowlist broken: {r.stdout!r}"
+        )
+
+
+def test_no_env_file_in_copied_tree(tmp_path: Path) -> None:
+    """gate_tests copies the working tree into the sandbox with
+    _SANDBOX_IGNORE excluding .env. Prove the copy has no .env
+    anywhere under it."""
+    _need_bwrap()
+    import shutil as _shutil
+    repo_root = Path("/home/corio/Morgoth/morgoth")
+    dest = tmp_path / "copy"
+    _shutil.copytree(repo_root, dest, ignore=gates._SANDBOX_IGNORE)
+    hits = list(dest.rglob(".env"))
+    assert not hits, f".env leaked into sandbox copy: {[str(h) for h in hits]}"
+
+
 def _tcp_probe_argv(host: str, port: int) -> list[str]:
     """Try to open a TCP connection inside a fresh netns. Python is
     used (not bash /dev/tcp) so we can assert exit code cleanly —
@@ -107,9 +169,9 @@ def _tcp_probe_argv(host: str, port: int) -> list[str]:
             "sh", "-c", f"ip link set lo up; {inner}"]
 
 
-@pytest.mark.skipif(not _HAS_UNSHARE, reason="unshare unavailable")
 def test_external_network_unreachable(tmp_path: Path) -> None:
     """TCP to a public IP MUST fail — fresh netns has no route out."""
+    _require(_HAS_UNSHARE, "unshare")
     r = subprocess.run(_tcp_probe_argv("1.1.1.1", 443),
                         env=gates._hardened_outer_env(),
                         capture_output=True, text=True, timeout=15)
@@ -119,10 +181,10 @@ def test_external_network_unreachable(tmp_path: Path) -> None:
             or "network is unreachable" in r.stderr.lower())
 
 
-@pytest.mark.skipif(not _HAS_UNSHARE, reason="unshare unavailable")
 def test_loopback_host_services_unreachable(tmp_path: Path) -> None:
     """Fresh netns's own lo has no listeners — host's 127.0.0.1
     postgres/ollama are unreachable from inside."""
+    _require(_HAS_UNSHARE, "unshare")
     r = subprocess.run(_tcp_probe_argv("127.0.0.1", 5432),
                         env=gates._hardened_outer_env(),
                         capture_output=True, text=True, timeout=15)
@@ -133,8 +195,8 @@ def test_loopback_host_services_unreachable(tmp_path: Path) -> None:
     assert ("refused" in err or "timed out" in err or "unreachable" in err)
 
 
-@pytest.mark.skipif(not _has("prlimit"), reason="prlimit unavailable")
 def test_memory_limit_kills_allocator(tmp_path: Path) -> None:
+    _require(_has("prlimit"), "prlimit")
     """A deliberate allocator MUST be killed by the per-process
     RLIMIT_AS. This is the kernel-enforced path — the same wrapper
     the sandbox uses at gate_tests time. WSL2's cgroup memory.max
@@ -165,11 +227,10 @@ def test_memory_limit_kills_allocator(tmp_path: Path) -> None:
     assert "MEMORY_ERROR" in r.stdout or r.returncode != 0
 
 
-@pytest.mark.skipif(
-    not (_HAS_UNSHARE and _HAS_BWRAP and _HAS_SYSTEMD_RUN),
-    reason="unshare/bwrap/systemd-run unavailable",
-)
 def test_task_limit_bounds_fork_bomb(tmp_path: Path) -> None:
+    _require(_HAS_UNSHARE, "unshare")
+    _require(_HAS_BWRAP, "bwrap")
+    _require(_HAS_SYSTEMD_RUN, "systemd-run")
     """TasksMax=32 bounds a fork loop; without it the process could
     exhaust host pids. We assert AT LEAST ONE fork failed."""
     # Fork 200 sleepers — TasksMax=32 means many will fail to fork.

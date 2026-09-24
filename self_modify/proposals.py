@@ -103,6 +103,16 @@ STATUS_SHADOW_REJECTED = "shadow_rejected"
 # distinct from the 3-pending cap: has its own PENDING_KEY_CAP so
 # the park lot cannot grow unbounded.
 STATUS_PENDING_KEY = "pending_key"
+# 2026-09-24: sandbox-hardening fail-closed. When ANY of the three
+# confinement layers (netns isolation, bwrap fs+env, systemd-run cgroup
+# limits) cannot be established, gate_tests REFUSES to execute pytest
+# on the proposal tree and lands here. Terminal.
+STATUS_REJECTED_SANDBOX_UNAVAILABLE = "rejected_sandbox_unavailable"
+# KeyboardInterrupt / asyncio.CancelledError during gate_tests: the
+# sandbox process group is killed, the sandbox dir removed, and the
+# proposal marked here. Distinct from tests_failed so retry policy
+# can treat interruption as retryable while genuine failures aren't.
+STATUS_ABORTED_INTERRUPTED = "aborted_interrupted"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
 STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
@@ -123,6 +133,8 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_REJECTED_STATIC,
     STATUS_SHADOW_REJECTED,
     STATUS_PENDING_KEY,
+    STATUS_REJECTED_SANDBOX_UNAVAILABLE,
+    STATUS_ABORTED_INTERRUPTED,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
 )

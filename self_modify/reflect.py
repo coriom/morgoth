@@ -1677,6 +1677,15 @@ async def run_reflection(
 
     store = P.ProposalStore(pm)
 
+    # Sweep stale /tmp/morgoth_sandbox/proposal_* left by prior interrupts.
+    # Non-fatal — reflect proceeds even if the sweep fails.
+    try:
+        _swept = gates.sweep_stale_sandboxes()
+        if _swept:
+            log(f"swept {len(_swept)} stale sandbox dir(s) at start")
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("reflect: sandbox sweep failed (non-fatal): {}", _exc)
+
     n_pending = await store.count_by_status_and_author(
         status=P.STATUS_PENDING_APPROVAL, proposed_by="morgoth"
     )

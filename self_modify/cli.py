@@ -491,6 +491,16 @@ async def _cmd_env(store: P.ProposalStore, args: argparse.Namespace) -> int:
     print("═══ Environment snapshot ═══")
     for line in env.to_lines():
         print(line)
+    # Sandbox posture — cheap probe (no pytest). Fail-closed since
+    # 2026-09-24: gate_tests refuses to run pytest unless all three
+    # layers apply. Surface degradation here so the operator sees it
+    # before invoking `morgoth reflect`.
+    from self_modify.gates import sandbox_posture
+    _sp = sandbox_posture()
+    if _sp["ok"]:
+        print("SANDBOX      : confined (netns + bwrap + cgroup)")
+    else:
+        print(f"SANDBOX      : UNAVAILABLE ({_sp['reason']}) — gate_tests fails closed")
     recommendations = {r.task: r for r in suggest_routing(env)}
     print("\n═══ Routing (CURRENT vs RECOMMENDED) ═══")
     print(f"  {'TASK':<10}  {'CURRENT':<26}  {'RECOMMENDED':<26}  MATCH")

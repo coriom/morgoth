@@ -191,17 +191,30 @@ def _isolation_available() -> bool:
 def _bwrap_available() -> bool:
     """True iff a minimal ``bwrap`` invocation succeeds. Cached.
 
-    False here means the copied tree runs without a mount namespace —
-    a compromised generated tool could read ~/.env, ~/.ssh, vault/,
-    or the live repo. Loud warning; the netns layer still applies.
+    False → sandbox_unavailable at gate_tests (fail-closed since
+    2026-09-24 — was a WARNING before, but WARN is not a control).
+
+    IMPORTANT: the probe MUST mirror the real invocation's bind set.
+    Earlier version bound only /usr; on usrmerge systems /bin is a
+    symlink into /usr/bin whose ELF interpreter is at /lib64/ld-*.
+    Without /lib and /lib64 bound, `execvp true` fails with ENOENT
+    and the probe FALSELY reports bwrap missing while bwrap itself
+    is fine. This is the bug that let the operator's run continue
+    with confinement off.
     """
     global _bwrap_available_cache
     if _bwrap_available_cache is not None:
         return _bwrap_available_cache
     try:
         rc = subprocess.run(
-            ["bwrap", "--ro-bind", "/usr", "/usr", "--proc", "/proc",
-             "--dev", "/dev", "--unshare-user", "--", "true"],
+            ["bwrap",
+             "--ro-bind", "/usr", "/usr",
+             "--ro-bind", "/lib", "/lib",
+             "--ro-bind", "/lib64", "/lib64",
+             "--ro-bind", "/bin", "/bin",
+             "--proc", "/proc", "--dev", "/dev",
+             "--unshare-user", "--",
+             "/bin/true"],
             capture_output=True,
             timeout=5,
         ).returncode
@@ -209,6 +222,38 @@ def _bwrap_available() -> bool:
         rc = 1
     _bwrap_available_cache = rc == 0
     return _bwrap_available_cache
+
+
+def sandbox_posture() -> dict[str, Any]:
+    """Cheap probe used by `morgoth env` and `morgoth session-report`.
+    Returns {isolated, confined, cgroup_bound, ok, reason}. `ok` is
+    True iff ALL three layers are available. Reason lists the missing
+    layer(s) for the operator. NEVER runs pytest.
+    """
+    iso = _isolation_available()
+    cnf = _bwrap_available() if iso else False
+    cgb = _cgroup_limits_available() if iso else False
+    missing: list[str] = []
+    if not iso:
+        missing.append("netns/unshare")
+    if not cnf:
+        missing.append("bwrap")
+    if not cgb:
+        missing.append("systemd-run cgroup")
+    return {
+        "isolated": iso, "confined": cnf, "cgroup_bound": cgb,
+        "ok": iso and cnf and cgb,
+        "reason": "" if (iso and cnf and cgb) else "missing: " + ", ".join(missing),
+    }
+
+
+def reset_probe_cache() -> None:
+    """Test hook — clears the memoized layer probes so a monkeypatched
+    subprocess result is picked up on the next call."""
+    global _isolation_available_cache, _bwrap_available_cache, _cgroup_limits_available_cache
+    _isolation_available_cache = None
+    _bwrap_available_cache = None
+    _cgroup_limits_available_cache = None
 
 
 def _cgroup_limits_available() -> bool:
@@ -375,50 +420,72 @@ def _build_pytest_argv(
     return outer
 
 
-def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
-    """Blocking call — run pytest -q from ``sandbox`` under the strongest
-    hardening posture the host supports. Each layer probed independently.
+class SandboxUnavailableError(RuntimeError):
+    """Raised when the sandbox cannot be established with ALL three
+    confinement layers (netns, bwrap, cgroup). fail-closed: pytest MUST
+    NOT run on a proposal tree unless every layer applies."""
 
-    Missing layers degrade gracefully with warnings; the surviving
-    layers still apply. Env passed to the outer subprocess is a
-    minimal whitelist (``_hardened_outer_env``) so parent secrets
-    (POSTGRES_URL, FRED_API_KEY, ANTHROPIC_API_KEY, …) never reach
-    the sandboxed pytest even when bwrap's ``--clearenv`` is absent.
+
+def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
+    """Blocking call — run pytest -q from ``sandbox`` under FULL hardening
+    (netns + bwrap + cgroup). FAIL-CLOSED (2026-09-24): if any layer is
+    unavailable, raise SandboxUnavailableError and refuse to spawn pytest.
+
+    Prior behavior degraded to a WARNING and ran anyway — that's how the
+    operator's `morgoth reflect` executed an LLM-authored file with
+    filesystem confinement OFF. A warning is not a control. Env passed
+    to the outer subprocess is a minimal whitelist (``_hardened_outer_env``).
     """
-    isolated = _isolation_available()
-    confined = _bwrap_available() if isolated else False
-    cgroup_bound = _cgroup_limits_available() if isolated else False
-    if not isolated:
-        logger.warning(
-            "sandbox network isolation UNAVAILABLE — running with host "
-            "network (defense-in-depth degraded)"
-        )
-    if isolated and not confined:
-        logger.warning(
-            "sandbox filesystem confinement UNAVAILABLE (bwrap missing) — "
-            "sandbox may read files outside its copied tree"
-        )
-    if isolated and not cgroup_bound:
-        logger.warning(
-            "sandbox cgroup limits UNAVAILABLE (systemd-run --user failed) — "
-            "runaway allocation only bounded by the pytest timeout"
-        )
+    posture = sandbox_posture()
+    if not posture["ok"]:
+        raise SandboxUnavailableError(posture["reason"])
+    isolated, confined, cgroup_bound = True, True, True
     argv = _build_pytest_argv(
         sandbox, isolated=isolated, confined=confined, cgroup_bound=cgroup_bound,
     )
-    cwd = None if isolated else str(sandbox)
+    # Under full hardening cwd=None (systemd-run --user + unshare change
+    # working directory via the inner sh). Passing cwd=sandbox is a
+    # no-op here but was needed on the degraded no-unshare path.
     completed = subprocess.run(
         argv,
-        cwd=cwd,
+        cwd=None,
         capture_output=True,
         text=True,
         timeout=_PYTEST_TIMEOUT_SECS,
-        env=_hardened_outer_env() if isolated else None,
+        env=_hardened_outer_env(),
+        start_new_session=True,  # new process group so we can group-kill
     )
     completed.isolated = isolated  # type: ignore[attr-defined]
     completed.confined = confined  # type: ignore[attr-defined]
     completed.cgroup_bound = cgroup_bound  # type: ignore[attr-defined]
     return completed
+
+
+_SANDBOX_ROOT = Path("/tmp/morgoth_sandbox")
+
+
+def sweep_stale_sandboxes(max_age_secs: int = 3600) -> list[str]:
+    """Remove /tmp/morgoth_sandbox/proposal_* dirs older than max_age.
+    Returns the list of paths removed. Called at reflect start so a
+    previously-Ctrl-C'd run doesn't leave a growing crumb trail."""
+    removed: list[str] = []
+    if not _SANDBOX_ROOT.exists():
+        return removed
+    import time as _time
+    now = _time.time()
+    for child in _SANDBOX_ROOT.iterdir():
+        if not child.is_dir():
+            continue
+        if not child.name.startswith("proposal_"):
+            continue
+        try:
+            age = now - child.stat().st_mtime
+        except OSError:
+            continue
+        if age >= max_age_secs:
+            shutil.rmtree(child, ignore_errors=True)
+            removed.append(str(child))
+    return removed
 
 
 async def gate_tests(
@@ -438,7 +505,22 @@ async def gate_tests(
         await store.update_status(proposal_id, P.STATUS_TESTS_FAILED, reason)
         return P.STATUS_TESTS_FAILED
 
-    sandbox_root = Path("/tmp/morgoth_sandbox")
+    # FAIL-CLOSED PRE-FLIGHT: refuse to copy the tree if the sandbox
+    # cannot be established. This prevents any secret-copying-then-
+    # aborting window that a degraded run would otherwise create.
+    posture = sandbox_posture()
+    if not posture["ok"]:
+        reason = (
+            f"gate_tests: refusing to run pytest — sandbox unavailable "
+            f"({posture['reason']}). Install missing layer(s) and re-run."
+        )
+        logger.warning("{} proposal_id={}", reason, proposal_id)
+        await store.update_status(
+            proposal_id, P.STATUS_REJECTED_SANDBOX_UNAVAILABLE, reason,
+        )
+        return P.STATUS_REJECTED_SANDBOX_UNAVAILABLE
+
+    sandbox_root = _SANDBOX_ROOT
     sandbox_root.mkdir(parents=True, exist_ok=True)
     sandbox = sandbox_root / f"proposal_{proposal_id}"
     if sandbox.exists():
@@ -449,6 +531,14 @@ async def gate_tests(
         await asyncio.to_thread(
             shutil.copytree, str(repo_root), str(sandbox), ignore=_SANDBOX_IGNORE
         )
+        # Defensive assertion: the copied tree MUST NOT contain .env.
+        # _SANDBOX_IGNORE excludes it, but a rename or a symlink chase
+        # could reintroduce it — abort the whole run if we spot one.
+        for stray in sandbox.rglob(".env"):
+            if stray.is_file():
+                raise RuntimeError(
+                    f"sandbox contains .env at {stray} — refusing to run"
+                )
         # 2. Write proposal's content at target_path inside sandbox.
         target = sandbox / proposal["target_path"]
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -457,11 +547,34 @@ async def gate_tests(
         logger.info("gate_tests: running pytest in {}", sandbox)
         try:
             completed = await asyncio.to_thread(_run_pytest_in_sandbox, sandbox)
+        except SandboxUnavailableError as exc:
+            # Race: posture flipped between pre-flight and run.
+            reason = f"gate_tests: sandbox unavailable at run-time ({exc})"
+            logger.warning("{} proposal_id={}", reason, proposal_id)
+            await store.update_status(
+                proposal_id, P.STATUS_REJECTED_SANDBOX_UNAVAILABLE, reason,
+            )
+            return P.STATUS_REJECTED_SANDBOX_UNAVAILABLE
         except subprocess.TimeoutExpired as exc:
             reason = f"gate_tests: pytest timed out after {_PYTEST_TIMEOUT_SECS}s"
             logger.warning("{}: {}", reason, exc)
             await store.update_status(proposal_id, P.STATUS_TESTS_FAILED, reason)
             return P.STATUS_TESTS_FAILED
+        except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+            # Kill the sandbox process group best-effort. subprocess.run
+            # already waited; on CancelledError from asyncio.to_thread
+            # the child is typically already gone. Belt+braces: sweep
+            # any stragglers under /tmp/morgoth_sandbox/*.
+            logger.warning(
+                "gate_tests: interrupted proposal_id={}: {}", proposal_id,
+                type(exc).__name__,
+            )
+            reason = f"gate_tests: aborted by {type(exc).__name__}"
+            await store.update_status(
+                proposal_id, P.STATUS_ABORTED_INTERRUPTED, reason,
+            )
+            # Re-raise so the outer reflect loop can unwind cleanly.
+            raise
 
         # Isolation posture — attached by _run_pytest_in_sandbox for
         # the status_reason tail so the operator sees it at gate 3.
