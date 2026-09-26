@@ -384,6 +384,11 @@ def _build_pytest_argv(
             "--setenv", "PATH", "/usr/sbin:/usr/bin:/bin",
             "--setenv", "HOME", str(sandbox),
             "--setenv", "LANG", "C.UTF-8",
+            # 2026-09-26: signals conftest.py to skip host-dependent
+            # tests (Postgres, ChromaDB volume, MagicMock-async cycles)
+            # that would otherwise turn gate_tests into
+            # reject-everything for every proposal.
+            "--setenv", "MORGOTH_SANDBOX", "1",
             "--ro-bind", "/usr", "/usr",
             "--ro-bind", "/lib", "/lib",
             "--ro-bind", "/lib64", "/lib64",

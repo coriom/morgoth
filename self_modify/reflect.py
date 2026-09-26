@@ -989,7 +989,21 @@ def _rejections_block(rows: list[dict[str, Any]]) -> str:
         head = f"- {tool_name}"
         if endpoint:
             head += f" ({endpoint})"
-        lines.append(f"{head}: {reason}")
+        # 2026-09-26: annotate rejections whose ROOT CAUSE has since been
+        # fixed. A rejected_shape whose reason cites a list-shaped
+        # response or nested-array digest is now expressible via path
+        # digests — presenting it as a dead end is wrong.
+        annotation = ""
+        status = row.get("status") or ""
+        if status == "rejected_shape" and (
+            "list" in reason.lower() or "array" in reason.lower()
+            or "nested" in reason.lower() or "not a dict" in reason.lower()
+        ):
+            annotation = (
+                "  [now expressible with path digests — see grammar above; "
+                "re-proposing with {name, path} entries is allowed]"
+            )
+        lines.append(f"{head}: {reason}{annotation}")
     return "\n".join(lines)
 
 
@@ -1151,14 +1165,48 @@ or embed a key VALUE; you only propose the env-var NAME.
 If no clear gap justifies a new tool, respond with the literal word
 NONE — that is a fully acceptable answer.{leads_task_line}
 
+DIGEST-PATH GRAMMAR (unlocks nested sources — 2026-09-25):
+Each digest_fields entry is EITHER a plain snake_case string (top-level
+scalar in the response) OR a {{"name": "<snake>", "path": "<expr>"}}
+dict. Path grammar (parsed, never eval'd):
+  segment       WORD                      → dict key
+  dotted keys   a.b.c                     → nested dicts
+  index         xs[0]                     → list index
+  key=value     xs[symbol=USDT]           → first list element where
+                                             element[symbol] == "USDT"
+  aggregate     sum(xs[*].field)          → sum over list of elements
+                                             successfully resolving the tail
+                (count | min | max also)
+Rules: [*] is only legal INSIDE sum/count/min/max. Every path MUST
+resolve to ONE SCALAR. An aggregate over ZERO resolved elements FAILS
+— we do not return a silent 0. Elements missing the tail key are
+SKIPPED (not counted). MAX_DIGEST_FIELDS = 12.
+
+WORKED EXAMPLE (proven to pass the shape gate against DefiLlama):
+  api_base_url = "https://stablecoins.llama.fi"
+  endpoint_path = "/stablecoins"     # returns {{"peggedAssets": [...]}}
+  digest_fields = [
+    {{"name": "total_supply",
+     "path": "sum(peggedAssets[*].circulating.peggedUSD)"}},
+    {{"name": "usdt_supply",
+     "path": "peggedAssets[symbol=USDT].circulating.peggedUSD"}},
+    {{"name": "usdc_supply",
+     "path": "peggedAssets[symbol=USDC].circulating.peggedUSD"}},
+    {{"name": "asset_count",  "path": "count(peggedAssets[*])"}},
+  ]
+
+RATIONALE REQUIREMENT: the rationale MUST name at least one
+digest_field that measures the claimed gap (e.g. "total_supply
+measures aggregate stablecoin issuance"). Reviewed at gate 3.
+
 OUTPUT FORMAT — a single JSON object OR the word NONE. Nothing else.
 {{
   "tool_name": "<snake_case>",
   "api_base_url": "https://<host>",
   "endpoint_path": "<path>",
-  "digest_fields": ["<snake_case_field>", ...],  // 3-6 items expected in the JSON response
+  "digest_fields": [<3-12 entries, each a snake string OR {{name, path}}>],
   "description": "<one sentence, what the tool fetches and why it matters>",
-  "rationale": "<one sentence, what gap in the current tools this fills>",
+  "rationale": "<one sentence naming the digest field that measures the gap>",
   "requires_key": {{ "env_var": "<UPPER_SNAKE>", "signup_url": "https://<host>/signup" }},  // OPTIONAL, omit for keyless
   "key_in": "query"|"header",       // REQUIRED iff requires_key set
   "key_param": "api_key"|"X-API-Key"  // REQUIRED iff requires_key set
