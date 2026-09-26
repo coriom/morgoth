@@ -1000,6 +1000,12 @@ async def score_campaign(
                     except (TypeError, ValueError):
                         continue
         # Fallback: ChromaDB same-objective cycle findings (pre-cache).
+        # FIELD-AWARE (2026-09-25): extract the specific
+        # `lastFundingRate` field only. Matching ANY numeric in the
+        # line would let interestRate (0.0001) validate a
+        # lastFundingRate citation — the exact field-confusion this
+        # scorer is meant to detect. Interest-rate era findings
+        # contain BOTH keys with different values.
         try:
             from memory.episodic import EpisodicMemory
             _em = EpisodicMemory("data/chroma_db")
@@ -1013,8 +1019,9 @@ async def score_campaign(
                 content = m.content or ""
                 if "get_bitcoin_futures_funding" not in content:
                     continue
-                # extract lastFundingRate value from the line
-                mm = re.search(r'"lastFundingRate":\s*"?([\-0-9eE.]+)"?', content)
+                mm = re.search(
+                    r'"lastFundingRate"\s*:\s*"?([\-0-9eE.]+)"?', content,
+                )
                 if mm:
                     try:
                         return float(mm.group(1)), "chromadb_same_obj"

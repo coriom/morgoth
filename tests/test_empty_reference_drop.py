@@ -126,6 +126,36 @@ class TestHistoricalDedupeSameObj:
         assert "same-obj → drop as duplicate" in src or "str(mo) == obj_id" in src
 
 
+class TestScorerFieldAwareReference:
+    """2026-09-25: the ChromaDB fallback MUST match the `lastFundingRate`
+    FIELD specifically, not any numeric literal in the finding text. An
+    interest-rate-era finding contains BOTH `interestRate: 0.0001` and
+    `lastFundingRate: 7e-5`; a naïve any-number match would validate a
+    0.0001 citation against interestRate — the exact field confusion
+    the scorer is meant to detect."""
+
+    def test_finding_with_both_keys_confuses_0_0001_citation(self):
+        # Simulate a same-obj ChromaDB match containing both keys.
+        line = (
+            'TOOL RESULTS:\n- get_bitcoin_futures_funding: '
+            '{"symbol": "BTCUSDT", "lastFundingRate": 7e-05, '
+            '"interestRate": 0.0001}'
+        )
+        import re
+        m = re.search(r'"lastFundingRate"\s*:\s*"?([\-0-9eE.]+)"?', line)
+        assert m and float(m.group(1)) == 7e-05
+        # A 0.0001 citation vs 7e-05 own-field reference at 1% tol:
+        # confused. Interest-rate must NOT be picked up.
+        cited = 0.0001
+        assert abs(cited - 7e-05) / 7e-05 > 0.01
+
+    def test_scorer_source_uses_field_regex(self):
+        import inspect
+        from analysis import campaign_quality as cq
+        src = inspect.getsource(cq.score_campaign)
+        assert '"lastFundingRate"\\s*:\\s*"?([\\-0-9eE.]+)"?' in src
+
+
 class TestScorerReferenceFallsBackToChromaDB:
     def test_priority_includes_chromadb_same_obj(self):
         # LOCK: for pre-7a41b97 objectives (no cycle_payload), scorer
