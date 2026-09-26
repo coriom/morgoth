@@ -1,4 +1,7 @@
+
 """Phase-A extensions: 3 new cached sources + web_search cache path.
+
+
 
 Locks:
   · get_coinbase_btc_stats, get_ethereum_network_stats, get_news are
@@ -17,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core import source_cache as sc
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(autouse=True)

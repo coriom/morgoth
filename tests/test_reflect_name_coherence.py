@@ -1,4 +1,7 @@
+
 """Name/content coherence gate tests.
+
+
 
 The 4/4 observed lie class (exchange_flows on mining pools,
 exchange_netflow on network economics) is caught here with a pure
@@ -25,6 +28,8 @@ import pytest
 
 from self_modify import proposals as P
 from self_modify import reflect
+
+pytestmark = pytest.mark.integration
 
 
 # ---------- normalization edge cases -------------------------------------

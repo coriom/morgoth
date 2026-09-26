@@ -9,6 +9,11 @@ import pytest
 
 from memory.persistent import PersistentMemory
 
+pytestmark = pytest.mark.integration
+
+
+
+
 
 pytestmark = pytest.mark.asyncio
 

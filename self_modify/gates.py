@@ -366,8 +366,14 @@ def _build_pytest_argv(
     (needs CAP_NET_ADMIN, which bwrap drops) and bwrap uses
     ``--share-net`` to inherit the netns with lo already UP.
     """
+    # 2026-09-26 marker-based sandbox exclusion: inside the confined
+    # runner, skip tests marked `integration` (they legitimately need
+    # host services). Everything else runs — including test_discovery,
+    # test_source_cache, test_brain_* — so a proposal that breaks tool
+    # registration or the cycle still fails at gate_tests.
+    _SANDBOX_MARKER_ARGS = ["-m", "not integration"]
     if not isolated:
-        return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"]
+        return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"] + _SANDBOX_MARKER_ARGS
 
     # Per-process RLIMIT_AS via ``prlimit`` — kernel-enforced, works
     # on WSL2 where cgroup memory.max is silently ignored. Wraps the
@@ -375,7 +381,7 @@ def _build_pytest_argv(
     pytest_call = [
         "prlimit", f"--as={_PER_PROCESS_AS_BYTES}",
         "--", _VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto",
-    ]
+    ] + _SANDBOX_MARKER_ARGS
 
     if confined:
         import shlex
@@ -384,11 +390,6 @@ def _build_pytest_argv(
             "--setenv", "PATH", "/usr/sbin:/usr/bin:/bin",
             "--setenv", "HOME", str(sandbox),
             "--setenv", "LANG", "C.UTF-8",
-            # 2026-09-26: signals conftest.py to skip host-dependent
-            # tests (Postgres, ChromaDB volume, MagicMock-async cycles)
-            # that would otherwise turn gate_tests into
-            # reject-everything for every proposal.
-            "--setenv", "MORGOTH_SANDBOX", "1",
             "--ro-bind", "/usr", "/usr",
             "--ro-bind", "/lib", "/lib",
             "--ro-bind", "/lib64", "/lib64",

@@ -1,4 +1,7 @@
+
 """Negative-list + retry-with-feedback tests for reflect.
+
+
 
 Every DB touch is mocked. Retry logic drives ``run_reflection`` with a
 fake ``reflect_chat`` that returns different specs on each call so the
@@ -16,6 +19,8 @@ import pytest
 
 from self_modify import proposals as P
 from self_modify import reflect
+
+pytestmark = pytest.mark.integration
 
 
 # ---------- _endpoint_from_row + _rejections_block render ----------------

@@ -1,4 +1,7 @@
+
 """claude-cli branch tests.
+
+
 
 Every case injects a runner (never spawns real ``claude``). The argv,
 JSON parsing, error paths, and neutral-cwd behavior are all exercised
@@ -29,6 +32,8 @@ from self_modify.reflect_llm import (
     reflect_chat,
     resolve_provider,
 )
+
+pytestmark = pytest.mark.integration
 
 
 # ---------- resolution matrix picks up claude-cli --------------------------

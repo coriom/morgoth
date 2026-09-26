@@ -1,4 +1,7 @@
+
 """Reflect-context integrity tests.
+
+
 
 The reflect prompt is what the LLM (any engine) reads to decide which
 gap to fill. If a description is truncated in the middle of a phrase
@@ -17,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from self_modify import reflect
+
+pytestmark = pytest.mark.integration
 
 
 class _FakeTool:

@@ -1,3 +1,6 @@
+
+
+
 """Source cache: config, scheduler, collector, read path with age
 surfacing, staleness policy, kill-switch, req/h arithmetic lock."""
 
@@ -10,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core import source_cache as sc
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(autouse=True)

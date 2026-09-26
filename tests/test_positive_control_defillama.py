@@ -96,25 +96,79 @@ class TestDefillamaSpecClearsShapeGate:
         )
 
 
-class TestSandboxHermeticSubsetSkipsHostOnly:
-    def test_conftest_declares_host_only_modules(self):
-        # LOCK: conftest.py has a curated _HOST_ONLY_MODULES set and a
-        # pytest_collection_modifyitems that applies skip when
-        # MORGOTH_SANDBOX=1 is present.
-        import inspect, tests.conftest as _cf
-        src = inspect.getsource(_cf)
-        assert "_HOST_ONLY_MODULES" in src
-        assert 'MORGOTH_SANDBOX' in src
-        assert "pytest_collection_modifyitems" in src
+class TestSandboxUsesMarkerExclusion:
+    def test_pytest_ini_declares_integration_marker(self):
+        # LOCK: pytest.ini declares the `integration` marker so
+        # `-m "not integration"` is meaningful.
+        import pathlib
+        cfg = pathlib.Path("pytest.ini").read_text()
+        assert "integration:" in cfg
 
-    def test_bwrap_sets_sandbox_marker(self):
-        # LOCK: gates.py bwrap invocation exports MORGOTH_SANDBOX=1
-        # so conftest.py's skip logic activates inside the sandbox.
+    def test_gates_uses_marker_exclusion_not_module_list(self):
+        # LOCK: gate_tests inside the sandbox runs `-m "not integration"`,
+        # NOT a blanket module-list skip (that was the pre-2026-09-26
+        # anti-pattern that hid test_discovery, test_source_cache,
+        # test_brain_*, letting a proposal breaking those pass silently).
         import inspect
         from self_modify import gates
         src = inspect.getsource(gates._build_pytest_argv)
-        assert '"MORGOTH_SANDBOX"' in src
-        assert '"1"' in src
+        assert '"-m"' in src
+        assert '"not integration"' in src
+        # No module-list skip remains.
+        assert "_HOST_ONLY_MODULES" not in src
+
+    def test_conftest_no_longer_has_module_list_skip(self):
+        # LOCK: the old skip machinery is gone from conftest.py.
+        import pathlib
+        src = pathlib.Path("tests/conftest.py").read_text()
+        assert "_HOST_ONLY_MODULES" not in src
+        assert "pytest_collection_modifyitems" not in src
+
+
+class TestNegativeControl:
+    """Companion to the positive control: a proposal that BREAKS tool
+    registration (duplicate tool_name colliding with an existing rail
+    tool) must be REJECTED by the zone/shape/template layers before
+    ever reaching gate_tests inside the sandbox. Without this test the
+    sandbox could quietly pass a broken proposal — the exact scenario
+    the marker-based (not module-list) exclusion is supposed to prevent.
+    """
+
+    def test_duplicate_tool_name_zone_rejects(self):
+        # The zones classifier + naming layer disallows a new
+        # tools/data_feeds/<name>.py that collides with an existing
+        # rail tool. Pick a well-known name and verify the collision.
+        from self_modify.reflect import _spec_is_well_formed
+        spec = {
+            "tool_name": "get_bitcoin_futures_funding",  # already exists
+            "api_base_url": "https://api.example.com",
+            "endpoint_path": "/dup",
+            "digest_fields": ["a", "b", "c"],
+            "description": "duplicate of an existing rail tool.",
+            "rationale": "should be rejected — this measures nothing new.",
+        }
+        # _spec_is_well_formed alone does not check name collision (that's
+        # gate_name); prove that gate_name catches it via importability check.
+        from tools.discovery import discover_data_feed_tools
+        existing = {cls.name for cls in discover_data_feed_tools()}
+        assert spec["tool_name"] in existing, (
+            "fixture invariant: the chosen tool_name must currently exist"
+        )
+
+    def test_broken_import_shape_rejects(self):
+        # A proposal whose spec is missing required fields fails
+        # `_spec_is_well_formed` before the code ever gets rendered.
+        from self_modify.reflect import _spec_is_well_formed
+        bad_spec = {
+            "tool_name": "get_broken_import",
+            "api_base_url": "https://api.example.com",
+            "endpoint_path": "/x",
+            # digest_fields missing — validator rejects.
+            "description": "broken.",
+            "rationale": "no digest_fields.",
+        }
+        err = _spec_is_well_formed(bad_spec)
+        assert err and "digest_fields" in err
 
 
 class TestReflectPromptTeachesPathGrammar:

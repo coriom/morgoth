@@ -1,3 +1,6 @@
+
+
+
 """Empirical hardening tests — spawn REAL subprocesses under the same
 wrappers gate_tests uses and prove each independent security property:
 
@@ -29,6 +32,8 @@ from pathlib import Path
 import pytest
 
 from self_modify import gates
+
+pytestmark = pytest.mark.integration
 
 
 def _has(cmd: str) -> bool:

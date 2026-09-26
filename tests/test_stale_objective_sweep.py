@@ -1,4 +1,7 @@
+
 """Stale-objective sweep tests.
+
+
 
 At Brain.initialize(), non-terminal objectives older than
 OBJECTIVE_STALE_DAYS transition to ``stale_timeout`` (a distinct
@@ -33,6 +36,8 @@ import pytest
 
 from core import brain
 from memory.persistent import PersistentMemory
+
+pytestmark = pytest.mark.integration
 
 
 class _AsyncCtxManager:

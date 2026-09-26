@@ -11,6 +11,11 @@ import pytest
 
 from core import backup_watchdog as bw
 
+pytestmark = pytest.mark.integration
+
+
+
+
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):

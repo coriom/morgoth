@@ -1,4 +1,7 @@
+
 """Endpoint-duplication gate + field-overlap advisory tests.
+
+
 
 Two data-source tools hitting the same (host, path) make the rail
 fictional. This file pins the normalization matrix, the retro-catch
@@ -17,6 +20,8 @@ import pytest
 
 from self_modify import proposals as P
 from self_modify import reflect
+
+pytestmark = pytest.mark.integration
 
 
 # ---------- normalization matrix -----------------------------------------
