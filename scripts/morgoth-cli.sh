@@ -219,6 +219,13 @@ cmd_audit() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli audit "$@")
 }
 
+cmd_gate_selftest() {
+    # Run POSITIVE + NEGATIVE synthetic proposals through gate_zone +
+    # gate_tests under full confinement. Read-only — the two proposals
+    # are ephemeral and never enter the live self_modify_proposals table.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.gate_selftest "$@")
+}
+
 cmd_reflect() {
     # One-shot reflection cycle: Morgoth proposes a new green-zone tool.
     # Gated by can_self_modify in MORGOTH_PERMS.json. Extra args pass
@@ -396,6 +403,7 @@ case "${1:-help}" in
     session-report) shift; cmd_session_report "$@";;
     rail-check) shift; cmd_rail_check "$@";;
     env) shift; cmd_env "$@";;
+    gate-selftest) shift; cmd_gate_selftest "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;

@@ -1778,6 +1778,31 @@ async def run_reflection(
     except Exception as _exc:  # noqa: BLE001
         logger.warning("reflect: sandbox sweep failed (non-fatal): {}", _exc)
 
+    # 2026-09-27 GATE PREFLIGHT: refuse to run reflect if the positive
+    # gate-selftest fails. Without this, a broken gate_tests (e.g.
+    # every proposal fails on a pre-existing test) would silently
+    # reject every LLM proposal in this run.
+    try:
+        from self_modify.gate_selftest import run_selftest as _run_selftest
+        pos, neg = await _run_selftest()
+        log(f"gate-selftest: positive={'OK' if pos.ok else 'FAIL'} "
+            f"negative={'OK' if neg.ok else 'FAIL'}")
+        if not pos.ok:
+            reason = (
+                f"gate-selftest positive control FAILED "
+                f"(status={pos.actual_status}); refusing to submit any "
+                f"proposal until the gate is fixed"
+            )
+            log(f"refused — {reason}")
+            return {"outcome": "refused_gate_broken", "reason": reason,
+                    "proposal_id": None, "pipeline_status": None,
+                    "spec": None, "first_attempt": None, "retried": False}
+    except Exception as _sel_exc:  # noqa: BLE001
+        logger.warning(
+            "reflect: gate-selftest crashed (non-fatal, proceeding): {}",
+            _sel_exc,
+        )
+
     n_pending = await store.count_by_status_and_author(
         status=P.STATUS_PENDING_APPROVAL, proposed_by="morgoth"
     )

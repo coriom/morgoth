@@ -84,6 +84,29 @@ def _build_brain(llm_client: MagicMock) -> Brain:
     persistent_memory.get_sources_used = AsyncMock(return_value=[])
     persistent_memory.update_objective = AsyncMock(return_value={})
     persistent_memory.add_thesis = AsyncMock(return_value="thesis-1")
+    # 2026-09-26 — brain.run_autonomous_cycle grew async pre-cycle
+    # probes since this fixture was written. Wire AsyncMock for every
+    # method the cycle now touches so bare MagicMock() defaults don't
+    # break tests that only care about the extraction branch.
+    persistent_memory.expire_active_campaign_if_due = AsyncMock(return_value=False)
+    persistent_memory.get_active_campaign = AsyncMock(return_value=None)
+    persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)
+    persistent_memory.record_session_gap_if_any = AsyncMock()
+    persistent_memory.get_active_focus = AsyncMock(return_value=None)
+    persistent_memory.claim_next_objective = AsyncMock(return_value=[])
+    persistent_memory.timeout_stale_objectives = AsyncMock(return_value=[])
+    persistent_memory.record_source_snapshot = AsyncMock()
+    persistent_memory.record_connectivity_transition = AsyncMock()
+    persistent_memory.record_outage_event = AsyncMock()
+    persistent_memory.increment_outage_streak = AsyncMock(return_value=0)
+    persistent_memory.reset_outage_streak = AsyncMock()
+    persistent_memory.record_numeric_fidelity_event = AsyncMock()
+    persistent_memory.record_field_confusion_event = AsyncMock()
+    persistent_memory.get_theses_by_objective = AsyncMock(return_value=[])
+    persistent_memory.get_objective = AsyncMock(return_value=None)
+    persistent_memory.record_ctx_saturation_event = AsyncMock()
+    persistent_memory.record_web_search_cache = AsyncMock()
+    persistent_memory.latest_web_search_cache = AsyncMock(return_value=None)
 
     return Brain(
         config=config,
