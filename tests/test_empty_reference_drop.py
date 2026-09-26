@@ -21,8 +21,8 @@ from core import numeric_fidelity as nf
 
 
 class TestUnverifiedDropsInsteadOfPassing:
-    def test_no_tool_output_drops_not_passes(self):
-        # Empty findings → digest empty → must DROP with the new reason.
+    def test_absent_everywhere_reason(self):
+        # Empty findings AND empty historical → absent everywhere.
         thesis = {
             "subject": "BTC funding rate",
             "evidence": [{
@@ -30,14 +30,30 @@ class TestUnverifiedDropsInsteadOfPassing:
                 "detail": "funding rate at 0.00010000",
             }],
         }
-        act = nf.check_thesis(thesis, findings=[])
+        act = nf.check_thesis(thesis, findings=[], historical_findings=[])
         assert act.action == "drop"
-        assert act.reason == "unverified_no_current_reference"
+        assert act.reason == "unverified_absent_everywhere"
         assert act.cited_value == 0.0001
 
+    def test_historical_only_reason(self):
+        # Current findings lack the tool; HISTORICAL has the value.
+        thesis = {
+            "subject": "BTC funding rate",
+            "evidence": [{
+                "source": "get_bitcoin_futures_funding",
+                "detail": "funding rate at 0.00010000",
+            }],
+        }
+        hist = [
+            'TOOL RESULTS:\n- get_bitcoin_futures_funding: {"lastFundingRate": 0.0001}',
+        ]
+        act = nf.check_thesis(thesis, findings=[], historical_findings=hist)
+        assert act.action == "drop"
+        assert act.reason == "unverified_historical_only"
+
     def test_findings_for_other_tool_still_drops(self):
-        # findings has data — but for a DIFFERENT tool. The cited
-        # tool's line is missing → same drop.
+        # Findings has data — but for a DIFFERENT tool. Historical
+        # empty → absent everywhere (for this tool's citation).
         thesis = {
             "subject": "BTC funding rate",
             "evidence": [{
@@ -48,9 +64,9 @@ class TestUnverifiedDropsInsteadOfPassing:
         other = [
             'TOOL RESULTS:\n- get_crypto_global_market: {"market_cap_usd": 3e12}',
         ]
-        act = nf.check_thesis(thesis, findings=other)
+        act = nf.check_thesis(thesis, findings=other, historical_findings=[])
         assert act.action == "drop"
-        assert act.reason == "unverified_no_current_reference"
+        assert act.reason == "unverified_absent_everywhere"
 
     def test_passes_when_current_reference_matches(self):
         # Sanity: with proper current reference, the gate still passes.
@@ -83,7 +99,7 @@ class TestExtractionAbstainsOnHistoricalOnly:
 
 
 class TestSessionReportSurfacesUnverified:
-    def test_render_prints_unverified_count(self):
+    def test_render_prints_unverified_and_split(self):
         from analysis.session_report import SessionReport
         from datetime import datetime, timedelta, timezone
         r = SessionReport(
@@ -91,8 +107,33 @@ class TestSessionReportSurfacesUnverified:
             now=datetime.now(timezone.utc),
         )
         r.fidelity_unverified = 5
+        r.fidelity_unverified_absent = 3
+        r.fidelity_unverified_hist_only = 2
         out = r.render()
         assert "5 unverified" in out
+        assert "3 absent" in out
+        assert "2 hist-only" in out
+
+
+class TestHistoricalDedupeSameObj:
+    def test_brain_drops_same_obj_recall(self):
+        # LOCK: findings_recalled excludes ChromaDB entries whose
+        # objective_id equals the current one — they duplicate
+        # findings_current.
+        import inspect
+        from core import brain
+        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        assert "same-obj → drop as duplicate" in src or "str(mo) == obj_id" in src
+
+
+class TestScorerReferenceFallsBackToChromaDB:
+    def test_priority_includes_chromadb_same_obj(self):
+        # LOCK: for pre-7a41b97 objectives (no cycle_payload), scorer
+        # falls back to ChromaDB same-obj entries as the OWN reading.
+        import inspect
+        from analysis import campaign_quality as cq
+        src = inspect.getsource(cq.score_campaign)
+        assert "chromadb_same_obj" in src
 
 
 class TestScorerReferencePriority:

@@ -669,9 +669,24 @@ class Brain:
                                 max_distance=2.0,
                                 metadata_filter={"objective_id": obj_id},
                             )
-                            findings_recalled = [
-                                m.content for m in past_matches if m.content
-                            ]
+                            # 2026-09-25 DEDUPE: findings_recalled must
+                            # NOT contain the current objective's own
+                            # entries — they duplicate findings_current
+                            # (from cycle_payload) or ARE findings_current
+                            # (for pre-7a41b97 objectives). Labelling
+                            # current data "do NOT cite as current" is
+                            # contradictory. Keep only cross-objective
+                            # recall; since the metadata_filter enforces
+                            # objective_id=self, the resulting list is
+                            # empty in practice — the block is retained
+                            # for future cross-objective recall paths.
+                            for m in past_matches:
+                                if not m.content:
+                                    continue
+                                mo = getattr(m.metadata, "objective_id", None)
+                                if str(mo) == obj_id:
+                                    continue  # same-obj → drop as duplicate
+                                findings_recalled.append(m.content)
                             evidence_lines = "\n".join(
                                 f"- {m.content[:200]}" for m in past_matches[:3]
                             )
@@ -793,7 +808,10 @@ class Brain:
                                 gated: list[dict[str, Any]] = []
                                 if _fg_enabled():
                                     for t in theses:
-                                        act = _fidelity_check(t, findings_current)
+                                        act = _fidelity_check(
+                                            t, findings_current,
+                                            historical_findings=findings_recalled,
+                                        )
                                         # Field-confusion pass on this thesis.
                                         try:
                                             for rec in _cfe(t.get("evidence") or [], _fc_payloads):

@@ -974,28 +974,54 @@ async def score_campaign(
         except (TypeError, ValueError):
             continue
 
-    async def _cycle_payload_ref(objective_id: str) -> tuple[float | None, int | None]:
-        """Return (lastFundingRate, observed_at_ms) from the objective's
-        OWN cycle_payload for get_bitcoin_futures_funding, or (None, None)."""
+    async def _cycle_payload_ref(objective_id: str) -> tuple[float | None, str | None]:
+        """Return (lastFundingRate, provenance) from the objective's
+        OWN reading, in priority: (1) cycle_payload for
+        get_bitcoin_futures_funding, (2) ChromaDB `objective_action`
+        entries for the same objective containing a TOOL RESULTS line
+        for the tool (used for pre-7a41b97 objectives that never
+        persisted cycle_payload). Returns (None, None) if neither."""
         async with pool.acquire() as conn2:
             row = await conn2.fetchrow(
                 "SELECT evidence FROM objectives WHERE objective_id::text = $1",
                 objective_id,
             )
-        if not row:
-            return None, None
-        ev = row["evidence"] if isinstance(row["evidence"], list) else _json.loads(row["evidence"] or "[]")
-        for x in ev or []:
-            if not (isinstance(x, dict) and x.get("type") == "cycle_payload"):
-                continue
-            for tr in x.get("tool_results") or []:
-                if tr.get("tool") != "get_bitcoin_futures_funding":
+        if row:
+            ev = row["evidence"] if isinstance(row["evidence"], list) else _json.loads(row["evidence"] or "[]")
+            for x in ev or []:
+                if not (isinstance(x, dict) and x.get("type") == "cycle_payload"):
                     continue
-                res = tr.get("result") or {}
-                try:
-                    return float(res.get("lastFundingRate")), None
-                except (TypeError, ValueError):
+                for tr in x.get("tool_results") or []:
+                    if tr.get("tool") != "get_bitcoin_futures_funding":
+                        continue
+                    res = tr.get("result") or {}
+                    try:
+                        return float(res.get("lastFundingRate")), "cycle_payload"
+                    except (TypeError, ValueError):
+                        continue
+        # Fallback: ChromaDB same-objective cycle findings (pre-cache).
+        try:
+            from memory.episodic import EpisodicMemory
+            _em = EpisodicMemory("data/chroma_db")
+            await _em.initialize()
+            matches = await _em.query(
+                "conversations", "objective",
+                limit=15, max_distance=2.5,
+                metadata_filter={"objective_id": objective_id},
+            )
+            for m in matches:
+                content = m.content or ""
+                if "get_bitcoin_futures_funding" not in content:
                     continue
+                # extract lastFundingRate value from the line
+                mm = re.search(r'"lastFundingRate":\s*"?([\-0-9eE.]+)"?', content)
+                if mm:
+                    try:
+                        return float(mm.group(1)), "chromadb_same_obj"
+                    except ValueError:
+                        continue
+        except Exception:
+            pass
         return None, None
 
     for q in qrows:
@@ -1019,9 +1045,9 @@ async def score_campaign(
                     q["thesis_id"],
                 )
             if tr and tr["objective_id"] is not None:
-                v, _ = await _cycle_payload_ref(str(tr["objective_id"]))
+                v, prov = await _cycle_payload_ref(str(tr["objective_id"]))
                 if v is not None:
-                    ref, ref_src = v, "cycle_payload"
+                    ref, ref_src = v, (prov or "cycle_payload")
             # 2. Post-cache: source_snapshot at cycle observed_at (envelope).
             if ref is None and q["created_at"] >= _D647524 and _snap_index:
                 envelope = [

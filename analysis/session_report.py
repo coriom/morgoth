@@ -57,6 +57,8 @@ class SessionReport:
     fidelity_rewritten: int = 0
     fidelity_dropped: int = 0
     fidelity_unverified: int = 0
+    fidelity_unverified_absent: int = 0
+    fidelity_unverified_hist_only: int = 0
     field_confusions: int = 0
     ctx_saturations: int = 0
     session_gaps: int = 0
@@ -118,7 +120,9 @@ class SessionReport:
         lines.append(
             f"NUMERIC FIDELITY         : {self.fidelity_checked} checked, "
             f"{self.fidelity_rewritten} corrected, {self.fidelity_dropped} dropped, "
-            f"{self.fidelity_unverified} unverified, "
+            f"{self.fidelity_unverified} unverified "
+            f"({self.fidelity_unverified_absent} absent | "
+            f"{self.fidelity_unverified_hist_only} hist-only), "
             f"{self.field_confusions} field-confused"
         )
         lines.append(
@@ -293,7 +297,9 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
                 "SELECT COUNT(*) AS n, "
                 "COUNT(*) FILTER (WHERE action = 'rewrite') AS rw, "
                 "COUNT(*) FILTER (WHERE action = 'drop')    AS dr, "
-                "COUNT(*) FILTER (WHERE reason = 'unverified_no_current_reference') AS uv "
+                "COUNT(*) FILTER (WHERE reason LIKE 'unverified_%') AS uv, "
+                "COUNT(*) FILTER (WHERE reason = 'unverified_absent_everywhere') AS uva, "
+                "COUNT(*) FILTER (WHERE reason = 'unverified_historical_only') AS uvh "
                 "FROM numeric_fidelity_events WHERE occurred_at >= $1",
                 since,
             )
@@ -301,11 +307,15 @@ async def collect(pm, since: datetime, *, full: bool = False) -> SessionReport:
             r.fidelity_rewritten = int(fid_row["rw"]) if fid_row else 0
             r.fidelity_dropped = int(fid_row["dr"]) if fid_row else 0
             r.fidelity_unverified = int(fid_row["uv"]) if fid_row else 0
+            r.fidelity_unverified_absent = int(fid_row["uva"]) if fid_row else 0
+            r.fidelity_unverified_hist_only = int(fid_row["uvh"]) if fid_row else 0
         except Exception:
             r.fidelity_checked = 0
             r.fidelity_rewritten = 0
             r.fidelity_dropped = 0
             r.fidelity_unverified = 0
+            r.fidelity_unverified_absent = 0
+            r.fidelity_unverified_hist_only = 0
         try:
             fc_row = await conn.fetchrow(
                 "SELECT COUNT(*) AS n FROM field_confusion_events "

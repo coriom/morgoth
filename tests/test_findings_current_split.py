@@ -34,9 +34,11 @@ class TestBrainSplitsFindings:
     def test_fidelity_gate_receives_current_only(self):
         from core import brain
         src = inspect.getsource(brain.Brain.run_autonomous_cycle)
-        # The gate call must pass findings_current, NOT the combined
-        # `findings` list. The combined list can carry HISTORICAL data.
-        assert "_fidelity_check(t, findings_current)" in src
+        # The gate call must pass findings_current as the primary
+        # (positional) findings arg. historical_findings is a
+        # separate kwarg used only for the split reason code.
+        assert "_fidelity_check(" in src and "t, findings_current" in src
+        assert "historical_findings=findings_recalled" in src
 
     def test_field_confusion_uses_current_only(self):
         from core import brain

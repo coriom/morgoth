@@ -211,6 +211,7 @@ def _tool_digest_for(source: str, findings: list[str]) -> str:
 
 def check_thesis(
     thesis: dict[str, Any], findings: list[str],
+    *, historical_findings: list[str] | None = None,
 ) -> FidelityAction:
     """Apply the fidelity gate to a single thesis.
 
@@ -243,22 +244,24 @@ def check_thesis(
         if not tool:
             return FidelityAction("pass", "no_tool_named", subj, None, cited, None, None)
         digest = _tool_digest_for(tool, findings)
-        if not digest:
-            # 2026-09-25: was `pass no_tool_output`. An unverifiable
-            # citation must NOT pass — findings_current is empty or
-            # lacks the named tool → drop the thesis.
-            return FidelityAction(
-                "drop", "unverified_no_current_reference",
-                subj, tool, cited, None, None,
-            )
-        candidates = _all_numbers_in(digest)
+        candidates = _all_numbers_in(digest) if digest else []
         if not candidates:
-            # Only FAILED lines — the tool ran but yielded no data
-            # this cycle. Same rule: unverifiable → drop.
-            return FidelityAction(
-                "drop", "unverified_no_current_reference",
-                subj, tool, cited, None, None,
-            )
+            # 2026-09-25 SPLIT: distinguish an unreferenced citation
+            # into (a) `unverified_absent_everywhere` — no evidence
+            # anywhere, likely fabrication — vs (b)
+            # `unverified_historical_only` — the number is present
+            # in HISTORICAL recall (past cycles / prior objectives)
+            # but not in the current-cycle findings. The latter is
+            # a cross-time comparison ("rose from X yesterday"),
+            # not fabrication; its rate decides whether trend
+            # theses need their own rule.
+            hist_digest = _tool_digest_for(tool, historical_findings or [])
+            hist_candidates = _all_numbers_in(hist_digest) if hist_digest else []
+            in_hist = any(abs(c - cited) / max(abs(cited), 1e-12) <= _MATCH_TOLERANCE
+                          for c in hist_candidates)
+            reason = ("unverified_historical_only" if in_hist
+                      else "unverified_absent_everywhere")
+            return FidelityAction("drop", reason, subj, tool, cited, None, None)
         # Grab the ORIGINAL number-string as it appears in the detail —
         # needed by _explicit_scale to test the suffix-letter case.
         # Routed through _find_value_match so the same time-window
