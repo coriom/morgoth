@@ -89,9 +89,19 @@ HERMETIC_PYTEST_EXTRA_ARGS: list[str] = [
 # morgoth + host). Per-process RLIMIT_AS 3 GB — bigger than any legit
 # xdist worker under our suite, smaller than a real memory bomb.
 _MEMORY_MAX_BYTES = 5 * 1024**3        # cumulative cgroup cap
-_PER_PROCESS_AS_BYTES = 3 * 1024**3    # kernel-enforced RLIMIT_AS
 _TASKS_MAX = 1024
 _CPU_QUOTA_PCT = 800
+# 2026-09-28: RLIMIT_AS removed. `prlimit --as=3G` killed workers that
+# reserved large VIRTUAL memory but modest RSS — onnxruntime behind
+# chromadb's DefaultEmbeddingFunction hits ~1.9 GB VmSize on load,
+# and xdist could crash a worker under transient AS pressure. Real
+# memory is bounded by the cgroup MemoryMax below; virtual memory
+# is not the axis we want to police.
+# Worker count sized to cgroup budget: MemoryMax / peak-per-worker.
+# Peak per worker measured at ~1.9 GB VmSize but ~126 MB RSS —
+# use a modest -n 4 so 4 workers × ~500 MB RSS steady + spikes fit
+# in 5 GB with headroom for the outer bwrap/unshare processes.
+_SANDBOX_XDIST_WORKERS = 4
 
 # Hard timeout for pytest under the sandbox — a proposal that hangs the
 # suite is a failure, not an outage.
@@ -377,16 +387,26 @@ def _build_pytest_argv(
     ``--share-net`` to inherit the netns with lo already UP.
     """
     _SANDBOX_MARKER_ARGS = HERMETIC_PYTEST_EXTRA_ARGS
+    # 2026-09-28: -n auto → -n 4 (see _SANDBOX_XDIST_WORKERS rationale).
+    # --max-worker-restart=3 restarts a crashed worker up to three times
+    # and reports the culprit test as failed instead of aborting the
+    # whole run with `INTERNALERROR (no tests ran)`.
+    _XDIST = [
+        "-n", str(_SANDBOX_XDIST_WORKERS),
+        "--max-worker-restart=3",
+        # 2026-09-28: --dist=loadfile keeps all tests in one file on ONE
+        # worker. Reduces cross-file cross-worker interactions (module
+        # import ordering + shared C-extension state) that caused the
+        # test_campaign_quality/TestLearnedServedPhrases worker crash
+        # in the operator's `morgoth test` run.
+        "--dist=loadfile",
+    ]
     if not isolated:
-        return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"] + _SANDBOX_MARKER_ARGS
+        return [_VENV_PYTHON, "-m", "pytest", "-q"] + _XDIST + _SANDBOX_MARKER_ARGS
 
-    # Per-process RLIMIT_AS via ``prlimit`` — kernel-enforced, works
-    # on WSL2 where cgroup memory.max is silently ignored. Wraps the
-    # venv python so every xdist worker inherits the cap.
     pytest_call = [
-        "prlimit", f"--as={_PER_PROCESS_AS_BYTES}",
-        "--", _VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto",
-    ] + _SANDBOX_MARKER_ARGS
+        _VENV_PYTHON, "-m", "pytest", "-q",
+    ] + _XDIST + _SANDBOX_MARKER_ARGS
 
     if confined:
         import shlex
@@ -596,13 +616,20 @@ async def gate_tests(
         isolation_marker = f"isolation={iso} confined={cnf} cgroup={cgb}"
 
         if completed.returncode != 0:
-            # Capture the tail of stdout+stderr for the operator (kept
-            # bounded — full pytest output can be huge).
+            # 2026-09-28: give exit=5 (no-tests-collected) a distinct
+            # human message. Exit=3 (INTERNALERROR) still classifies as
+            # tests_failed but the tail is preserved so the crashing
+            # test is visible.
             tail = (completed.stdout + completed.stderr)[-2000:]
-            reason = (
-                f"gate_tests: pytest exit={completed.returncode} "
-                f"({isolation_marker})\n---tail---\n{tail}"
+            no_tests_ran = completed.returncode == 5
+            leader = (
+                f"gate_tests: NO TESTS RAN (pytest exit=5) — the run "
+                f"collected zero tests. Check marker filter, worker "
+                f"crashes, or a syntax error in the tree."
+                if no_tests_ran else
+                f"gate_tests: pytest exit={completed.returncode}"
             )
+            reason = f"{leader} ({isolation_marker})\n---tail---\n{tail}"
             logger.warning(
                 "gate_tests: FAIL proposal_id={} exit={} {}",
                 proposal_id,
