@@ -15,6 +15,100 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+# 2026-09-27: env isolation. Real ~/Morgoth/morgoth/.env sets
+# MORGOTH_LLM_THESIS=claude-cli, which caused pytest processes to
+# spawn the real `claude` binary at 10-40 s per call (root cause of
+# the 17-min host hermetic run and the 12 in-batch failures — solo
+# they passed because the env hadn't been polluted yet). Fix at the
+# root: BEFORE any test imports core.config, redirect ENV_PATH to
+# a sanitized fixture. Also snapshot/restore os.environ around each
+# test so a rogue monkeypatch/direct-write can't poison downstream
+# tests.
+_FIXTURE_ENV = Path(__file__).resolve().parent / "fixtures" / "test.env"
+if _FIXTURE_ENV.exists():
+    import core.config as _cc  # imported EARLY so subsequent tests see the swap
+    _cc.ENV_PATH = _FIXTURE_ENV
+    # If dotenv already fired on module import (`from dotenv import load_dotenv`
+    # is a no-op — it doesn't load), we're safe. `load_config()` explicitly
+    # calls `_load_environment(ENV_PATH)`; the redirect above catches it.
+    # SCRUB any pre-existing real-env values so a re-load can't override:
+    for _leaky in (
+        "MORGOTH_LLM_THESIS", "MORGOTH_LLM_SYNTHESIS", "MORGOTH_LLM_CHAT",
+        "THESIS_GENERATOR", "POSTGRES_URL", "ANTHROPIC_API_KEY",
+    ):
+        os.environ.pop(_leaky, None)
+
+
+@pytest.fixture(autouse=True)
+def _env_snapshot_and_restore():
+    """Snapshot os.environ before each test, restore after. Prevents
+    cross-test env leakage — the SINGLE mechanism (no per-test surgery)
+    that fixes the in-batch failures the operator identified."""
+    saved = dict(os.environ)
+    try:
+        yield
+    finally:
+        current = set(os.environ.keys())
+        for k in current - saved.keys():
+            os.environ.pop(k, None)
+        for k, v in saved.items():
+            os.environ[k] = v
+
+
+@pytest.fixture(autouse=True)
+def _guard_claude_subprocess(request, monkeypatch):
+    """Hermetic tests MUST NOT spawn the real `claude` binary. Guard
+    both blocking + async subprocess spawns; a bare `claude` in argv
+    fails loudly. Integration tests (opted-in via the marker) are
+    exempt — they may exercise real dependencies."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+
+    import subprocess as _sp
+    import asyncio as _aio
+    _orig_run = _sp.run
+    _orig_popen = _sp.Popen
+    _orig_asubx = _aio.create_subprocess_exec
+    _orig_asubs = _aio.create_subprocess_shell
+
+    def _forbid(argv) -> None:
+        # Only PROMPTED claude runs cost real time / money. Health
+        # probes (`claude --version`) are cheap and used by the
+        # llm.heartbeat plumbing on every autonomous cycle; letting
+        # those through avoids poisoning tests with a false positive.
+        if not isinstance(argv, (list, tuple)):
+            argv = [argv]
+        if not argv:
+            return
+        head = str(argv[0])
+        if not (head.endswith("/claude") or head == "claude"):
+            return
+        rest = [str(a) for a in argv[1:]]
+        if rest and rest[0] in {"--version", "-V", "--help", "-h"}:
+            return
+        raise AssertionError(
+            f"hermetic test attempted to spawn `{head}` with args "
+            f"{rest[:3]} — mock the claude-cli path or mark the test "
+            f"@pytest.mark.integration"
+        )
+
+    def run(argv, *a, **kw): _forbid(argv); return _orig_run(argv, *a, **kw)
+    def popen(argv, *a, **kw): _forbid(argv); return _orig_popen(argv, *a, **kw)
+    async def cse(*args, **kw): _forbid(list(args)); return await _orig_asubx(*args, **kw)
+    async def css(cmd, *a, **kw):
+        if ("claude " in cmd and "--version" not in cmd and "--help" not in cmd
+                and cmd.strip() != "claude"):
+            raise AssertionError(f"hermetic test attempted to shell-spawn `{cmd[:60]}`")
+        return await _orig_asubs(cmd, *a, **kw)
+
+    monkeypatch.setattr(_sp, "run", run)
+    monkeypatch.setattr(_sp, "Popen", popen)
+    monkeypatch.setattr(_aio, "create_subprocess_exec", cse)
+    monkeypatch.setattr(_aio, "create_subprocess_shell", css)
+    yield
+
+
 # 2026-09-26: sandbox exclusion is MARKER-BASED. gate_tests inside
 # the sandbox runs `-m "not integration"`. The `integration` marker
 # (declared in pytest.ini) is applied per-file via `pytestmark =

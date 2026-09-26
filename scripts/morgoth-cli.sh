@@ -219,6 +219,13 @@ cmd_audit() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli audit "$@")
 }
 
+cmd_test() {
+    # Canonical hermetic test runner — spawns pytest under the SAME
+    # bwrap+unshare wrapper gate_tests uses, so developer and gate
+    # see one environment. Marker exclusion: `-m "not integration"`.
+    (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.canonical_runner "$@")
+}
+
 cmd_gate_selftest() {
     # Run POSITIVE + NEGATIVE synthetic proposals through gate_zone +
     # gate_tests under full confinement. Read-only — the two proposals
@@ -404,6 +411,7 @@ case "${1:-help}" in
     rail-check) shift; cmd_rail_check "$@";;
     env) shift; cmd_env "$@";;
     gate-selftest) shift; cmd_gate_selftest "$@";;
+    test) shift; cmd_test "$@";;
     reflect)   shift; cmd_reflect "$@";;
     scout)     shift; cmd_scout "$@";;
     focus)     shift; cmd_focus "$@";;

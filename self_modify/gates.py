@@ -367,11 +367,14 @@ def _build_pytest_argv(
     ``--share-net`` to inherit the netns with lo already UP.
     """
     # 2026-09-26 marker-based sandbox exclusion: inside the confined
-    # runner, skip tests marked `integration` (they legitimately need
-    # host services). Everything else runs — including test_discovery,
-    # test_source_cache, test_brain_* — so a proposal that breaks tool
-    # registration or the cycle still fails at gate_tests.
-    _SANDBOX_MARKER_ARGS = ["-m", "not integration"]
+    # runner, skip tests marked `integration`. 2026-09-27: also
+    # disable TCP sockets — hermetic tests must mock HTTP; a rogue
+    # network hit fails loudly. Unix sockets stay allowed
+    # (asyncio.socketpair, some subprocess plumbing).
+    _SANDBOX_MARKER_ARGS = [
+        "-m", "not integration",
+        "--disable-socket", "--allow-unix-socket",
+    ]
     if not isolated:
         return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"] + _SANDBOX_MARKER_ARGS
 
