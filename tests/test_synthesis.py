@@ -84,15 +84,9 @@ def _build_brain(llm_client: MagicMock) -> Brain:
     persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)
     persistent_memory.record_session_gap_if_any = AsyncMock()
     persistent_memory.get_active_focus = AsyncMock(return_value=None)
-    # 2026-09-27: bridge the OLD get_objectives API these tests set to
-    # the CURRENT claim_next_objective that run_autonomous_cycle calls.
-    # Older tests wire get_objectives (obj_row → completion branch);
-    # updating them all is per-test surgery. Delegating here is the
-    # single-mechanism fix.
-    async def _claim(limit=1):
-        objs = await persistent_memory.get_objectives(limit=limit)
-        return objs[:limit] if objs else []
-    persistent_memory.claim_next_objective = _claim
+    # Tests must set claim_next_objective directly (the current cycle
+    # API). Default: no objective claimed.
+    persistent_memory.claim_next_objective = AsyncMock(return_value=[])
     persistent_memory.timeout_stale_objectives = AsyncMock(return_value=[])
     persistent_memory.record_source_snapshot = AsyncMock()
     persistent_memory.record_connectivity_transition = AsyncMock()
@@ -152,6 +146,7 @@ async def test_synthesis_entry_added_on_forced_completion() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["web_search", "get_news", "get_crypto_price"]
@@ -165,7 +160,10 @@ async def test_synthesis_entry_added_on_forced_completion() -> None:
         patch("asyncio.sleep", new=_make_short_sleep()),
         patch.object(brain, "_write_log_file", new=AsyncMock()),
     ):
-        await brain.run_autonomous_cycle()
+        # CancelledError propagates (asyncio contract); test's patched
+        # sleep raises it to end the loop, run_autonomous_cycle re-raises.
+        with pytest.raises(asyncio.CancelledError):
+            await brain.run_autonomous_cycle()
 
     update_calls = brain._persistent_memory.update_objective.call_args_list
     summary = [c.kwargs for c in update_calls if c.kwargs.get("evidence", {}).get("auto_completed")]
@@ -198,6 +196,7 @@ async def test_synthesis_failure_does_not_block_completion() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["web_search", "get_news"]
@@ -210,7 +209,10 @@ async def test_synthesis_failure_does_not_block_completion() -> None:
         patch("asyncio.sleep", new=_make_short_sleep()),
         patch.object(brain, "_write_log_file", new=AsyncMock()),
     ):
-        await brain.run_autonomous_cycle()
+        # CancelledError propagates (asyncio contract); test's patched
+        # sleep raises it to end the loop, run_autonomous_cycle re-raises.
+        with pytest.raises(asyncio.CancelledError):
+            await brain.run_autonomous_cycle()
 
     update_calls = brain._persistent_memory.update_objective.call_args_list
     summary = [c.kwargs for c in update_calls if c.kwargs.get("evidence", {}).get("auto_completed")]

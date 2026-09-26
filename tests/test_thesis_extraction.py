@@ -93,10 +93,9 @@ def _build_brain(llm_client: MagicMock) -> Brain:
     persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)
     persistent_memory.record_session_gap_if_any = AsyncMock()
     persistent_memory.get_active_focus = AsyncMock(return_value=None)
-    async def _claim(limit=1):
-        objs = await persistent_memory.get_objectives(limit=limit)
-        return objs[:limit] if objs else []
-    persistent_memory.claim_next_objective = _claim
+    # Tests must set claim_next_objective directly (the current cycle
+    # API). Default: no objective claimed. Bridge removed 2026-09-27.
+    persistent_memory.claim_next_objective = AsyncMock(return_value=[])
     persistent_memory.timeout_stale_objectives = AsyncMock(return_value=[])
     persistent_memory.record_source_snapshot = AsyncMock()
     persistent_memory.record_connectivity_transition = AsyncMock()
@@ -772,6 +771,7 @@ async def test_forced_completion_stores_extracted_theses() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["get_crypto_price", "get_news"]
@@ -785,7 +785,8 @@ async def test_forced_completion_stores_extracted_theses() -> None:
         patch("asyncio.sleep", new=_make_short_sleep()),
         patch.object(brain, "_write_log_file", new=AsyncMock()),
     ):
-        await brain.run_autonomous_cycle()
+        with pytest.raises(asyncio.CancelledError):
+            await brain.run_autonomous_cycle()
 
     add_thesis_calls = brain._persistent_memory.add_thesis.call_args_list
     assert len(add_thesis_calls) == 2
@@ -814,6 +815,7 @@ async def test_extraction_failure_does_not_block_completion() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["get_crypto_price", "get_news"]
@@ -824,7 +826,8 @@ async def test_extraction_failure_does_not_block_completion() -> None:
         patch("asyncio.sleep", new=_make_short_sleep()),
         patch.object(brain, "_write_log_file", new=AsyncMock()),
     ):
-        await brain.run_autonomous_cycle()
+        with pytest.raises(asyncio.CancelledError):
+            await brain.run_autonomous_cycle()
 
     # Completion still happened
     update_calls = brain._persistent_memory.update_objective.call_args_list
@@ -848,6 +851,7 @@ async def test_extraction_skipped_when_synthesis_skipped() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(return_value=["get_crypto_price"])
     brain._episodic_memory.query = AsyncMock(return_value=[])
@@ -856,7 +860,8 @@ async def test_extraction_skipped_when_synthesis_skipped() -> None:
         patch("asyncio.sleep", new=_make_short_sleep()),
         patch.object(brain, "_write_log_file", new=AsyncMock()),
     ):
-        await brain.run_autonomous_cycle()
+        with pytest.raises(asyncio.CancelledError):
+            await brain.run_autonomous_cycle()
 
     llm_client.chat.assert_not_called()
     brain._persistent_memory.add_thesis.assert_not_called()

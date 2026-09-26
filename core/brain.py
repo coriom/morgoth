@@ -1235,21 +1235,25 @@ class Brain:
                     continue
 
             except asyncio.CancelledError:
-                logger.info("Autonomous cycle cancelled")
-                break
+                # RE-RAISE — asyncio contract. `morgoth restart` cancels
+                # the cycle task and depends on the cancellation actually
+                # propagating to the awaiter.
+                logger.info("Autonomous cycle cancelled (body)")
+                raise
             except Exception as e:
                 logger.error("Autonomous cycle error: {}", e)
                 self._feed_append("ERROR", f"cycle error: {e}")
             # Inter-cycle sleep at the BOTTOM (was at TOP pre-fix). Ensures
             # steady-state cadence but eliminates the post-restart idle wait.
-            # CancelledError raised here (task cancellation, or a test's
-            # patched sleep) must break the loop cleanly — do NOT let it
-            # propagate out of run_autonomous_cycle.
+            # 2026-09-27 CANCELLATION contract: exit the loop cleanly on
+            # cancel AND re-raise so the enclosing task actually cancels
+            # (`morgoth restart` / asyncio.wait_for / shutdown depend on
+            # this). Swallowing CancelledError would break shutdown.
             try:
                 await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
             except asyncio.CancelledError:
                 logger.info("Autonomous cycle cancelled during inter-cycle sleep")
-                break
+                raise
 
     async def enqueue_message(self, content: str, user_id: str = "default") -> None:
         """Queue an incoming chat message for asynchronous processing."""
