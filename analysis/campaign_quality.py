@@ -949,23 +949,22 @@ async def score_campaign(
             "       AND evidence::text LIKE '%0.0001%') "
             "ORDER BY created_at"
         )
-    # 2026-09-24: prefer source_snapshots for theses stamped AFTER
-    # commit d647524 (when the source cache started recording live
-    # premiumIndex responses). Binance /fapi/v1/fundingRate is the
-    # SETTLEMENT series — the live premiumIndex lastFundingRate can
-    # clamp to 0.01% while the settled value differs, so the
-    # settlement series is the WRONG reference for reporting
-    # fidelity. For pre-d647524 theses no snapshots exist → fall
-    # back to Binance.
+    # 2026-09-25 SCORER PRIORITY:
+    #   1. cycle_payload for the thesis's OWN objective (exact)
+    #   2. source_snapshot at the cycle's observed_at (cache envelope)
+    #   3. Binance /fapi/v1/fundingRate (settlement) for pre-cache
+    # The prior ±6h nearest-snapshot rule mislabelled 3 genuine
+    # theses (e802e278 / 1b63d3c4 / 24baa3d1) whose cycle_payload
+    # said 0.0001 but a later snapshot said 9.65e-5. Retired.
     from datetime import datetime as _dt, timezone as _tz
     _D647524 = _dt(2026, 9, 18, 6, 32, 38, tzinfo=_tz.utc)
+    import json as _json
     async with pool.acquire() as conn:
         _snap_rows = await conn.fetch(
             "SELECT observed_at, payload FROM source_snapshots "
             "WHERE source='get_bitcoin_futures_funding' "
             "ORDER BY observed_at"
         )
-    import json as _json
     _snap_index: list[tuple[int, float]] = []
     for s in _snap_rows:
         pl = s["payload"] if isinstance(s["payload"], dict) else _json.loads(s["payload"] or "{}")
@@ -974,6 +973,31 @@ async def score_campaign(
                                 float(pl.get("lastFundingRate"))))
         except (TypeError, ValueError):
             continue
+
+    async def _cycle_payload_ref(objective_id: str) -> tuple[float | None, int | None]:
+        """Return (lastFundingRate, observed_at_ms) from the objective's
+        OWN cycle_payload for get_bitcoin_futures_funding, or (None, None)."""
+        async with pool.acquire() as conn2:
+            row = await conn2.fetchrow(
+                "SELECT evidence FROM objectives WHERE objective_id::text = $1",
+                objective_id,
+            )
+        if not row:
+            return None, None
+        ev = row["evidence"] if isinstance(row["evidence"], list) else _json.loads(row["evidence"] or "[]")
+        for x in ev or []:
+            if not (isinstance(x, dict) and x.get("type") == "cycle_payload"):
+                continue
+            for tr in x.get("tool_results") or []:
+                if tr.get("tool") != "get_bitcoin_futures_funding":
+                    continue
+                res = tr.get("result") or {}
+                try:
+                    return float(res.get("lastFundingRate")), None
+                except (TypeError, ValueError):
+                    continue
+        return None, None
+
     for q in qrows:
         entry = {
             "thesis_id": str(q["thesis_id"])[:8],
@@ -988,14 +1012,27 @@ async def score_campaign(
             t_ms = int(q["created_at"].timestamp() * 1000)
             ref = None
             ref_src = None
-            # Post-d647524: prefer source_snapshots within ±6 h.
-            if q["created_at"] >= _D647524 and _snap_index:
-                best = min(_snap_index, key=lambda mv: abs(mv[0] - t_ms))
-                if abs(best[0] - t_ms) <= 6 * 3600 * 1000:
-                    ref = best[1]
+            # 1. cycle_payload for the thesis's own objective.
+            async with pool.acquire() as conn2:
+                tr = await conn2.fetchrow(
+                    "SELECT objective_id FROM theses WHERE thesis_id = $1",
+                    q["thesis_id"],
+                )
+            if tr and tr["objective_id"] is not None:
+                v, _ = await _cycle_payload_ref(str(tr["objective_id"]))
+                if v is not None:
+                    ref, ref_src = v, "cycle_payload"
+            # 2. Post-cache: source_snapshot at cycle observed_at (envelope).
+            if ref is None and q["created_at"] >= _D647524 and _snap_index:
+                envelope = [
+                    (m, v) for m, v in _snap_index
+                    if abs(m - t_ms) <= 30 * 60 * 1000  # 30-min cache envelope
+                ]
+                if envelope:
+                    best = min(envelope, key=lambda mv: abs(mv[0] - t_ms))
+                    ref, ref_src = best[1], "snap_envelope"
                     entry["reference_ts_ms"] = best[0]
-                    ref_src = "snap"
-            # Pre-d647524 OR no snapshot in range: Binance settlement series.
+            # 3. Pre-cache: Binance settlement series.
             if ref is None and fetch_binance_funding is not None:
                 ms, vals = await fetch_binance_funding()
                 if ms:

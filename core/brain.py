@@ -742,11 +742,24 @@ class Brain:
                                     "ERROR",
                                     f"synthesis storage failed: {type(exc).__name__}",
                                 )
+                        # 2026-09-25: also abstain when the objective has ZERO
+                        # cycle_payload evidence (findings_current empty). The
+                        # synthesis input is HISTORICAL-only in that case, and
+                        # theses derived from HISTORICAL cannot be verified by
+                        # the fidelity gate. Emitting them would produce
+                        # unverifiable claims that the numeric-fidelity gate
+                        # would drop anyway.
+                        if synthesis_text and not findings_current:
+                            self._feed_append(
+                                "INFO",
+                                "extraction abstained: no cycle_payload "
+                                "reference — synthesis input is HISTORICAL-only",
+                            )
                         # Thesis extraction: structured beliefs derived from the
                         # synthesis, persisted for future contradiction detection.
                         # Skipped when there is no synthesis (None/empty). The whole
                         # block is non-blocking — objective is already done above.
-                        if synthesis_text:
+                        if synthesis_text and findings_current:
                             try:
                                 theses = await self._extract_theses(
                                     obj, synthesis_text, sources_used_done

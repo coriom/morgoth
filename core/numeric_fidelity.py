@@ -92,6 +92,11 @@ def _flag_enabled() -> bool:
 class FidelityAction:
     """One gate decision on one thesis."""
     action: str                 # "pass" | "rewrite" | "drop"
+    # 2026-09-25: new reason `unverified_no_current_reference` — the
+    # gate could not find the cited tool's output in the CURRENT-cycle
+    # findings. Action is DROP (was `pass no_tool_output`): a citation
+    # without a reference is unverifiable, and unverifiable must not
+    # PASS. Session-report counts this in the NUMERIC FIDELITY line.
     reason: str                 # explanatory code (see MODULE docstring)
     subject: str
     tool: str | None
@@ -239,11 +244,21 @@ def check_thesis(
             return FidelityAction("pass", "no_tool_named", subj, None, cited, None, None)
         digest = _tool_digest_for(tool, findings)
         if not digest:
-            return FidelityAction("pass", "no_tool_output", subj, tool, cited, None, None)
+            # 2026-09-25: was `pass no_tool_output`. An unverifiable
+            # citation must NOT pass — findings_current is empty or
+            # lacks the named tool → drop the thesis.
+            return FidelityAction(
+                "drop", "unverified_no_current_reference",
+                subj, tool, cited, None, None,
+            )
         candidates = _all_numbers_in(digest)
         if not candidates:
-            # Only FAILED lines — no numeric candidate to match against.
-            return FidelityAction("pass", "no_candidates", subj, tool, cited, None, None)
+            # Only FAILED lines — the tool ran but yielded no data
+            # this cycle. Same rule: unverifiable → drop.
+            return FidelityAction(
+                "drop", "unverified_no_current_reference",
+                subj, tool, cited, None, None,
+            )
         # Grab the ORIGINAL number-string as it appears in the detail —
         # needed by _explicit_scale to test the suffix-letter case.
         # Routed through _find_value_match so the same time-window
