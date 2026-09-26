@@ -42,10 +42,13 @@ def main() -> int:
         # --disable-socket --allow-unix-socket to enforce the network
         # invariant. Note: `-m "not integration"` is passed AS pytest
         # args — the developer test runner and gate_tests agree.
+        # SINGLE-SOURCE argv (see gates.HERMETIC_PYTEST_EXTRA_ARGS).
+        # gate_tests and `morgoth test` build from the SAME list so
+        # they cannot drift.
+        hermetic = " ".join(shlex.quote(a) for a in gates.HERMETIC_PYTEST_EXTRA_ARGS)
         pytest_call = (
             f"prlimit --as={3*1024**3} -- {venv}/bin/python -m pytest "
-            f"-q -n auto --disable-socket --allow-unix-socket "
-            f"-m 'not integration' {extra}"
+            f"-q -n auto {hermetic} {extra}"
         )
         bwrap = [
             "bwrap", "--clearenv",

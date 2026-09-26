@@ -39,6 +39,42 @@ if _FIXTURE_ENV.exists():
         os.environ.pop(_leaky, None)
 
 
+def pytest_collection_modifyitems(config, items):
+    """SESSION-LEVEL HARD GUARD: if the integration marker is being
+    collected AND the test DB URL is missing or doesn't end with
+    `_test`, ABORT collection — refuse to run integration tests
+    against production. Grep-locked below."""
+    # 2026-09-27: production DB safety. Only fires when at least one
+    # integration test is about to run — hermetic sessions are exempt.
+    running_integration = any(
+        item.get_closest_marker("integration") for item in items
+    )
+    if not running_integration:
+        return
+    url = os.environ.get("MORGOTH_TEST_POSTGRES_URL", "")
+    if not url:
+        raise pytest.UsageError(
+            "integration tests require MORGOTH_TEST_POSTGRES_URL to be set "
+            "and to point at a dedicated test DB (name must end in _test)."
+        )
+    # Parse only the dbname (LAST path segment before '?'); NEVER log
+    # the full URL — it carries the password.
+    from urllib.parse import urlparse
+    dbname = (urlparse(url).path or "/").lstrip("/").split("?")[0]
+    if not dbname.endswith("_test"):
+        raise pytest.UsageError(
+            "MORGOTH_TEST_POSTGRES_URL database name must end with `_test` "
+            "(refusing to run integration tests against a production-shaped "
+            "database). Got dbname ending: …" + dbname[-8:]
+        )
+    # Rewrite POSTGRES_URL for the integration run so any test that
+    # calls load_config lands on the test DB. Same for Chroma dir.
+    os.environ["POSTGRES_URL"] = url
+    import tempfile
+    if "CHROMA_DIR" not in os.environ:
+        os.environ["CHROMA_DIR"] = tempfile.mkdtemp(prefix="morgoth_test_chroma_")
+
+
 @pytest.fixture(autouse=True)
 def _env_snapshot_and_restore():
     """Snapshot os.environ before each test, restore after. Prevents
@@ -53,6 +89,47 @@ def _env_snapshot_and_restore():
             os.environ.pop(k, None)
         for k, v in saved.items():
             os.environ[k] = v
+
+
+class _AsyncPoolStub:
+    """Async-context-manager pool stub for tests. Replaces the six
+    per-test patches for `pool.acquire()` that broke because MagicMock
+    isn't awaitable / doesn't implement __aenter__. Usage:
+        pm._require_pool = MagicMock(return_value=_AsyncPoolStub(...))
+    """
+    def __init__(self, fetchrow_return=None, fetch_return=None,
+                  execute_return=None) -> None:
+        self._fetchrow = fetchrow_return
+        self._fetch = fetch_return or []
+        self._execute = execute_return
+
+    def acquire(self):
+        # `async with pool.acquire()` — return a per-call context manager.
+        pool = self
+        class _ACM:
+            async def __aenter__(_self):
+                class _Conn:
+                    async def fetchrow(_c, *a, **kw): return pool._fetchrow
+                    async def fetch(_c, *a, **kw): return pool._fetch
+                    async def execute(_c, *a, **kw): return pool._execute
+                    async def executemany(_c, *a, **kw): return None
+                    def transaction(_c):
+                        class _Tx:
+                            async def __aenter__(__s): return __s
+                            async def __aexit__(__s, *e): return False
+                        return _Tx()
+                return _Conn()
+            async def __aexit__(_self, *exc): return False
+        return _ACM()
+
+
+@pytest.fixture
+def async_pool_stub():
+    """Expose _AsyncPoolStub so tests can wire a working async pool
+    without duplicating the async-context-manager boilerplate. Six
+    tests in test_synthesis / test_thesis_extraction that previously
+    needed per-test surgery now share this one helper."""
+    return _AsyncPoolStub
 
 
 @pytest.fixture(autouse=True)

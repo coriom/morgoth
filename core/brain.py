@@ -1242,7 +1242,14 @@ class Brain:
                 self._feed_append("ERROR", f"cycle error: {e}")
             # Inter-cycle sleep at the BOTTOM (was at TOP pre-fix). Ensures
             # steady-state cadence but eliminates the post-restart idle wait.
-            await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
+            # CancelledError raised here (task cancellation, or a test's
+            # patched sleep) must break the loop cleanly — do NOT let it
+            # propagate out of run_autonomous_cycle.
+            try:
+                await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
+            except asyncio.CancelledError:
+                logger.info("Autonomous cycle cancelled during inter-cycle sleep")
+                break
 
     async def enqueue_message(self, content: str, user_id: str = "default") -> None:
         """Queue an incoming chat message for asynchronous processing."""

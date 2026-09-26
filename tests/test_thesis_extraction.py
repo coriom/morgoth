@@ -93,7 +93,10 @@ def _build_brain(llm_client: MagicMock) -> Brain:
     persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)
     persistent_memory.record_session_gap_if_any = AsyncMock()
     persistent_memory.get_active_focus = AsyncMock(return_value=None)
-    persistent_memory.claim_next_objective = AsyncMock(return_value=[])
+    async def _claim(limit=1):
+        objs = await persistent_memory.get_objectives(limit=limit)
+        return objs[:limit] if objs else []
+    persistent_memory.claim_next_objective = _claim
     persistent_memory.timeout_stale_objectives = AsyncMock(return_value=[])
     persistent_memory.record_source_snapshot = AsyncMock()
     persistent_memory.record_connectivity_transition = AsyncMock()
@@ -107,6 +110,8 @@ def _build_brain(llm_client: MagicMock) -> Brain:
     persistent_memory.record_ctx_saturation_event = AsyncMock()
     persistent_memory.record_web_search_cache = AsyncMock()
     persistent_memory.latest_web_search_cache = AsyncMock(return_value=None)
+    from tests.conftest import _AsyncPoolStub
+    persistent_memory._require_pool = MagicMock(return_value=_AsyncPoolStub())
 
     return Brain(
         config=config,

@@ -62,6 +62,16 @@ _SANDBOX_IGNORE = shutil.ignore_patterns(
 _VENV_PYTHON = "/home/corio/Morgoth/morgoth/.venv/bin/python"
 _VENV_ROOT = "/home/corio/Morgoth/morgoth/.venv"
 
+
+# 2026-09-27 SINGLE-SOURCE PYTEST ARGV. Both gate_tests and `morgoth
+# test` build their pytest command from this same list. Adding a new
+# arg (e.g. `--fail-on-open-file`) here reaches both callers with no
+# drift. Grep-locked in tests/test_positive_control_defillama.py.
+HERMETIC_PYTEST_EXTRA_ARGS: list[str] = [
+    "-m", "not integration",
+    "--disable-socket", "--allow-unix-socket",
+]
+
 # Hardening budget — two enforcement paths because WSL2's kernel does
 # not reliably honor cgroup ``memory.max`` at the user-scope level (a
 # 150 MB cap allowed a 500 MB allocator through in the empirical probe
@@ -366,15 +376,7 @@ def _build_pytest_argv(
     (needs CAP_NET_ADMIN, which bwrap drops) and bwrap uses
     ``--share-net`` to inherit the netns with lo already UP.
     """
-    # 2026-09-26 marker-based sandbox exclusion: inside the confined
-    # runner, skip tests marked `integration`. 2026-09-27: also
-    # disable TCP sockets — hermetic tests must mock HTTP; a rogue
-    # network hit fails loudly. Unix sockets stay allowed
-    # (asyncio.socketpair, some subprocess plumbing).
-    _SANDBOX_MARKER_ARGS = [
-        "-m", "not integration",
-        "--disable-socket", "--allow-unix-socket",
-    ]
+    _SANDBOX_MARKER_ARGS = HERMETIC_PYTEST_EXTRA_ARGS
     if not isolated:
         return [_VENV_PYTHON, "-m", "pytest", "-q", "-n", "auto"] + _SANDBOX_MARKER_ARGS
 

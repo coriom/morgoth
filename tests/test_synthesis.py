@@ -84,7 +84,15 @@ def _build_brain(llm_client: MagicMock) -> Brain:
     persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)
     persistent_memory.record_session_gap_if_any = AsyncMock()
     persistent_memory.get_active_focus = AsyncMock(return_value=None)
-    persistent_memory.claim_next_objective = AsyncMock(return_value=[])
+    # 2026-09-27: bridge the OLD get_objectives API these tests set to
+    # the CURRENT claim_next_objective that run_autonomous_cycle calls.
+    # Older tests wire get_objectives (obj_row → completion branch);
+    # updating them all is per-test surgery. Delegating here is the
+    # single-mechanism fix.
+    async def _claim(limit=1):
+        objs = await persistent_memory.get_objectives(limit=limit)
+        return objs[:limit] if objs else []
+    persistent_memory.claim_next_objective = _claim
     persistent_memory.timeout_stale_objectives = AsyncMock(return_value=[])
     persistent_memory.record_source_snapshot = AsyncMock()
     persistent_memory.record_connectivity_transition = AsyncMock()
@@ -96,6 +104,11 @@ def _build_brain(llm_client: MagicMock) -> Brain:
     persistent_memory.get_theses_by_objective = AsyncMock(return_value=[])
     persistent_memory.get_objective = AsyncMock(return_value=None)
     persistent_memory.record_ctx_saturation_event = AsyncMock()
+    # 2026-09-27: shared async-pool stub — the six previously-per-test
+    # patches for pool.acquire()'s async-context-manager plumbing are
+    # replaced by ONE helper. See tests/conftest._AsyncPoolStub.
+    from tests.conftest import _AsyncPoolStub
+    persistent_memory._require_pool = MagicMock(return_value=_AsyncPoolStub())
 
     return Brain(
         config=config,

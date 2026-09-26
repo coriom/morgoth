@@ -105,24 +105,21 @@ class TestSandboxUsesMarkerExclusion:
         assert "integration:" in cfg
 
     def test_gates_uses_marker_exclusion_not_module_list(self):
-        # LOCK: gate_tests inside the sandbox runs `-m "not integration"`,
-        # NOT a blanket module-list skip (that was the pre-2026-09-26
-        # anti-pattern that hid test_discovery, test_source_cache,
-        # test_brain_*, letting a proposal breaking those pass silently).
+        # LOCK: gate_tests references the single-source args and does
+        # NOT re-declare a module-list skip.
         import inspect
         from self_modify import gates
         src = inspect.getsource(gates._build_pytest_argv)
-        assert '"-m"' in src
-        assert '"not integration"' in src
-        # No module-list skip remains.
+        assert "HERMETIC_PYTEST_EXTRA_ARGS" in src
         assert "_HOST_ONLY_MODULES" not in src
 
     def test_conftest_no_longer_has_module_list_skip(self):
-        # LOCK: the old skip machinery is gone from conftest.py.
+        # LOCK: the old module-list skip is gone. A pytest_collection
+        # hook remains (now used for the integration-DB guard); it
+        # must not iterate module names to apply a skip.
         import pathlib
         src = pathlib.Path("tests/conftest.py").read_text()
         assert "_HOST_ONLY_MODULES" not in src
-        assert "pytest_collection_modifyitems" not in src
 
 
 class TestNegativeControl:
@@ -169,6 +166,43 @@ class TestNegativeControl:
         }
         err = _spec_is_well_formed(bad_spec)
         assert err and "digest_fields" in err
+
+
+class TestPytestArgvSingleSource:
+    def test_hermetic_extra_args_declared_once(self):
+        # LOCK: HERMETIC_PYTEST_EXTRA_ARGS is the SINGLE source.
+        from self_modify import gates
+        assert hasattr(gates, "HERMETIC_PYTEST_EXTRA_ARGS")
+        args = gates.HERMETIC_PYTEST_EXTRA_ARGS
+        # Must contain the marker exclusion AND the socket cut.
+        assert "-m" in args and "not integration" in args
+        assert "--disable-socket" in args
+        assert "--allow-unix-socket" in args
+
+    def test_gates_uses_the_single_source(self):
+        import inspect
+        from self_modify import gates
+        src = inspect.getsource(gates._build_pytest_argv)
+        assert "HERMETIC_PYTEST_EXTRA_ARGS" in src
+        # And no local re-declaration of the same args.
+        assert '"--disable-socket"' not in src
+
+    def test_canonical_runner_uses_the_single_source(self):
+        import inspect
+        from self_modify import canonical_runner
+        src = inspect.getsource(canonical_runner)
+        assert "HERMETIC_PYTEST_EXTRA_ARGS" in src
+
+
+class TestIntegrationDBGuard:
+    def test_conftest_declares_db_name_ends_with_test(self):
+        import pathlib
+        src = pathlib.Path("tests/conftest.py").read_text()
+        # Grep-lock the guard: reject if dbname doesn't end in _test.
+        assert 'endswith("_test")' in src
+        assert 'MORGOTH_TEST_POSTGRES_URL' in src
+        # Also require it AT collection time (session-level).
+        assert 'pytest_collection_modifyitems' in src
 
 
 class TestReflectPromptTeachesPathGrammar:
