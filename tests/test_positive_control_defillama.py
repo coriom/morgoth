@@ -194,6 +194,33 @@ class TestPytestArgvSingleSource:
         assert "HERMETIC_PYTEST_EXTRA_ARGS" in src
 
 
+class TestGatePreflightDefault:
+    def test_default_is_ON_in_production(self):
+        # Grep-lock: reflect's gate-selftest preflight MUST default
+        # ON. Only tests/fixtures/test.env may turn it off. Fail-open
+        # was the sandbox anti-pattern we just removed — the preflight
+        # gate must not silently regress.
+        import inspect
+        from self_modify import reflect
+        src = inspect.getsource(reflect.run_reflection)
+        assert "_PREFLIGHT_DEFAULT_ON = True" in src
+        # test env override present in the fixture:
+        import pathlib
+        env_src = pathlib.Path("tests/fixtures/test.env").read_text()
+        assert "MORGOTH_REFLECT_GATE_PREFLIGHT=0" in env_src
+
+
+class TestPytestTimeoutInHermeticArgs:
+    def test_timeout_wired_into_shared_argv(self):
+        from self_modify import gates
+        args = gates.HERMETIC_PYTEST_EXTRA_ARGS
+        # Per-test hang budget. 60 s covers legit async fixtures; a
+        # legit test taking longer either needs the marker `integration`
+        # or a targeted --timeout override.
+        assert "--timeout=60" in args
+        assert "--timeout-method=thread" in args
+
+
 class TestIntegrationDBGuard:
     def test_conftest_declares_db_name_ends_with_test(self):
         import pathlib

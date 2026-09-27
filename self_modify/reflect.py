@@ -1778,14 +1778,18 @@ async def run_reflection(
     except Exception as _exc:  # noqa: BLE001
         logger.warning("reflect: sandbox sweep failed (non-fatal): {}", _exc)
 
-    # 2026-09-27 GATE PREFLIGHT (env-gated). MORGOTH_REFLECT_GATE_PREFLIGHT
-    # default OFF — the preflight spawns a real sandbox pytest run and
-    # takes 10-20 s per invocation. Enable it in production to catch a
-    # broken gate_tests before submitting; tests keep it off so they
-    # don't pay for the real sandbox on every reflect call.
-    if os.environ.get("MORGOTH_REFLECT_GATE_PREFLIGHT", "").strip().lower() in (
-        "1", "true", "on", "yes",
-    ):
+    # 2026-09-28 GATE PREFLIGHT (env-gated, DEFAULT ON). Fail-closed:
+    # if the gate is broken we refuse to submit. Only tests should
+    # opt out (tests/fixtures/test.env sets it to "0") so unit tests
+    # don't spawn a real sandbox on every reflect call. In production
+    # the operator must actively disable it (dangerous — reintroduces
+    # the fail-open pattern we just removed from the sandbox).
+    _PREFLIGHT_DEFAULT_ON = True
+    _preflight_raw = os.environ.get(
+        "MORGOTH_REFLECT_GATE_PREFLIGHT",
+        "1" if _PREFLIGHT_DEFAULT_ON else "0",
+    ).strip().lower()
+    if _preflight_raw in ("1", "true", "on", "yes"):
         try:
             from self_modify.gate_selftest import run_selftest as _run_selftest
             pos, neg = await _run_selftest()

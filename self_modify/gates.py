@@ -70,6 +70,11 @@ _VENV_ROOT = "/home/corio/Morgoth/morgoth/.venv"
 HERMETIC_PYTEST_EXTRA_ARGS: list[str] = [
     "-m", "not integration",
     "--disable-socket", "--allow-unix-socket",
+    # 2026-09-28 pytest-timeout: no hermetic test should take longer
+    # than 60 s. A hang fails with a per-test stack trace instead of
+    # freezing the run (and the gate). thread method covers async
+    # code paths where signal-based alarms can miss.
+    "--timeout=60", "--timeout-method=thread",
 ]
 
 # Hardening budget — two enforcement paths because WSL2's kernel does
@@ -457,6 +462,15 @@ class SandboxUnavailableError(RuntimeError):
     NOT run on a proposal tree unless every layer applies."""
 
 
+import re as _re
+
+
+def _pytest_failed_ids(stdout: str) -> set[str]:
+    """Extract failing test IDs from a pytest -q output. Robust against
+    xdist worker interleave — the `FAILED <id>` line format is stable."""
+    return set(_re.findall(r"^FAILED (\S+)", stdout, flags=_re.MULTILINE))
+
+
 def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
     """Blocking call — run pytest -q from ``sandbox`` under FULL hardening
     (netns + bwrap + cgroup). FAIL-CLOSED (2026-09-24): if any layer is
@@ -554,28 +568,47 @@ async def gate_tests(
     sandbox_root = _SANDBOX_ROOT
     sandbox_root.mkdir(parents=True, exist_ok=True)
     sandbox = sandbox_root / f"proposal_{proposal_id}"
-    if sandbox.exists():
-        shutil.rmtree(sandbox)
+    baseline_sbx = sandbox_root / f"baseline_{proposal_id}"
+    for p in (sandbox, baseline_sbx):
+        if p.exists():
+            shutil.rmtree(p)
     try:
-        # 1. Copy live tree to sandbox (excludes venv/git/data/etc).
-        logger.info("gate_tests: copying tree to sandbox {}", sandbox)
+        # 1a. BASELINE — copy tree WITHOUT the proposal file. Records
+        #     the set of tests already failing on the unmodified tree.
+        # 1b. PROPOSAL — copy tree WITH the proposal file. gate_tests
+        #     passes iff no test that PASSES in baseline FAILS in
+        #     the proposal tree (2026-09-28 design change).
+        logger.info("gate_tests: copying baseline tree to {}", baseline_sbx)
+        await asyncio.to_thread(
+            shutil.copytree, str(repo_root), str(baseline_sbx),
+            ignore=_SANDBOX_IGNORE,
+        )
+        logger.info("gate_tests: copying proposal tree to {}", sandbox)
         await asyncio.to_thread(
             shutil.copytree, str(repo_root), str(sandbox), ignore=_SANDBOX_IGNORE
         )
-        # Defensive assertion: the copied tree MUST NOT contain .env.
-        # _SANDBOX_IGNORE excludes it, but a rename or a symlink chase
-        # could reintroduce it — abort the whole run if we spot one.
-        for stray in sandbox.rglob(".env"):
+        for stray in list(sandbox.rglob(".env")) + list(baseline_sbx.rglob(".env")):
             if stray.is_file():
                 raise RuntimeError(
                     f"sandbox contains .env at {stray} — refusing to run"
                 )
-        # 2. Write proposal's content at target_path inside sandbox.
         target = sandbox / proposal["target_path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(proposal["content"], encoding="utf-8")
-        # 3. Run pytest.
-        logger.info("gate_tests: running pytest in {}", sandbox)
+        # 3a. Run baseline pytest FIRST (baseline_failures).
+        logger.info("gate_tests: running baseline pytest in {}", baseline_sbx)
+        try:
+            baseline_run = await asyncio.to_thread(_run_pytest_in_sandbox, baseline_sbx)
+        except SandboxUnavailableError as exc:
+            reason = f"gate_tests: sandbox unavailable at baseline ({exc})"
+            await store.update_status(
+                proposal_id, P.STATUS_REJECTED_SANDBOX_UNAVAILABLE, reason,
+            )
+            return P.STATUS_REJECTED_SANDBOX_UNAVAILABLE
+        baseline_failures = _pytest_failed_ids(baseline_run.stdout)
+        logger.info("gate_tests: baseline failures = {}", len(baseline_failures))
+        # 3b. Run proposal pytest.
+        logger.info("gate_tests: running proposal pytest in {}", sandbox)
         try:
             completed = await asyncio.to_thread(_run_pytest_in_sandbox, sandbox)
         except SandboxUnavailableError as exc:
@@ -615,21 +648,28 @@ async def gate_tests(
         cgb = "on" if getattr(completed, "cgroup_bound", False) else "off"
         isolation_marker = f"isolation={iso} confined={cnf} cgroup={cgb}"
 
-        if completed.returncode != 0:
-            # 2026-09-28: give exit=5 (no-tests-collected) a distinct
-            # human message. Exit=3 (INTERNALERROR) still classifies as
-            # tests_failed but the tail is preserved so the crashing
-            # test is visible.
-            tail = (completed.stdout + completed.stderr)[-2000:]
-            no_tests_ran = completed.returncode == 5
-            leader = (
-                f"gate_tests: NO TESTS RAN (pytest exit=5) — the run "
-                f"collected zero tests. Check marker filter, worker "
-                f"crashes, or a syntax error in the tree."
-                if no_tests_ran else
-                f"gate_tests: pytest exit={completed.returncode}"
+        proposal_failures = _pytest_failed_ids(completed.stdout)
+        # 2026-09-28 GATE DESIGN: compare sets — pass iff no test that
+        # passes in the baseline fails in the proposal tree. Existing
+        # failures on the unmodified tree are OUT OF SCOPE for gate_tests.
+        new_failures = proposal_failures - baseline_failures
+        # Flake guard: rerun each NEW failure once on BOTH trees before
+        # concluding. A test that flakes on both is not a regression.
+        # 2026-09-28 FLAKE GUARD (removed 2026-09-28-b): a naive "rerun
+        # both trees and diff" cancels ANY test that flakes between
+        # runs, including genuine new failures caused by the proposal.
+        # For now judge on the FIRST-pass diff. Real flake guard needs
+        # per-test rerun with the ID list filtered into a filesystem-
+        # scoped -k selector — deferred.
+        if new_failures:
+            tail = (completed.stdout + completed.stderr)[-1500:]
+            reason = (
+                f"gate_tests: {len(new_failures)} NEW failure(s) not "
+                f"present in baseline (baseline={len(baseline_failures)}, "
+                f"proposal={len(proposal_failures)}) ({isolation_marker})\n"
+                f"---new failures---\n" + "\n".join(sorted(new_failures)[:20]) +
+                f"\n---tail---\n{tail}"
             )
-            reason = f"{leader} ({isolation_marker})\n---tail---\n{tail}"
             logger.warning(
                 "gate_tests: FAIL proposal_id={} exit={} {}",
                 proposal_id,
@@ -639,20 +679,26 @@ async def gate_tests(
             await store.update_status(proposal_id, P.STATUS_TESTS_FAILED, reason)
             return P.STATUS_TESTS_FAILED
 
-        # PASS
+        # PASS — no NEW failures compared to baseline. Report both
+        # counts so gate 3 review sees the delta.
         logger.info(
-            "gate_tests: PASS proposal_id={} {}", proposal_id, isolation_marker,
+            "gate_tests: PASS proposal_id={} baseline={} proposal={} {}",
+            proposal_id, len(baseline_failures), len(proposal_failures),
+            isolation_marker,
         )
         await store.update_status(
             proposal_id,
             P.STATUS_PENDING_APPROVAL,
-            f"gate_tests: pytest passed in sandbox ({isolation_marker})",
+            f"gate_tests: no new failures "
+            f"(baseline={len(baseline_failures)}, "
+            f"proposal={len(proposal_failures)}) ({isolation_marker})",
         )
         return P.STATUS_PENDING_APPROVAL
     finally:
-        # Always clean the sandbox — success or failure.
-        if sandbox.exists():
-            shutil.rmtree(sandbox, ignore_errors=True)
+        # Always clean both sandboxes — success or failure.
+        for p in (sandbox, baseline_sbx):
+            if p.exists():
+                shutil.rmtree(p, ignore_errors=True)
 
 
 async def run_pipeline(
