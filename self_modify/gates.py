@@ -365,6 +365,9 @@ def _build_pytest_argv(
     isolated: bool,
     confined: bool = False,
     cgroup_bound: bool = False,
+    junit_out: Path | None = None,
+    extra_pytest_args: list[str] | None = None,
+    serial: bool = False,
 ) -> list[str]:
     """Return the argv used to invoke pytest inside ``sandbox``.
 
@@ -391,21 +394,46 @@ def _build_pytest_argv(
     (needs CAP_NET_ADMIN, which bwrap drops) and bwrap uses
     ``--share-net`` to inherit the netns with lo already UP.
     """
-    _SANDBOX_MARKER_ARGS = HERMETIC_PYTEST_EXTRA_ARGS
+    _SANDBOX_MARKER_ARGS = list(HERMETIC_PYTEST_EXTRA_ARGS)
+    # 2026-09-29: structured results. gate_tests parses junit XML, not
+    # stdout — see _junit_failing_ids. The XML is written INSIDE the
+    # sandbox tree (bwrap --bind sandbox → same path visible inside and
+    # outside the confinement).
+    if junit_out is not None:
+        _SANDBOX_MARKER_ARGS = _SANDBOX_MARKER_ARGS + [f"--junitxml={junit_out}"]
+    if extra_pytest_args:
+        _SANDBOX_MARKER_ARGS = _SANDBOX_MARKER_ARGS + list(extra_pytest_args)
     # 2026-09-28: -n auto → -n 4 (see _SANDBOX_XDIST_WORKERS rationale).
     # --max-worker-restart=3 restarts a crashed worker up to three times
     # and reports the culprit test as failed instead of aborting the
     # whole run with `INTERNALERROR (no tests ran)`.
-    _XDIST = [
-        "-n", str(_SANDBOX_XDIST_WORKERS),
-        "--max-worker-restart=3",
-        # 2026-09-28: --dist=loadfile keeps all tests in one file on ONE
-        # worker. Reduces cross-file cross-worker interactions (module
-        # import ordering + shared C-extension state) that caused the
-        # test_campaign_quality/TestLearnedServedPhrases worker crash
-        # in the operator's `morgoth test` run.
-        "--dist=loadfile",
-    ]
+    if serial:
+        # Flake-guard rerun path: no xdist, no worker restarts, no
+        # loadfile scheduling. -p no:xdist DISABLES the plugin so
+        # `-n` / `--dist` would be unknown flags — we simply omit them.
+        _XDIST: list[str] = ["-p", "no:xdist"]
+    else:
+        _XDIST = [
+            "-n", str(_SANDBOX_XDIST_WORKERS),
+            "--max-worker-restart=3",
+            # 2026-09-28: --dist=loadfile keeps all tests in one file on ONE
+            # worker. Reduces cross-file cross-worker interactions (module
+            # import ordering + shared C-extension state) that caused the
+            # test_campaign_quality/TestLearnedServedPhrases worker crash
+            # in the operator's `morgoth test` run.
+            # NOTE (2026-09-29): --dist=loadfile is WHY workers restart
+            # inside gate_tests but not in `morgoth test`. Under loadfile
+            # a single worker owns every test in a file; corrupt one
+            # C-extension or asyncio loop and every remaining test on
+            # that file crashes, tripping --max-worker-restart. Under
+            # canonical_runner's default `load`, tests are load-balanced
+            # individually so a poisoned worker only affects the next
+            # scheduled test, not a whole file. We keep --dist=loadfile
+            # (avoids the campaign_quality cascade the operator saw)
+            # and rely on junit + flake-guard rerun to catch amplified
+            # regressions.
+            "--dist=loadfile",
+        ]
     if not isolated:
         return [_VENV_PYTHON, "-m", "pytest", "-q"] + _XDIST + _SANDBOX_MARKER_ARGS
 
@@ -462,16 +490,50 @@ class SandboxUnavailableError(RuntimeError):
     NOT run on a proposal tree unless every layer applies."""
 
 
-import re as _re
+import xml.etree.ElementTree as _ET
 
 
-def _pytest_failed_ids(stdout: str) -> set[str]:
-    """Extract failing test IDs from a pytest -q output. Robust against
-    xdist worker interleave — the `FAILED <id>` line format is stable."""
-    return set(_re.findall(r"^FAILED (\S+)", stdout, flags=_re.MULTILINE))
+def _junit_failing_ids(xml_path: Path) -> tuple[set[str], set[str]]:
+    """Return ``(failures, errors)`` — the two disjoint sets of node
+    identifiers extracted from a pytest --junitxml file.
+
+    Node id = ``f"{classname}::{name}"``. This is stable across runs
+    (same test → same key regardless of xdist worker interleave or
+    worker restarts) and is disjoint from any output-stream artefact.
+
+    Why junit instead of `^FAILED <id>` regex over stdout: under
+    xdist ``--max-worker-restart=3``, a crashed worker's tests get
+    re-scheduled, and each restart re-emits FAILED lines for the
+    dead worker's culprit test. Counting those lines double-counts
+    a single failure and inflates the diff by up to 4× — the
+    "194 new" wrapper artefact behind the last positive-control
+    result. Junit records each testcase ONCE with either <failure>,
+    <error> (crashed-worker cases), or <skipped>; failing set is
+    authoritative.
+
+    Return (failures, errors) so gate_tests can log them separately:
+    a crash and a legit assertion failure are both regressions if
+    they are NEW vs baseline, but they call for different
+    debugging.
+    """
+    try:
+        tree = _ET.parse(str(xml_path))
+    except (_ET.ParseError, FileNotFoundError, OSError):
+        return set(), set()
+    failures: set[str] = set()
+    errors: set[str] = set()
+    for tc in tree.getroot().iter("testcase"):
+        nid = f"{tc.attrib.get('classname','')}::{tc.attrib.get('name','')}"
+        if tc.find("failure") is not None:
+            failures.add(nid)
+        elif tc.find("error") is not None:
+            errors.add(nid)
+    return failures, errors
 
 
-def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
+def _run_pytest_in_sandbox(
+    sandbox: Path, *, junit_out: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Blocking call — run pytest -q from ``sandbox`` under FULL hardening
     (netns + bwrap + cgroup). FAIL-CLOSED (2026-09-24): if any layer is
     unavailable, raise SandboxUnavailableError and refuse to spawn pytest.
@@ -487,6 +549,7 @@ def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
     isolated, confined, cgroup_bound = True, True, True
     argv = _build_pytest_argv(
         sandbox, isolated=isolated, confined=confined, cgroup_bound=cgroup_bound,
+        junit_out=junit_out,
     )
     # Under full hardening cwd=None (systemd-run --user + unshare change
     # working directory via the inner sh). Passing cwd=sandbox is a
@@ -506,11 +569,62 @@ def _run_pytest_in_sandbox(sandbox: Path) -> subprocess.CompletedProcess[str]:
     return completed
 
 
-_SANDBOX_ROOT = Path("/tmp/morgoth_sandbox")
+def _rerun_ids_alone(
+    sandbox: Path, node_ids: set[str], junit_out: Path,
+) -> tuple[set[str], set[str]]:
+    """Rerun the given node IDs in ``sandbox`` ALONE (no xdist), writing
+    a fresh junit file. Return (failures, errors) from that rerun.
+
+    Used by the flake guard: a test that fails on the parallel first
+    pass but passes on the single-process rerun is not a regression —
+    it's cross-worker contamination or ordering-sensitivity, and we
+    do not attribute it to the proposal.
+
+    ``-p no:xdist`` disables the parallel plugin; ``--dist=no`` is not
+    honored without xdist loaded. Marker exclusion, socket cut, and
+    the per-test timeout still apply (via HERMETIC_PYTEST_EXTRA_ARGS).
+    """
+    if not node_ids:
+        return set(), set()
+    # Build the pytest selector as an OR of node IDs. junit stores
+    # `<classname>::<name>` which is NOT a pytest node id — we need
+    # to rerun by name pattern instead. -k accepts substrings.
+    # Extract test names (rightmost `::` segment stripped of params).
+    names: set[str] = set()
+    for nid in node_ids:
+        name = nid.split("::")[-1]
+        # Strip parametrize suffix `[...]` for -k matching.
+        name = name.split("[")[0]
+        if name:
+            names.add(name)
+    k_expr = " or ".join(sorted(names))
+    argv = _build_pytest_argv(
+        sandbox, isolated=True, confined=True, cgroup_bound=True,
+        junit_out=junit_out, serial=True,
+        extra_pytest_args=["-k", k_expr],
+    )
+    subprocess.run(
+        argv, cwd=None, capture_output=True, text=True,
+        timeout=_PYTEST_TIMEOUT_SECS, env=_hardened_outer_env(),
+        start_new_session=True,
+    )
+    # returncode may be nonzero even on flake — we trust the junit.
+    return _junit_failing_ids(junit_out)
+
+
+# 2026-09-29: moved from /tmp/morgoth_sandbox to /var/tmp/morgoth_sandbox.
+# bwrap's `--tmpfs /tmp` shadows /tmp inside the sandbox with a fresh
+# tmpfs, then bind-mounts <sandbox> back on top. With the previous
+# root some interaction (bwrap+WSL2, path resolution during tmpfs
+# overlay) caused the sandbox tree at /tmp/morgoth_sandbox/proposal_* to
+# be wiped by the primary pytest run itself — the flake-guard rerun
+# would then collect 0 tests and every candidate looked like a flake.
+# /var/tmp is not shadowed by --tmpfs /tmp, so the host path survives.
+_SANDBOX_ROOT = Path("/var/tmp/morgoth_sandbox")
 
 
 def sweep_stale_sandboxes(max_age_secs: int = 3600) -> list[str]:
-    """Remove /tmp/morgoth_sandbox/proposal_* dirs older than max_age.
+    """Remove <_SANDBOX_ROOT>/proposal_* dirs older than max_age.
     Returns the list of paths removed. Called at reflect start so a
     previously-Ctrl-C'd run doesn't leave a growing crumb trail."""
     removed: list[str] = []
@@ -587,6 +701,17 @@ async def gate_tests(
         await asyncio.to_thread(
             shutil.copytree, str(repo_root), str(sandbox), ignore=_SANDBOX_IGNORE
         )
+        # 2026-09-29 sweep-collision fix: copytree propagates the SOURCE
+        # directory's mtime (via copystat). If repo_root is >1 h old,
+        # sweep_stale_sandboxes fires ON A FRESH SANDBOX because it
+        # judges "age" from mtime. Any test that indirectly triggers
+        # sweep (e.g. reflect.run_reflection under test) would then
+        # wipe the sandbox tree MID-RUN — the tests directory
+        # disappearing under pytest's feet was the bug behind
+        # "no tests ran in 0.00s" on the flake-guard rerun.
+        _now = None  # os.utime(path, None) → current time on both atime + mtime
+        for p in (sandbox, baseline_sbx):
+            os.utime(p, _now)
         for stray in list(sandbox.rglob(".env")) + list(baseline_sbx.rglob(".env")):
             if stray.is_file():
                 raise RuntimeError(
@@ -596,21 +721,31 @@ async def gate_tests(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(proposal["content"], encoding="utf-8")
         # 3a. Run baseline pytest FIRST (baseline_failures).
+        baseline_junit = baseline_sbx / "junit.xml"
+        proposal_junit = sandbox / "junit.xml"
         logger.info("gate_tests: running baseline pytest in {}", baseline_sbx)
         try:
-            baseline_run = await asyncio.to_thread(_run_pytest_in_sandbox, baseline_sbx)
+            baseline_run = await asyncio.to_thread(
+                _run_pytest_in_sandbox, baseline_sbx, junit_out=baseline_junit,
+            )
         except SandboxUnavailableError as exc:
             reason = f"gate_tests: sandbox unavailable at baseline ({exc})"
             await store.update_status(
                 proposal_id, P.STATUS_REJECTED_SANDBOX_UNAVAILABLE, reason,
             )
             return P.STATUS_REJECTED_SANDBOX_UNAVAILABLE
-        baseline_failures = _pytest_failed_ids(baseline_run.stdout)
-        logger.info("gate_tests: baseline failures = {}", len(baseline_failures))
+        baseline_fail, baseline_err = _junit_failing_ids(baseline_junit)
+        baseline_failures = baseline_fail | baseline_err
+        logger.info(
+            "gate_tests: baseline junit → failures={} errors={}",
+            len(baseline_fail), len(baseline_err),
+        )
         # 3b. Run proposal pytest.
         logger.info("gate_tests: running proposal pytest in {}", sandbox)
         try:
-            completed = await asyncio.to_thread(_run_pytest_in_sandbox, sandbox)
+            completed = await asyncio.to_thread(
+                _run_pytest_in_sandbox, sandbox, junit_out=proposal_junit,
+            )
         except SandboxUnavailableError as exc:
             # Race: posture flipped between pre-flight and run.
             reason = f"gate_tests: sandbox unavailable at run-time ({exc})"
@@ -648,19 +783,69 @@ async def gate_tests(
         cgb = "on" if getattr(completed, "cgroup_bound", False) else "off"
         isolation_marker = f"isolation={iso} confined={cnf} cgroup={cgb}"
 
-        proposal_failures = _pytest_failed_ids(completed.stdout)
+        proposal_fail, proposal_err = _junit_failing_ids(proposal_junit)
+        proposal_failures = proposal_fail | proposal_err
+        logger.info(
+            "gate_tests: proposal junit → failures={} errors={}",
+            len(proposal_fail), len(proposal_err),
+        )
         # 2026-09-28 GATE DESIGN: compare sets — pass iff no test that
         # passes in the baseline fails in the proposal tree. Existing
         # failures on the unmodified tree are OUT OF SCOPE for gate_tests.
-        new_failures = proposal_failures - baseline_failures
-        # Flake guard: rerun each NEW failure once on BOTH trees before
-        # concluding. A test that flakes on both is not a regression.
-        # 2026-09-28 FLAKE GUARD (removed 2026-09-28-b): a naive "rerun
-        # both trees and diff" cancels ANY test that flakes between
-        # runs, including genuine new failures caused by the proposal.
-        # For now judge on the FIRST-pass diff. Real flake guard needs
-        # per-test rerun with the ID list filtered into a filesystem-
-        # scoped -k selector — deferred.
+        candidate_new = proposal_failures - baseline_failures
+        # 2026-09-29 FLAKE GUARD: rerun each candidate-new node ID
+        # ALONE (-p no:xdist) on BOTH baseline and proposal trees.
+        # A candidate that does NOT reproduce on the proposal serial
+        # rerun is a cross-worker/scheduling flake, not a regression.
+        # Junit is the authoritative source; the naive stream-parser
+        # rerun-both approach cancelled legit new failures.
+        flakes: set[str] = set()
+        if candidate_new:
+            logger.info(
+                "gate_tests: flake-guard rerun of {} candidate(s) alone",
+                len(candidate_new),
+            )
+            prop_rerun_junit = sandbox / "junit.rerun.xml"
+            base_rerun_junit = baseline_sbx / "junit.rerun.xml"
+            try:
+                prop_fail2, prop_err2 = await asyncio.to_thread(
+                    _rerun_ids_alone, sandbox, candidate_new, prop_rerun_junit,
+                )
+                base_fail2, base_err2 = await asyncio.to_thread(
+                    _rerun_ids_alone, baseline_sbx, candidate_new, base_rerun_junit,
+                )
+            except (subprocess.TimeoutExpired, SandboxUnavailableError) as exc:
+                logger.warning(
+                    "gate_tests: flake-guard rerun failed ({}); treating "
+                    "all {} candidates as genuine",
+                    exc, len(candidate_new),
+                )
+                prop_fail2, prop_err2 = candidate_new, set()
+                base_fail2, base_err2 = set(), set()
+            prop_rerun_failing = prop_fail2 | prop_err2
+            base_rerun_failing = base_fail2 | base_err2
+            for nid in candidate_new:
+                # Rerun uses `-k <name>` (junit ids ≠ pytest node ids),
+                # so match by rightmost segment + strip parametrize.
+                name = nid.split("::")[-1].split("[")[0]
+                prop_hit = any(
+                    r.split("::")[-1].split("[")[0] == name
+                    for r in prop_rerun_failing
+                )
+                base_hit = any(
+                    r.split("::")[-1].split("[")[0] == name
+                    for r in base_rerun_failing
+                )
+                if not prop_hit:
+                    flakes.add(nid)          # didn't reproduce → flake
+                elif base_hit:
+                    flakes.add(nid)          # fails on baseline serial → not caused by us
+        new_failures = candidate_new - flakes
+        if flakes:
+            logger.info(
+                "gate_tests: flake-guard filtered {} → {} genuine (flakes={})",
+                len(candidate_new), len(new_failures), sorted(flakes)[:5],
+            )
         if new_failures:
             tail = (completed.stdout + completed.stderr)[-1500:]
             reason = (

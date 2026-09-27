@@ -108,6 +108,13 @@ class TestGateTestsShortCircuits:
         }
 
     def test_short_circuits_when_sandbox_unavailable(self, tmp_path):
+        # 2026-09-29: asyncio.run() (fresh loop per call), not
+        # asyncio.get_event_loop().run_until_complete(). Under
+        # xdist --dist=loadfile, a prior test on the same worker
+        # can leave a CLOSED default loop in the thread; the old
+        # code would then raise `Event loop is closed` — a genuine
+        # new failure that looked like a "tool-count regression"
+        # in the positive-control diff.
         store = MagicMock()
         store.update_status = AsyncMock()
         with patch.object(gates, "_isolation_available", return_value=True), \
@@ -115,7 +122,7 @@ class TestGateTestsShortCircuits:
              patch.object(gates, "_cgroup_limits_available", return_value=True), \
              patch("shutil.copytree") as copytree_mock, \
              patch.object(gates, "_run_pytest_in_sandbox") as run_mock:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 gates.gate_tests(store, self._proposal(), repo_root=tmp_path)
             )
         assert result == P.STATUS_REJECTED_SANDBOX_UNAVAILABLE
