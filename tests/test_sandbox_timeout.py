@@ -84,18 +84,14 @@ def test_subset_run_alternative_rejected_in_docstring() -> None:
 
 
 def test_xdist_wired_into_isolated_argv() -> None:
-    """``-n auto`` must appear in the isolated pytest argv — the
-    xdist speedup is the reason the timeout could drop from 6780s to
-    1380s. Removing it silently would push suite time back to ~2701s
-    and risk timeouts."""
+    """2026-09-28: pytest-xdist is wired with a memory-sized worker
+    count (was `-n auto`). Verify -n <N> is present, not the specific
+    value — kept flexible so sizing can be tuned without a test edit."""
     from pathlib import Path
     argv = gates_mod._build_pytest_argv(Path("/tmp/sbx"), isolated=True)
-    # The isolated form packs the pytest call into a shell string —
-    # check the inline command carries -n auto.
     joined = " ".join(argv)
-    assert "-n auto" in joined, (
-        f"isolated argv missing '-n auto': {joined!r}"
-    )
+    assert "-n " in joined + " ", f"isolated argv missing -n: {joined!r}"
+    assert "--max-worker-restart" in joined
 
 
 def test_xdist_wired_into_nonisolated_argv() -> None:
@@ -103,6 +99,5 @@ def test_xdist_wired_into_nonisolated_argv() -> None:
     conditional on isolation posture."""
     from pathlib import Path
     argv = gates_mod._build_pytest_argv(Path("/tmp/sbx"), isolated=False)
-    assert "-n" in argv and "auto" in argv, (
-        f"non-isolated argv missing xdist flag: {argv!r}"
-    )
+    assert "-n" in argv, f"non-isolated argv missing xdist flag: {argv!r}"
+    assert "--max-worker-restart=3" in argv

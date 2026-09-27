@@ -43,10 +43,7 @@ if _FIXTURE_ENV.exists():
 def _integration_db_guard(request):
     """PRODUCTION-DB SAFETY. Fires ONLY for tests carrying
     @pytest.mark.integration and only when those tests are actually
-    RUN (post `-m` deselection). Fails THAT test, never the session
-    — earlier version used pytest_collection_modifyitems +
-    raise pytest.UsageError, which fires before -m deselection and
-    aborted whole sandbox sessions via INTERNALERROR (2026-09-28).
+    RUN (post `-m` deselection). Fails THAT test, never the session.
     Hermetic sessions with 0 integration tests running are exempt
     by construction — this fixture only runs for marked tests."""
     if request.node.get_closest_marker("integration") is None:

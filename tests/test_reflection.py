@@ -79,7 +79,9 @@ def test_spec_well_formed_matrix() -> None:
     # digest_fields wrong shape
     bad = dict(VALID_SPEC, digest_fields=["a", "b"])  # too few
     assert reflect._spec_is_well_formed(bad) is not None
-    bad = dict(VALID_SPEC, digest_fields=["a", "b", "c", "d", "e", "f", "g"])  # too many
+    # 2026-09-27: MAX_DIGEST_FIELDS raised from 6 to 12 to support the
+    # {name, path} grammar for nested sources. Use 13 to exceed the cap.
+    bad = dict(VALID_SPEC, digest_fields=[f"f{i}" for i in range(13)])
     assert reflect._spec_is_well_formed(bad) is not None
     # camelCase is now ACCEPTED (real APIs return camelCase keys, and
     # the field is inserted via repr() so injection-neutral).

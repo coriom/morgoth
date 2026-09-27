@@ -79,8 +79,14 @@ def test_argv_isolated_baseline_wraps_in_unshare() -> None:
 def test_argv_non_isolated_is_plain_pytest() -> None:
     argv = gates._build_pytest_argv(Path("/tmp/sbx/x"), isolated=False)
     assert argv[0] == gates._VENV_PYTHON
-    # pytest-xdist ``-n auto`` was wired at the timeout-fix commit.
-    assert argv[1:] == ["-m", "pytest", "-q", "-n", "auto"]
+    # 2026-09-28: xdist worker count moved from `-n auto` to a
+    # memory-sized number, and the hermetic marker/socket flags come
+    # from HERMETIC_PYTEST_EXTRA_ARGS. Verify presence, not exact list.
+    assert "pytest" in argv and "-q" in argv
+    assert "-n" in argv and str(gates._SANDBOX_XDIST_WORKERS) in argv
+    assert "--max-worker-restart=3" in argv
+    for a in gates.HERMETIC_PYTEST_EXTRA_ARGS:
+        assert a in argv
     assert "unshare" not in argv
     assert "bwrap" not in argv
     assert "systemd-run" not in argv
@@ -126,24 +132,16 @@ def test_argv_cgroup_bound_wraps_in_systemd_run() -> None:
     assert "unshare" in argv
 
 
-def test_argv_pytest_call_is_wrapped_in_prlimit() -> None:
-    """The pytest invocation itself must sit behind ``prlimit --as=…``.
-
-    RLIMIT_AS is kernel-enforced per process — this is the reliable
-    memory bound because WSL2 silently ignores cgroup memory.max at
-    the user-scope level (an empirical 150 MB cap let 500 MB through)."""
+def test_argv_no_prlimit_wrap() -> None:
+    """2026-09-28: RLIMIT_AS was removed — killed workers with large
+    virtual (but modest resident) footprints under xdist. Real memory
+    is bounded by the cgroup MemoryMax; VmSize is not the axis."""
     argv = gates._build_pytest_argv(
         Path("/tmp/sbx/x"), isolated=True, confined=True, cgroup_bound=True,
     )
     joined = " ".join(argv)
-    assert "prlimit" in joined
-    assert f"--as={gates._PER_PROCESS_AS_BYTES}" in joined
-    # Also present in the plain-unshare (non-confined) form.
-    argv2 = gates._build_pytest_argv(
-        Path("/tmp/sbx/x"), isolated=True, confined=False, cgroup_bound=False,
-    )
-    assert "prlimit" in argv2[-1]
-    assert f"--as={gates._PER_PROCESS_AS_BYTES}" in argv2[-1]
+    assert "prlimit" not in joined
+    assert "--as=" not in joined
 
 
 def test_hardened_outer_env_is_minimal_whitelist() -> None:
