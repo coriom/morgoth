@@ -201,8 +201,11 @@ class TestIntegrationDBGuard:
         # Grep-lock the guard: reject if dbname doesn't end in _test.
         assert 'endswith("_test")' in src
         assert 'MORGOTH_TEST_POSTGRES_URL' in src
-        # Also require it AT collection time (session-level).
-        assert 'pytest_collection_modifyitems' in src
+        # Guard is a fixture (per-test), NOT a collection hook — the
+        # collection hook fired before -m deselection and crashed the
+        # whole session (INTERNALERROR). 2026-09-28.
+        assert '_integration_db_guard' in src
+        assert 'pytest_collection_modifyitems' not in src
 
 
 class TestReflectPromptTeachesPathGrammar:

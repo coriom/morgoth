@@ -39,40 +39,43 @@ if _FIXTURE_ENV.exists():
         os.environ.pop(_leaky, None)
 
 
-def pytest_collection_modifyitems(config, items):
-    """SESSION-LEVEL HARD GUARD: if the integration marker is being
-    collected AND the test DB URL is missing or doesn't end with
-    `_test`, ABORT collection — refuse to run integration tests
-    against production. Grep-locked below."""
-    # 2026-09-27: production DB safety. Only fires when at least one
-    # integration test is about to run — hermetic sessions are exempt.
-    running_integration = any(
-        item.get_closest_marker("integration") for item in items
-    )
-    if not running_integration:
+@pytest.fixture(autouse=True)
+def _integration_db_guard(request):
+    """PRODUCTION-DB SAFETY. Fires ONLY for tests carrying
+    @pytest.mark.integration and only when those tests are actually
+    RUN (post `-m` deselection). Fails THAT test, never the session
+    — earlier version used pytest_collection_modifyitems +
+    raise pytest.UsageError, which fires before -m deselection and
+    aborted whole sandbox sessions via INTERNALERROR (2026-09-28).
+    Hermetic sessions with 0 integration tests running are exempt
+    by construction — this fixture only runs for marked tests."""
+    if request.node.get_closest_marker("integration") is None:
+        yield
         return
     url = os.environ.get("MORGOTH_TEST_POSTGRES_URL", "")
     if not url:
-        raise pytest.UsageError(
-            "integration tests require MORGOTH_TEST_POSTGRES_URL to be set "
-            "and to point at a dedicated test DB (name must end in _test)."
+        pytest.fail(
+            "integration test requires MORGOTH_TEST_POSTGRES_URL to be set "
+            "and to point at a dedicated test DB (name must end in _test).",
+            pytrace=False,
         )
-    # Parse only the dbname (LAST path segment before '?'); NEVER log
-    # the full URL — it carries the password.
     from urllib.parse import urlparse
     dbname = (urlparse(url).path or "/").lstrip("/").split("?")[0]
     if not dbname.endswith("_test"):
-        raise pytest.UsageError(
+        pytest.fail(
             "MORGOTH_TEST_POSTGRES_URL database name must end with `_test` "
             "(refusing to run integration tests against a production-shaped "
-            "database). Got dbname ending: …" + dbname[-8:]
+            "database). Got dbname ending: …" + dbname[-8:],
+            pytrace=False,
         )
-    # Rewrite POSTGRES_URL for the integration run so any test that
-    # calls load_config lands on the test DB. Same for Chroma dir.
+    # Rewrite POSTGRES_URL + CHROMA_DIR so any load_config inside this
+    # test lands on the test DB. The env-snapshot fixture below restores
+    # after the test finishes — no leakage to hermetic neighbours.
     os.environ["POSTGRES_URL"] = url
     import tempfile
     if "CHROMA_DIR" not in os.environ:
         os.environ["CHROMA_DIR"] = tempfile.mkdtemp(prefix="morgoth_test_chroma_")
+    yield
 
 
 @pytest.fixture(autouse=True)
