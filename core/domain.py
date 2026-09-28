@@ -25,6 +25,17 @@ Contract for chantier 1 of the domain-pack refactor:
 Env override: ``MORGOTH_DOMAIN=<name>`` selects the pack
 (default = crypto). A future ``morgoth domain <name>`` CLI
 just sets that env var.
+
+INVARIANT — ONE DOMAIN PER PROCESS. The pack is bound at
+IMPORT time: every downstream constant (RAIL_TOOL_FIELDS,
+SOURCE_CACHE_CONFIG, METRIC_FIELD_MAP, …) reads
+``current_domain()`` once at module load and freezes the
+values into module-level names. ``reset_domain_cache()``
+drops the memoized pack, but does NOT rebind those module-
+level constants — that would require a fresh Python process.
+Domain-switching is therefore a RESTART operation, never a
+runtime toggle. Locked by
+``tests/test_domain_pack_locks.py::test_one_domain_per_process_invariant``.
 """
 
 from __future__ import annotations
@@ -182,5 +193,8 @@ def current_domain() -> Domain:
 
 def reset_domain_cache() -> None:
     """Test hook — drop the memoized pack so a monkeypatched
-    ``MORGOTH_DOMAIN`` is picked up on the next call."""
+    ``MORGOTH_DOMAIN`` is picked up on the next ``current_domain()``
+    call. Does NOT rebind module-level constants that have already
+    captured the pack at import (see the ONE-DOMAIN-PER-PROCESS
+    invariant in the module docstring)."""
     current_domain.cache_clear()

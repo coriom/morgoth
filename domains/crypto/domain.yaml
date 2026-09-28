@@ -66,7 +66,7 @@ phrase_stopwords:
   - or
   - of
   - in
-  - on
+  - "on"
   - at
   - to
   - for
@@ -168,7 +168,7 @@ campaign_title_stopwords:
   - and
   - or
   - in
-  - on
+  - "on"
   - at
   - to
   - for

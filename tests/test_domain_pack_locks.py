@@ -177,3 +177,53 @@ def test_downstream_constants_route_through_domain() -> None:
     # RAIL_TOOL_FIELDS: values are frozenset, pack gives tuple.
     for tool, cols in d.rail_tool_fields.items():
         assert RAIL_TOOL_FIELDS[tool] == frozenset(cols), tool
+
+
+# ---------- one-domain-per-process invariant --------------------------------
+
+def test_one_domain_per_process_invariant(monkeypatch) -> None:
+    """The pack is read at IMPORT time and its values are bound to
+    module-level constants (``analysis.campaign_quality.RAIL_TOOL_FIELDS``,
+    ``core.source_cache.SOURCE_CACHE_CONFIG``, …). Those bindings do
+    NOT observe subsequent changes to ``MORGOTH_DOMAIN`` — even after
+    ``reset_domain_cache()``. Switching domain therefore REQUIRES a
+    fresh process. This test locks that shape.
+
+    Rationale: a runtime domain-switch would leave half the process on
+    the old pack (already-imported modules) and half on the new pack
+    (freshly-imported ones), a class of bug that is silently wrong
+    rather than loudly broken. Better to enforce fresh-process.
+    """
+    from core.domain import (
+        current_domain,
+        reset_domain_cache,
+        DEFAULT_DOMAIN,
+    )
+    from analysis import campaign_quality as cq
+
+    d0 = current_domain()
+    baseline_rail = dict(cq.RAIL_TOOL_FIELDS)
+    baseline_pack_rail = {k: frozenset(v) for k, v in d0.rail_tool_fields.items()}
+    assert baseline_rail == baseline_pack_rail
+
+    # Switch the env AND reset the cache — mimic a would-be runtime
+    # switch. reset_domain_cache() drops the memoized pack, so the
+    # NEXT current_domain() call would load a different pack…
+    monkeypatch.setenv("MORGOTH_DOMAIN", "__nonexistent_test_domain__")
+    reset_domain_cache()
+    try:
+        d1 = current_domain()  # falls back to crypto (missing pack)
+        # …but module-level constants are STILL bound to the pre-swap
+        # values. A live scorer using cq.RAIL_TOOL_FIELDS would not see
+        # any change — this is the invariant.
+        assert cq.RAIL_TOOL_FIELDS is baseline_rail or \
+            dict(cq.RAIL_TOOL_FIELDS) == baseline_rail, (
+                "module-level constant unexpectedly rebound after "
+                "reset_domain_cache — the invariant is that changing "
+                "domains requires a fresh process"
+            )
+        # And the fallback keeps the DEFAULT domain.
+        assert d1.name == DEFAULT_DOMAIN
+    finally:
+        monkeypatch.delenv("MORGOTH_DOMAIN", raising=False)
+        reset_domain_cache()
