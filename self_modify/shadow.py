@@ -283,10 +283,16 @@ def collect_registry_context(config: AppConfig, pm: PersistentMemory) -> list[di
                     desc = getattr(inst, "description", None) or ""
                 except Exception:  # noqa: BLE001
                     desc = ""
+            from self_modify.digest_path import digest_field_names as _dnames
             rows.append({
                 "name": getattr(cls, "name", "?"),
                 "description": desc,
-                "digest_fields": list(getattr(cls, "digest_fields", ()) or ()),
+                # Names only — the registry context feeds a semantic-
+                # duplication axis; path expressions add no information
+                # about what a tool measures.
+                "digest_fields": _dnames(
+                    getattr(cls, "digest_fields", ()) or ()
+                ),
                 "endpoints": list(getattr(cls, "api_endpoints", ()) or ()),
             })
         rows.sort(key=lambda r: r["name"])
@@ -532,10 +538,17 @@ async def run_shadow_verdict(
     verdicts on already-decided rows.
     """
     facts = extract_spec_facts(proposal.get("content") or "")
+    # 2026-09-29: normalize before passing to sample_endpoint. facts
+    # may hold path-digest {name, path} dicts; the sampler + LLM only
+    # need NAMES (top-level projection). Preserves the shadow contract
+    # while eliminating the ``unhashable type: 'dict'`` regression seen
+    # on 9f446bb4.
+    from self_modify.digest_path import digest_field_names as _dnames
+    _digest_name_list = _dnames(facts.get("digest_fields") or [])
     sampler = endpoint_sampler or sample_endpoint
     sample = await sampler(
         facts.get("base_url") or "", facts.get("endpoint_path") or "",
-        digest_fields=list(facts.get("digest_fields") or []),
+        digest_fields=_digest_name_list,
     )
     registry = collect_registry_context(config, pm)
 

@@ -592,14 +592,18 @@ def learned_served_phrases() -> list[str]:
     out: list[str] = []
     try:
         from tools.discovery import discover_data_feed_tools
+        from self_modify.digest_path import digest_field_names as _dnames
         for cls in discover_data_feed_tools():
-            for field in getattr(cls, "digest_fields", ()) or ():
+            # Class attribute stays a tuple of NAMES (2026-09-29 contract)
+            # but we route through digest_field_names to survive any legacy
+            # tool that still carries {name,path} dicts on the class.
+            for field in _dnames(getattr(cls, "digest_fields", ()) or ()):
                 # Whole field name as-is (lowercased) — supports paths
                 # like "usdt_supply" that model titles may repeat.
-                out.append(str(field).lower())
+                out.append(field.lower())
                 # And split into tokens: "lastFundingRate" →
                 # "last funding rate" so "funding rate" matches.
-                tokens = _split_camel_or_snake(str(field))
+                tokens = _split_camel_or_snake(field)
                 if len(tokens) >= 2:
                     out.append(" ".join(tokens))
                 # And the tail bigram/trigram if long enough — helps

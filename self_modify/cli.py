@@ -197,6 +197,105 @@ async def _cmd_show(store: P.ProposalStore, args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_recheck(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Re-run the post-submission checks (liveness + overlap + shadow +
+    delegation) against a pending proposal WITHOUT invoking reflect.
+
+    Reason: a check crash held the proposal at ``checks_incomplete`` (or
+    an earlier reflect release left it at ``pending_approval`` with a
+    silent skip). ``recheck`` re-drives the exact same checks — a fresh
+    liveness probe, overlap against the currently-discovered rail, a
+    fresh shadow verdict, and (if delegation is on) the flip hook — and
+    reports each with status + message so the operator can review the
+    full slate without waiting for another reflect cycle.
+    """
+    from self_modify import post_submission_checks as _pchecks
+    from self_modify import liveness as _liveness
+    from self_modify import reflect as _reflect
+    import json as _json
+
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
+    if not row:
+        print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
+        return 1
+    # Spec comes from the proposal's rationale-adjacent payload: the
+    # rejected/pending row's content is the rendered tool source. Parse
+    # the spec back out of the source header so we can rebuild the
+    # canonical name list and (probe URL, digest_fields). For a submitted
+    # row the tool source contains _BASE_URL, _ENDPOINT_PATH and
+    # _DIGEST_FIELDS — enough to rebuild what liveness needs.
+    content = row.get("content") or ""
+    import re as _re
+    def _grab(sym: str) -> str | None:
+        m = _re.search(rf"^{sym}\s*=\s*(.+)$", content, _re.MULTILINE)
+        return m.group(1).strip() if m else None
+    base = _grab("_BASE_URL")
+    ep = _grab("_ENDPOINT_PATH")
+    df = _grab("_DIGEST_FIELDS")
+    if not (base and ep and df):
+        print(
+            "recheck: could not parse _BASE_URL/_ENDPOINT_PATH/_DIGEST_FIELDS "
+            "from proposal content — refusing to guess.",
+            file=sys.stderr,
+        )
+        return 2
+    # Evaluate the literal strings safely — repr'd primitives only.
+    import ast as _ast
+    try:
+        base_url = _ast.literal_eval(base)
+        endpoint_path = _ast.literal_eval(ep)
+        digest_fields = _ast.literal_eval(df)
+    except (ValueError, SyntaxError) as exc:
+        print(f"recheck: proposal content parse failed: {exc}", file=sys.stderr)
+        return 2
+    spec = {
+        "tool_name": (row.get("target_path") or "").split("/")[-1].rstrip(".py"),
+        "api_base_url": base_url,
+        "endpoint_path": endpoint_path,
+        "digest_fields": digest_fields,
+        "description": "", "rationale": row.get("rationale") or "",
+    }
+    smoke_target = base_url + endpoint_path
+
+    config = await load_config()
+    pm = store._pm  # noqa: SLF001
+
+    # Fresh liveness probe. Under `recheck` we run 1 hit (not 4) unless
+    # the operator opts into --full: the goal is "did the crash reproduce",
+    # not "did the source freeze over 7.5 min". The overlap + shadow checks
+    # don't care about probe depth.
+    from self_modify.digest_path import digest_field_names as _dnames
+    names = _dnames(digest_fields)
+    hits = 4 if args.full else 1
+    probe = None
+    try:
+        print(f"recheck: liveness probe ({hits} hit{'s' if hits > 1 else ''}) → {smoke_target}")
+        probe = await _liveness.run_liveness_probe(smoke_target, names, hits=hits)
+    except Exception as exc:  # noqa: BLE001
+        print(f"recheck: liveness probe crashed: {type(exc).__name__}: {exc}")
+        probe = None
+
+    registered_field_names = _reflect._registered_digest_fields(config, pm)
+    results, final_status = await _pchecks.run_post_submission_checks(
+        store=store, proposal_id=pid, spec=spec, probe=probe,
+        registered_field_names=registered_field_names,
+        config=config, pm=pm,
+        delegation_enabled=_reflect._delegation_enabled(),
+    )
+    print(f"recheck: final_status={final_status}")
+    for r in results:
+        print(f"  [{r.status:<8}] {r.name:<12} {r.message[:200]}")
+    # Refresh row and print the updated status_reason.
+    row = await store.get(pid)
+    print(f"  status_reason: {(row or {}).get('status_reason') or ''}")
+    return 0 if final_status in (
+        P.STATUS_PENDING_APPROVAL, P.STATUS_SHADOW_REJECTED,
+    ) else 1
+
+
 async def _cmd_shadow(store: P.ProposalStore, args: argparse.Namespace) -> int:
     """Manually re-run the shadow verifier on any proposal."""
     from self_modify import shadow as _shadow
@@ -331,6 +430,8 @@ async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> in
     # so a template improvement lands on provisioning too.
     tool_name = spec["tool_name"]
     class_name = _reflect._snake_to_class_name(tool_name)
+    from self_modify.digest_path import digest_field_names as _dnames
+    _dnames_list = _dnames(spec.get("digest_fields"))
     from urllib.parse import urlparse as _urlparse
     source_label = _urlparse(spec["api_base_url"]).hostname or ""
     endpoint_declaration = _reflect._normalize_endpoint(
@@ -344,7 +445,7 @@ async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> in
         tool_name_repr=repr(tool_name),
         base_url_repr=repr(spec["api_base_url"]),
         endpoint_path_repr=repr(spec["endpoint_path"]),
-        digest_fields_repr=repr(list(spec["digest_fields"])),
+        digest_fields_repr=repr(_dnames_list),
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
         endpoint_declaration_repr=repr(endpoint_declaration),
@@ -366,13 +467,13 @@ async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> in
     new_row = await store.get(new_id)
     import asyncio as _asyncio
     probe_task = _asyncio.create_task(_liveness.run_liveness_probe(
-        smoke_target, list(spec["digest_fields"]),
+        smoke_target, _dnames_list,
     ))
     pipeline_status = await _gates.run_pipeline(store, new_row)
     print(f"provision: pipeline final_status={pipeline_status}")
     try:
         probe = await probe_task
-        verdict = _liveness.classify_probe(probe, list(spec["digest_fields"]))
+        verdict = _liveness.classify_probe(probe, _dnames_list)
         print(f"provision: liveness outcome={verdict['outcome']} rule={verdict.get('rule')}")
     except Exception as exc:  # noqa: BLE001
         print(f"provision: liveness probe error: {exc!r}")
@@ -782,6 +883,21 @@ async def _main(argv: list[str]) -> int:
     )
     p_shadow.add_argument("proposal_id")
     p_shadow.set_defaults(_fn=_cmd_shadow)
+
+    p_recheck = subparsers.add_parser(
+        "recheck",
+        help=(
+            "re-run the post-submission checks on a proposal without "
+            "invoking reflect; use after a checks_incomplete or when "
+            "you want a fresh liveness+shadow slate."
+        ),
+    )
+    p_recheck.add_argument("proposal_id")
+    p_recheck.add_argument(
+        "--full", action="store_true",
+        help="4-hit liveness probe (7.5 min) instead of the default 1 hit",
+    )
+    p_recheck.set_defaults(_fn=_cmd_recheck)
 
     p_provision = subparsers.add_parser(
         "provision",

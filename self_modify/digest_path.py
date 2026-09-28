@@ -352,6 +352,55 @@ def _resolve_aggregate(path: ParsedPath, body: Any) -> Any:
     raise DigestPathError(f"unknown aggregate {path.aggregate!r}")
 
 
+def digest_field_names(entries: Any) -> list[str]:
+    """Convenience: the ``.name`` of every entry, in order. Ninety
+    per cent of consumers (liveness classify, overlap check, cache-key
+    input, ``morgoth show`` summary) only need names — this saves the
+    ``[e["name"] for e in normalize_digest_fields(x)]`` boilerplate at
+    every call-site."""
+    return [e["name"] for e in normalize_digest_fields(entries)]
+
+
+def normalize_digest_fields(entries: Any) -> list[dict[str, str]]:
+    """Return the canonical form ``[{"name": str, "path": str}]`` for a
+    digest_fields list, upgrading legacy plain-string entries to
+    ``{"name": s, "path": s}``. Ordering is preserved.
+
+    Single-source contract (2026-09-29): every consumer that iterates
+    or intersects digest_fields — liveness classifier, overlap check,
+    served-phrase learner, cache-key builder, shadow context, ``morgoth
+    show`` renderer — routes through this function so the union shape
+    (string OR dict) is collapsed at ONE point. Downstream code needs
+    only ``.name`` (for identity work) or ``.path`` (for extraction),
+    never the raw union. The 9f446bb4 crash — ``set(spec['digest_fields'])``
+    against a mixed list — was the direct consequence of leaving each
+    consumer to handle the union locally.
+
+    Never raises: entries that don't parse are DROPPED with the failure
+    logged at WARN level. Pre-submit spec validation
+    (``_spec_is_well_formed``) is the authoritative gate that rejects
+    bad specs; downstream consumers only see well-formed inputs, so
+    silent drop here is a defence-in-depth measure, not a correctness
+    path.
+    """
+    from loguru import logger as _log
+    out: list[dict[str, str]] = []
+    if not isinstance(entries, (list, tuple)):
+        return out
+    for entry in entries:
+        try:
+            name, _ = parse_digest_entry(entry)
+        except DigestPathError as exc:
+            _log.warning("normalize_digest_fields: dropping {!r} ({})", entry, exc)
+            continue
+        if isinstance(entry, str):
+            path = entry
+        else:
+            path = entry.get("path", name) if isinstance(entry, dict) else name
+        out.append({"name": name, "path": path})
+    return out
+
+
 def parse_digest_entry(entry: Any) -> tuple[str, ParsedPath]:
     """Return (name, ParsedPath) from a digest_fields entry.
 

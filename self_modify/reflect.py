@@ -1556,8 +1556,10 @@ async def _one_reflect_attempt(
     # 450s — nests cleanly). Started here so it's already in flight
     # when the sandbox spins up. See self_modify.liveness for rules.
     import asyncio as _asyncio
+    from self_modify.digest_path import digest_field_names as _digest_names
+    _digest_names_list = _digest_names(spec.get("digest_fields"))
     probe_task = _asyncio.create_task(liveness.run_liveness_probe(
-        smoke_target, list(spec["digest_fields"]),
+        smoke_target, _digest_names_list,
     ))
     log(f"liveness probe launched (concurrent with gate_tests): {smoke_target}")
 
@@ -1582,7 +1584,15 @@ async def _one_reflect_attempt(
         tool_name_repr=repr(tool_name),
         base_url_repr=repr(spec["api_base_url"]),
         endpoint_path_repr=repr(spec["endpoint_path"]),
-        digest_fields_repr=repr(list(spec["digest_fields"])),
+        # Class attribute contract (preserved): tools/base_tool.py declares
+        # digest_fields as tuple[str, ...] — a tuple of NAMES. Path info
+        # lives in the spec/proposal payload, not on the class. This keeps
+        # every existing class-attribute consumer (learned_served_phrases,
+        # shadow registry, `morgoth show`) working without touching the
+        # class-attribute surface. Path-digest resolution at RUNTIME is
+        # the tool's own concern via self_modify.digest_path — the class
+        # attribute is for identity/served-phrase learning only.
+        digest_fields_repr=repr(_digest_names_list),
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
         endpoint_declaration_repr=repr(endpoint_declaration),
@@ -1619,7 +1629,7 @@ async def _one_reflect_attempt(
     # the four hits before making the field-liveness decision.
     try:
         probe = await probe_task
-        verdict = liveness.classify_probe(probe, list(spec["digest_fields"]))
+        verdict = liveness.classify_probe(probe, _digest_names_list)
         log(
             f"liveness gate: {verdict['outcome']} rule={verdict.get('rule')} "
             f"reason={verdict['reason']}"
@@ -1640,7 +1650,7 @@ async def _one_reflect_attempt(
     if verdict["outcome"] == "reject":
         static_reason = (
             verdict["reason"] + " | " +
-            _liveness_probe_summary(probe, spec.get("digest_fields") or [])
+            _liveness_probe_summary(probe, _digest_names_list)
         )
         await store.update_status(
             proposal_id, P.STATUS_REJECTED_STATIC, static_reason[:2000],
@@ -1650,75 +1660,22 @@ async def _one_reflect_attempt(
                 "proposal_id": proposal_id, "pipeline_status": None,
                 "spec": spec, "probe": probe}
 
-    # Field-overlap advisory (gate-3 note, NOT a reject). If the spec
-    # reaches pending_approval and its digest_fields exact-match any
-    # currently-registered digest field name, append a note to the
-    # status_reason so the operator sees it at ``morgoth show``. This
-    # is a WEAK-signal advisory: exact-name overlap catches only a
-    # narrow class of duplication (the historical market_price_usd
-    # case doesn't fire — get_crypto_price surfaces ``price`` not
-    # ``market_price_usd``). Semantic dedup is gate-2.5 territory.
-    # (c) non-rolling static → warn appended to status_reason.
-    if verdict["outcome"] == "warn" and final_status == P.STATUS_PENDING_APPROVAL:
-        final_row = await store.get(proposal_id)
-        existing = (final_row or {}).get("status_reason") or ""
-        combined = (existing + " | " + verdict["reason"]).strip(" |") \
-            if existing else verdict["reason"]
-        await store.update_status(
-            proposal_id, P.STATUS_PENDING_APPROVAL, combined[:2000],
-        )
-
+    # Post-submission checks (2026-09-29): liveness verdict + overlap
+    # note + shadow gate + delegation, ALL wrapped so a raise inside
+    # any single check holds the proposal at STATUS_CHECKS_INCOMPLETE
+    # instead of letting it slip to pending_approval silently. See
+    # self_modify.post_submission_checks for the contract.
     if final_status == P.STATUS_PENDING_APPROVAL:
+        from self_modify import post_submission_checks as _pchecks
         registered_field_names = _registered_digest_fields(config, pm)
-        overlap = sorted(set(spec["digest_fields"]) & registered_field_names)
-        if overlap:
-            final_row = await store.get(proposal_id)
-            existing = (final_row or {}).get("status_reason") or ""
-            note = f"note: field-name overlap with existing digests: {overlap}"
-            await store.update_status(
-                proposal_id, P.STATUS_PENDING_APPROVAL,
-                (existing + " " + note).strip() if existing else note,
-            )
-            log(f"pending_approval note: {note}")
-
-        # Shadow Gate 2.5 — run LLM verifier, record verdict. Under
-        # the DEFAULT posture (SHADOW_DELEGATION off) the shadow has
-        # ZERO authority — verdict is recorded and returned, proposal
-        # status is untouched. Under DELEGATION ON, a REJECT verdict
-        # (and REJECT alone — NEVER APPROVE) flips the proposal to
-        # shadow_rejected via the delegation hook below. APPROVE/FLAG
-        # continue to the operator queue as before — the dangerous
-        # direction stays 100% human.
-        shadow_verdict: dict[str, Any] | None = None
-        try:
-            from self_modify import shadow as _shadow
-            final_row = await store.get(proposal_id)
-            if final_row is not None:
-                shadow_verdict = await _shadow.run_shadow_verdict(
-                    proposal=final_row, config=config, pm=pm,
-                )
-                log(
-                    f"shadow verdict: {shadow_verdict.get('verdict')} "
-                    f"axes={shadow_verdict.get('axes')}"
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("reflect: shadow verdict failed (non-fatal): {}", exc)
-
-        # Delegation hook — the ONLY code path that writes
-        # STATUS_SHADOW_REJECTED. Grep-locked in tests. Requires:
-        # (1) the delegation flag is on, (2) the verdict is REJECT.
-        # APPROVE and FLAG never trigger the flip — the dangerous
-        # direction stays 100% human.
-        if (_delegation_enabled()
-                and shadow_verdict is not None
-                and shadow_verdict.get("verdict") == "REJECT"):
-            reason = _format_delegation_reason(shadow_verdict)
-            await store.update_status(
-                proposal_id, P.STATUS_SHADOW_REJECTED, reason[:2000],
-            )
-            final_status = P.STATUS_SHADOW_REJECTED
-            log(f"delegation: shadow REJECT → {proposal_id[:8]} "
-                f"flipped to shadow_rejected (recorded axes+reasons)")
+        results, final_status = await _pchecks.run_post_submission_checks(
+            store=store, proposal_id=proposal_id, spec=spec, probe=probe,
+            registered_field_names=registered_field_names,
+            config=config, pm=pm,
+            delegation_enabled=_delegation_enabled(),
+        )
+        for r in results:
+            log(f"check[{r.name}] {r.status}: {r.message}")
 
     return {"outcome": "submitted", "reason": final_status,
             "proposal_id": proposal_id, "pipeline_status": final_status,

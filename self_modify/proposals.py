@@ -113,6 +113,14 @@ STATUS_REJECTED_SANDBOX_UNAVAILABLE = "rejected_sandbox_unavailable"
 # proposal marked here. Distinct from tests_failed so retry policy
 # can treat interruption as retryable while genuine failures aren't.
 STATUS_ABORTED_INTERRUPTED = "aborted_interrupted"
+# 2026-09-29: crashed-check = failed-check. A post-submission check
+# (liveness, overlap, shadow, field-map) that RAISES must not let a
+# proposal reach pending_approval silently. The proposal lands here
+# with the offending check named in status_reason so the operator
+# sees it at `morgoth show` and can decide to `recheck` or reject.
+# Distinct from tests_failed (which is a KNOWN pytest failure) —
+# checks_incomplete signals that the gate itself broke, not the code.
+STATUS_CHECKS_INCOMPLETE = "checks_incomplete"
 # Apply-time statuses (step 2 — the door).
 STATUS_APPLIED = "applied"
 STATUS_APPLY_FAILED_ROLLED_BACK = "apply_failed_rolled_back"
@@ -135,6 +143,7 @@ ALL_STATUSES: tuple[str, ...] = (
     STATUS_PENDING_KEY,
     STATUS_REJECTED_SANDBOX_UNAVAILABLE,
     STATUS_ABORTED_INTERRUPTED,
+    STATUS_CHECKS_INCOMPLETE,
     STATUS_APPLIED,
     STATUS_APPLY_FAILED_ROLLED_BACK,
 )

@@ -82,25 +82,31 @@ def test_delegation_reason_carries_shadow_prefix() -> None:
 # ---------- grep-level invariants (Phase C3) ----------------------------
 
 def test_reflect_writes_shadow_rejected_only_via_delegation_hook() -> None:
-    """The reflect module must have EXACTLY ONE call to update_status
-    that names STATUS_SHADOW_REJECTED — the delegation hook itself.
-    Any second write is a smuggled path around the invariant."""
+    """EXACTLY ONE call to update_status(STATUS_SHADOW_REJECTED) across
+    the reflect surface — reflect.py + post_submission_checks.py. 2026-09-29
+    moved the delegation hook into post_submission_checks so a crashed
+    check can hold the proposal before delegation ever fires. Any second
+    write is a smuggled path around the invariant.
+
+    The write MUST be gated by ``delegation_enabled`` (passed in by
+    reflect) — no self-authorized status flip is allowed."""
     import re
-    src = inspect.getsource(R)
-    # Match ``update_status(...STATUS_SHADOW_REJECTED...)`` with the
-    # call spanning any number of lines. DOTALL makes . cross \n.
+    from self_modify import post_submission_checks as PC
+    combined = inspect.getsource(R) + "\n" + inspect.getsource(PC)
     pattern = re.compile(
         r"\.update_status\([^)]*STATUS_SHADOW_REJECTED[^)]*\)",
         re.DOTALL,
     )
-    matches = pattern.findall(src)
+    matches = pattern.findall(combined)
     assert len(matches) == 1, (
         f"expected exactly one update_status(...STATUS_SHADOW_REJECTED)"
-        f" call; found {len(matches)}"
+        f" call across reflect + post_submission_checks; found {len(matches)}"
     )
-    # And that write must be gated by _delegation_enabled().
-    hook_context = src.split("Delegation hook")[-1]
-    assert "_delegation_enabled" in hook_context
+    # And that write must be gated by the delegation flag (either
+    # _delegation_enabled() inside reflect, or the delegation_enabled
+    # kwarg on the checks runner).
+    pc_src = inspect.getsource(PC)
+    assert "delegation_enabled" in pc_src
 
 
 def test_reflect_never_delegates_on_approve_or_flag() -> None:
