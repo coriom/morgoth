@@ -466,3 +466,41 @@ class ProposalStore:
                 _uuid.UUID(proposal_id),
             )
         return result.endswith(" 1")
+
+    async def set_status_reason(
+        self, proposal_id: str, reason: str, *,
+        require_status: str | None = None,
+    ) -> bool:
+        """Append ``reason`` to status_reason WITHOUT changing status.
+
+        2026-09-30 apply-precheck fix: a refusal is diagnostic
+        information for the operator, not a state transition. This
+        method is the ONE place status_reason can be mutated without
+        moving the status column, so grep-lock ``.update_status(`` in
+        apply's precheck stays clean. ``require_status`` (optional)
+        adds ``AND status = $2`` to the WHERE clause: an operator's
+        manual restore between refusal and note would otherwise land
+        the diagnostic on a row that already moved on.
+        """
+        pool = self._pm._require_pool()  # noqa: SLF001
+        async with pool.acquire() as conn:
+            if require_status is None:
+                q = (
+                    "UPDATE self_modify_proposals SET status_reason = "
+                    "COALESCE(status_reason, '') || CASE WHEN "
+                    "COALESCE(status_reason, '') = '' THEN '' ELSE ' | ' END "
+                    "|| $1, updated_at = NOW() WHERE proposal_id = $2"
+                )
+                result = await conn.execute(q, reason, _uuid.UUID(proposal_id))
+            else:
+                q = (
+                    "UPDATE self_modify_proposals SET status_reason = "
+                    "COALESCE(status_reason, '') || CASE WHEN "
+                    "COALESCE(status_reason, '') = '' THEN '' ELSE ' | ' END "
+                    "|| $1, updated_at = NOW() "
+                    "WHERE proposal_id = $2 AND status = $3"
+                )
+                result = await conn.execute(
+                    q, reason, _uuid.UUID(proposal_id), require_status,
+                )
+        return result.endswith(" 1")

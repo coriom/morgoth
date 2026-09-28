@@ -588,8 +588,15 @@ async def _cmd_apply(store: P.ProposalStore, args: argparse.Namespace) -> int:
     after = await store.get(pid)
     print(f"final status: {final}")
     if after:
+        print(f"row status:   {after.get('status')}")
         print(f"reason:       {after.get('status_reason') or ''}")
-    return 0 if final == apply_mod.STATUS_APPLIED else 1
+    # Exit codes: 0=applied, 1=rolled back, 2=refused (pure read;
+    # row still approved_pending_apply, no rollback counted).
+    if final == apply_mod.STATUS_APPLIED:
+        return 0
+    if final == apply_mod.APPLY_REFUSED_PRECHECK:
+        return 2
+    return 1
 
 
 async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> int:

@@ -69,6 +69,15 @@ _PYTEST_TIMEOUT_SECS = _gates.PYTEST_BUDGET_SECS
 # Re-export from proposals for a shorter local reference.
 STATUS_APPLIED = P.STATUS_APPLIED
 STATUS_APPLY_FAILED_ROLLED_BACK = P.STATUS_APPLY_FAILED_ROLLED_BACK
+# 2026-09-30 apply-refused-precheck: precheck REFUSAL is not a rollback.
+# It's a pure read — the row stays at approved_pending_apply and the
+# refusal is a diagnostic for the operator, not a state transition,
+# not a rollback in the auto_approve metric. The CLI shows this
+# return honestly ("final status: apply_refused_precheck") instead
+# of pretending a rollback occurred. auto_approve.apply_outcomes
+# already filters by row.status, so a refusal never enters the
+# rollback-rate denominator by construction.
+APPLY_REFUSED_PRECHECK = "apply_refused_precheck"
 
 
 # --- git helpers ------------------------------------------------------------
@@ -138,19 +147,26 @@ async def _wait_for_ready_and_tool(tool_name: str | None) -> bool:
 
 # --- subprocess wrappers ----------------------------------------------------
 
-def _run_live_pytest(repo: Path) -> subprocess.CompletedProcess[str]:
+def _run_live_pytest(
+    repo: Path, junit_out: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Live-tree pytest — same suite the sandbox ran, same budget.
 
     ``-n auto`` matches the sandbox invocation so the live budget's
     variance envelope matches the measured value (a live serial run
     at ~2700s wall time would routinely exceed even the sandbox
     xdist budget).
+
+    ``junit_out`` (2026-09-30): when set, --junitxml is emitted so
+    apply can judge NEW failures against a pre-write baseline (same
+    primitive gate_tests uses). With 46 legacy failures on the live
+    tree, ``if returncode != 0: rollback`` would fail every apply.
     """
+    argv = [str(_VENV_PYTHON), "-m", "pytest", "-q", "-n", "auto"]
+    if junit_out is not None:
+        argv.append(f"--junitxml={junit_out}")
     return subprocess.run(
-        [str(_VENV_PYTHON), "-m", "pytest", "-q", "-n", "auto"],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
+        argv, cwd=str(repo), capture_output=True, text=True,
         timeout=_PYTEST_TIMEOUT_SECS,
     )
 
@@ -189,28 +205,47 @@ async def apply_proposal(
 
     # ---- 1. preconditions --------------------------------------------------
     #
-    # PURE READ CONTRACT: refusal must NOT mutate the row. A second-launch
-    # `morgoth apply <id>` on an already-terminal proposal used to overwrite
-    # the row's status_reason with the refusal message, destroying the
-    # historical outcome. Two casualties: 1735f617 (original failure
-    # reason destroyed 07-24, "unknown cause" traced back to this) and
-    # 580d247c (real state 'applied' 07-24 20:20 clobbered to
-    # 'apply_failed_rolled_back' 07-25). A refusal is diagnostic
-    # information for the operator; it is not a state transition.
-    # Grep-lock: this branch and the four below must never carry an
-    # update_status call.
+    # PURE READ CONTRACT: refusal must NOT change the row's STATUS. Prior
+    # bug: the four casualties (1735f617, 580d247c, ...) had their real
+    # outcome clobbered by a rerun's refusal writing status='apply_failed_
+    # rolled_back'. 2026-09-30 tightening: a refusal ALSO must not be
+    # counted as a rollback in the auto_approve metric (an operator's
+    # dirty git tree is not evidence Morgoth broke anything). We return
+    # a distinct APPLY_REFUSED_PRECHECK code and append the refusal
+    # reason to status_reason WITHOUT touching status. Grep-lock:
+    # precheck branches never call ``update_status``.
+    async def _note_precheck(reason: str) -> None:
+        """Append a refusal diagnostic to status_reason WITHOUT moving
+        status. Guarded by ``require_status=approved_pending_apply``
+        so a concurrent restore between refusal and note can't land
+        the diagnostic on a row that's already moved on. Safe when
+        ``store.set_status_reason`` is missing (unit-test mock)."""
+        setter = getattr(store, "set_status_reason", None)
+        if setter is None:
+            return
+        try:
+            await setter(
+                proposal_id, f"[precheck-refused] {reason}",
+                require_status=P.STATUS_APPROVED_PENDING_APPLY,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("_note_precheck: {}", exc)
+
     if row["status"] != P.STATUS_APPROVED_PENDING_APPLY:
         reason = (
             f"apply refused: status is {row['status']!r}, "
             f"must be {P.STATUS_APPROVED_PENDING_APPLY!r}"
         )
         _log("precheck", reason)
-        return STATUS_APPLY_FAILED_ROLLED_BACK
+        # No note here — row isn't approved_pending_apply, so we don't
+        # touch it (guard clause + WHERE status = ...).
+        return APPLY_REFUSED_PRECHECK
 
     if row["change_type"] != "new_file":
         reason = f"apply refused: change_type is {row['change_type']!r}, only new_file supported"
         _log("precheck", reason)
-        return STATUS_APPLY_FAILED_ROLLED_BACK
+        await _note_precheck(reason)
+        return APPLY_REFUSED_PRECHECK
 
     zone_now = zones.classify_proposal(row["target_path"], row["change_type"])
     if zone_now != "green":
@@ -219,44 +254,86 @@ async def apply_proposal(
             f"only green proposals may apply (defense in depth)"
         )
         _log("precheck", reason)
-        return STATUS_APPLY_FAILED_ROLLED_BACK
+        await _note_precheck(reason)
+        return APPLY_REFUSED_PRECHECK
 
     target = repo_root / row["target_path"]
     if target.exists():
         reason = f"apply refused: target path {row['target_path']!r} already exists in live tree"
         _log("precheck", reason)
-        return STATUS_APPLY_FAILED_ROLLED_BACK
+        await _note_precheck(reason)
+        return APPLY_REFUSED_PRECHECK
 
     if not _git_tree_is_clean(repo_root):
         reason = "apply refused: live git tree is not clean (uncommitted changes present)"
         _log("precheck", reason)
-        return STATUS_APPLY_FAILED_ROLLED_BACK
+        await _note_precheck(reason)
+        return APPLY_REFUSED_PRECHECK
 
     _log("precheck", "OK — all preconditions pass")
 
-    # ---- 2. write ----------------------------------------------------------
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(row["content"], encoding="utf-8")
-    _log("write", f"wrote {row['target_path']}")
-
-    # ---- 3. live pytest ----------------------------------------------------
+    # ---- 2a. BASELINE pytest ----------------------------------------------
+    # 2026-09-30: baseline diff (mirrors gate_tests). With 46 legacy
+    # failures on the live tree, ``if returncode != 0: rollback`` would
+    # fail every apply. Run pytest BEFORE writing the file to record
+    # the current failing set; then rerun AFTER the write and reject
+    # only if NEW failures appear. Junit files go under /var/tmp so
+    # they never contaminate the git tree.
+    import tempfile
+    # Use the default temp dir (respects $TMPDIR; falls back to /tmp)
+    # so the tests running INSIDE bwrap (which has --tmpfs /tmp and no
+    # /var/tmp mount) can still create the junit staging dir.
+    _staging = Path(tempfile.mkdtemp(prefix="morgoth_apply_"))
+    baseline_junit = _staging / "junit.baseline.xml"
+    proposal_junit = _staging / "junit.proposal.xml"
     try:
-        completed = await asyncio.to_thread(_pytest_runner, repo_root)
-    except subprocess.TimeoutExpired:
-        target.unlink(missing_ok=True)
-        reason = f"apply pytest timed out after {_PYTEST_TIMEOUT_SECS}s; file removed"
-        _log("pytest", reason)
-        await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
-        return STATUS_APPLY_FAILED_ROLLED_BACK
+        _log("baseline", "running pytest on live tree (no file yet)")
+        try:
+            await asyncio.to_thread(_pytest_runner, repo_root, baseline_junit)
+        except subprocess.TimeoutExpired:
+            reason = f"apply baseline pytest timed out after {_PYTEST_TIMEOUT_SECS}s"
+            _log("baseline", reason)
+            await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
+            return STATUS_APPLY_FAILED_ROLLED_BACK
+        base_fail, base_err = _gates._junit_failing_ids(baseline_junit)
+        baseline_failures = base_fail | base_err
+        _log("baseline", f"failures={len(baseline_failures)}")
 
-    if completed.returncode != 0:
-        target.unlink(missing_ok=True)
-        tail = (completed.stdout + completed.stderr)[-2000:]
-        reason = f"apply pytest FAILED exit={completed.returncode}; file removed\n---tail---\n{tail}"
-        _log("pytest", f"FAILED exit={completed.returncode}")
-        await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
-        return STATUS_APPLY_FAILED_ROLLED_BACK
-    _log("pytest", "PASS")
+        # ---- 2b. write ---------------------------------------------------
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(row["content"], encoding="utf-8")
+        _log("write", f"wrote {row['target_path']}")
+
+        # ---- 3. proposal pytest ------------------------------------------
+        try:
+            completed = await asyncio.to_thread(_pytest_runner, repo_root, proposal_junit)
+        except subprocess.TimeoutExpired:
+            target.unlink(missing_ok=True)
+            reason = f"apply proposal pytest timed out after {_PYTEST_TIMEOUT_SECS}s; file removed"
+            _log("pytest", reason)
+            await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
+            return STATUS_APPLY_FAILED_ROLLED_BACK
+        prop_fail, prop_err = _gates._junit_failing_ids(proposal_junit)
+        proposal_failures = prop_fail | prop_err
+        new_failures = proposal_failures - baseline_failures
+        if new_failures:
+            target.unlink(missing_ok=True)
+            tail = (completed.stdout + completed.stderr)[-1500:]
+            reason = (
+                f"apply pytest introduced {len(new_failures)} NEW failure(s) "
+                f"vs baseline (baseline={len(baseline_failures)}, "
+                f"proposal={len(proposal_failures)}); file removed\n"
+                f"---new failures---\n" + "\n".join(sorted(new_failures)[:20]) +
+                f"\n---tail---\n{tail}"
+            )
+            _log("pytest", f"FAIL {len(new_failures)} new failure(s)")
+            await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
+            return STATUS_APPLY_FAILED_ROLLED_BACK
+        _log("pytest",
+              f"PASS baseline={len(baseline_failures)} proposal={len(proposal_failures)} — 0 new")
+    finally:
+        import shutil as _shu
+        _shu.rmtree(_staging, ignore_errors=True)
 
     # ---- 4. commit (local only) --------------------------------------------
     if not _git_add(repo_root, row["target_path"]):
