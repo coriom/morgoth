@@ -336,12 +336,17 @@ import httpx
 
 from core.config import AppConfig, PermissionDeniedError
 from tools.base_tool import BaseTool
+from self_modify.digest_path import resolve_digest_fields
 
 
 _BASE_URL = {base_url_repr}
 _ENDPOINT_PATH = {endpoint_path_repr}
 _SOURCE_LABEL = {source_label_repr}
 _TOOL_DESCRIPTION = {description_repr}
+# ONE EXTRACTOR (2026-09-29): _DIGEST_FIELDS carries the full
+# {{name, path}} entries so runtime resolution goes through
+# self_modify.digest_path.resolve_digest_fields — the SAME resolver
+# the liveness probe and the shadow sampler use. Never re-implement.
 _DIGEST_FIELDS = {digest_fields_repr}
 # Keyed-API block: populated when the spec declared a requires_key.
 # The env var NAME is baked into the module; the VALUE is fetched
@@ -362,7 +367,13 @@ class {class_name}(BaseTool):
     # trailing slash. Derived deterministically from the spec so the
     # next model can see this tool's endpoint in the reflect registry.
     api_endpoints = ({endpoint_declaration_repr},)
-    digest_fields = tuple(_DIGEST_FIELDS)
+    # Class attribute stays a tuple of NAMES for identity consumers
+    # (learned_served_phrases, _registered_digest_fields, `morgoth
+    # show`). Path info lives in _DIGEST_FIELDS at module scope and
+    # is used only by execute()'s resolver call — the class attribute
+    # is the identity surface, the module var is the extraction surface.
+    digest_fields = tuple(_e["name"] if isinstance(_e, dict) else _e
+                          for _e in _DIGEST_FIELDS)
     description = _TOOL_DESCRIPTION
     parameters = {{"type": "object", "properties": {{}}}}
 
@@ -418,27 +429,18 @@ class {class_name}(BaseTool):
             )
 
         data = resp.json()
-        # Best-effort digest: pick the requested fields from a top-level dict
-        # OR from the first entry of a top-level list (mirrors the fear_greed
-        # pattern for {{"data": [...]}} shaped responses).
-        record: dict[str, Any] = {{}}
-        if isinstance(data, dict):
-            for key in _DIGEST_FIELDS:
-                if key in data:
-                    record[key] = data[key]
-            if not record and isinstance(data.get("data"), list) and data["data"]:
-                first = data["data"][0]
-                if isinstance(first, dict):
-                    for key in _DIGEST_FIELDS:
-                        if key in first:
-                            record[key] = first[key]
-        elif isinstance(data, list) and data and isinstance(data[0], dict):
-            for key in _DIGEST_FIELDS:
-                if key in data[0]:
-                    record[key] = data[0][key]
-        if not record:
+        # 2026-09-29: ONE EXTRACTOR. The tool, the liveness probe, and
+        # the shadow sampler share this resolver — no re-implementation.
+        # Path grammar (dotted + selectors + aggregates) unlocks nested
+        # sources such as JSON-RPC ``result.<name>`` or DefiLlama's
+        # ``peggedAssets[*].circulating.peggedUSD``. Plain-string entries
+        # remain top-level scalar lookups, byte-identical to the pre-
+        # path-grammar era.
+        record, errors, _meta = resolve_digest_fields(_DIGEST_FIELDS, data)
+        if errors or not record:
+            head = "; ".join(f"{{n}}: {{m}}" for n, m in errors[:3]) or "no fields resolved"
             return self.failure(
-                "response did not contain any of the expected digest fields",
+                f"{{_SOURCE_LABEL}}: digest resolve failed — {{head}}",
                 source=_SOURCE_LABEL,
             )
 
@@ -1556,10 +1558,19 @@ async def _one_reflect_attempt(
     # 450s — nests cleanly). Started here so it's already in flight
     # when the sandbox spins up. See self_modify.liveness for rules.
     import asyncio as _asyncio
-    from self_modify.digest_path import digest_field_names as _digest_names
-    _digest_names_list = _digest_names(spec.get("digest_fields"))
+    from self_modify.digest_path import (
+        normalize_digest_fields as _norm_digest,
+    )
+    # Pass RAW entries into the probe so resolve_digest_fields can
+    # trigger the string-entry auto-unwrap (top-level → data[0] →
+    # list[0]). Normalize is used for _digest_entries (embedded in the
+    # generated tool source) and for the name list — never as the
+    # probe input.
+    _digest_entries = _norm_digest(spec.get("digest_fields"))
+    _digest_names_list = [e["name"] for e in _digest_entries]
+    _digest_raw = list(spec.get("digest_fields") or [])
     probe_task = _asyncio.create_task(liveness.run_liveness_probe(
-        smoke_target, _digest_names_list,
+        smoke_target, _digest_raw,
     ))
     log(f"liveness probe launched (concurrent with gate_tests): {smoke_target}")
 
@@ -1584,15 +1595,13 @@ async def _one_reflect_attempt(
         tool_name_repr=repr(tool_name),
         base_url_repr=repr(spec["api_base_url"]),
         endpoint_path_repr=repr(spec["endpoint_path"]),
-        # Class attribute contract (preserved): tools/base_tool.py declares
-        # digest_fields as tuple[str, ...] — a tuple of NAMES. Path info
-        # lives in the spec/proposal payload, not on the class. This keeps
-        # every existing class-attribute consumer (learned_served_phrases,
-        # shadow registry, `morgoth show`) working without touching the
-        # class-attribute surface. Path-digest resolution at RUNTIME is
-        # the tool's own concern via self_modify.digest_path — the class
-        # attribute is for identity/served-phrase learning only.
-        digest_fields_repr=repr(_digest_names_list),
+        # 2026-09-29 ONE EXTRACTOR: embed FULL {name, path} entries so
+        # runtime resolve_digest_fields can walk the path grammar. The
+        # class attribute is still normalized to tuple[str] of names
+        # inside the template (see `digest_fields = tuple(...)` above)
+        # so identity consumers see only names, matching the pre-path
+        # class-attribute contract.
+        digest_fields_repr=repr(_digest_entries),
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
         endpoint_declaration_repr=repr(endpoint_declaration),

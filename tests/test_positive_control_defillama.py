@@ -78,6 +78,68 @@ class TestDefillamaSpecClearsShapeGate:
         assert values["asset_count"]  == 3
         assert meta["total_supply"]["resolved"] == 3
 
+    def test_rendered_tool_returns_real_values_against_fixture(self):
+        """The RENDERED tool (not the resolver in isolation) must produce
+        the four expected values on the DefiLlama fixture. Locks the
+        ONE-EXTRACTOR contract (2026-09-29): the tool, the liveness
+        probe, and the shadow sampler share ``resolve_digest_fields``
+        — so a shape the resolver handles MUST also work end-to-end
+        through the generated tool's ``execute()``.
+
+        Without this assertion (the shape 9f446bb4 exposed), the tool
+        template could keep drifting away from the resolver — as it
+        did before this commit, when the template's ``if key in data``
+        loop crashed on dict entries and read null on JSON-RPC bodies."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+        from self_modify import reflect
+        from self_modify.digest_path import normalize_digest_fields
+
+        spec = self._spec()
+        entries = normalize_digest_fields(spec["digest_fields"])
+        content = reflect.TOOL_TEMPLATE.format(
+            tool_name=spec["tool_name"],
+            class_name=reflect._snake_to_class_name(spec["tool_name"]),
+            tool_name_repr=repr(spec["tool_name"]),
+            base_url_repr=repr(spec["api_base_url"]),
+            endpoint_path_repr=repr(spec["endpoint_path"]),
+            digest_fields_repr=repr(entries),
+            description_repr=repr(spec["description"]),
+            source_label_repr=repr("stablecoins.llama.fi"),
+            endpoint_declaration_repr=repr("stablecoins.llama.fi/stablecoins"),
+            requires_key_env_repr=repr(None),
+            key_in_repr=repr(None),
+            key_param_repr=repr(None),
+        )
+        ns: dict = {}
+        exec(compile(content, "<positive-control>", "exec"), ns, ns)
+        cls = ns["GetDefillamaStablecoinsTool"]
+
+        body = self._live_shape_body()
+        fake_resp = SimpleNamespace(
+            status_code=200, json=lambda: body,
+            raise_for_status=lambda: None,
+        )
+        fake_client = MagicMock()
+        fake_client.get = AsyncMock(return_value=fake_resp)
+        fake_client.aclose = AsyncMock()
+
+        cfg = SimpleNamespace(
+            permissions=SimpleNamespace(
+                permissions=SimpleNamespace(can_access_internet=True),
+            )
+        )
+        tool = cls(cfg, client=fake_client)
+        out = asyncio.run(tool.execute())
+
+        assert out.get("success") is True, out
+        data = out["result"]
+        assert data["total_supply"] == 165_000_000_000, data
+        assert data["usdt_supply"]  == 120_000_000_000, data
+        assert data["usdc_supply"]  ==  40_000_000_000, data
+        assert data["asset_count"]  == 3, data
+
     def test_rationale_names_measuring_field(self):
         # 2026-09-26 gate-3 requirement: the rationale must name the
         # digest_field that measures the claimed gap. Enforced softly

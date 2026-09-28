@@ -251,29 +251,74 @@ async def _cmd_recheck(store: P.ProposalStore, args: argparse.Namespace) -> int:
     except (ValueError, SyntaxError) as exc:
         print(f"recheck: proposal content parse failed: {exc}", file=sys.stderr)
         return 2
+    tool_name = (row.get("target_path") or "").split("/")[-1].rstrip(".py")
+    # Try to recover the description too (repr'd string on _TOOL_DESCRIPTION).
+    desc_raw = _grab("_TOOL_DESCRIPTION")
+    try:
+        description = _ast.literal_eval(desc_raw) if desc_raw else ""
+    except (ValueError, SyntaxError):
+        description = ""
     spec = {
-        "tool_name": (row.get("target_path") or "").split("/")[-1].rstrip(".py"),
+        "tool_name": tool_name,
         "api_base_url": base_url,
         "endpoint_path": endpoint_path,
         "digest_fields": digest_fields,
-        "description": "", "rationale": row.get("rationale") or "",
+        "description": description, "rationale": row.get("rationale") or "",
     }
     smoke_target = base_url + endpoint_path
 
     config = await load_config()
     pm = store._pm  # noqa: SLF001
 
+    # 2026-09-29: --regenerate re-renders the proposal's content using
+    # the CURRENT TOOL_TEMPLATE. Motivated by 9f446bb4: its stored
+    # content was rendered with a pre-fix template that dropped path
+    # info and would have raised TypeError at runtime. Regenerate
+    # uses ONLY the spec facts we already extracted from the row
+    # (base_url, endpoint_path, digest_fields, description) — no LLM
+    # call, no re-reflect. The row's content is updated in place so
+    # subsequent gates + apply see the fixed source.
+    if getattr(args, "regenerate", False):
+        from self_modify.digest_path import normalize_digest_fields as _norm
+        from urllib.parse import urlparse as _urlparse
+        entries = _norm(digest_fields)
+        source_label = _urlparse(base_url).hostname or ""
+        endpoint_declaration = _reflect._normalize_endpoint(base_url, endpoint_path)
+        new_content = _reflect.TOOL_TEMPLATE.format(
+            tool_name=tool_name,
+            class_name=_reflect._snake_to_class_name(tool_name),
+            tool_name_repr=repr(tool_name),
+            base_url_repr=repr(base_url),
+            endpoint_path_repr=repr(endpoint_path),
+            digest_fields_repr=repr(entries),
+            description_repr=repr(description or tool_name),
+            source_label_repr=repr(source_label),
+            endpoint_declaration_repr=repr(endpoint_declaration),
+            requires_key_env_repr=repr(None),
+            key_in_repr=repr(None),
+            key_param_repr=repr(None),
+        )
+        # Compile-check before persisting — a template bug must not
+        # replace a working proposal with garbage.
+        compile(new_content, f"<regenerated:{pid}>", "exec")
+        await pm.execute(
+            "UPDATE self_modify_proposals SET content = $1, "
+            "updated_at = now() WHERE proposal_id = $2::uuid",
+            new_content, pid,
+        )
+        print(f"recheck: regenerated proposal content ({len(new_content)} bytes)")
+
     # Fresh liveness probe. Under `recheck` we run 1 hit (not 4) unless
     # the operator opts into --full: the goal is "did the crash reproduce",
     # not "did the source freeze over 7.5 min". The overlap + shadow checks
     # don't care about probe depth.
-    from self_modify.digest_path import digest_field_names as _dnames
-    names = _dnames(digest_fields)
+    # Pass RAW digest_fields to the probe (may be a mix of strings and
+    # {name, path} dicts). resolve_digest_fields handles both natively.
     hits = 4 if args.full else 1
     probe = None
     try:
         print(f"recheck: liveness probe ({hits} hit{'s' if hits > 1 else ''}) → {smoke_target}")
-        probe = await _liveness.run_liveness_probe(smoke_target, names, hits=hits)
+        probe = await _liveness.run_liveness_probe(smoke_target, digest_fields, hits=hits)
     except Exception as exc:  # noqa: BLE001
         print(f"recheck: liveness probe crashed: {type(exc).__name__}: {exc}")
         probe = None
@@ -430,8 +475,11 @@ async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> in
     # so a template improvement lands on provisioning too.
     tool_name = spec["tool_name"]
     class_name = _reflect._snake_to_class_name(tool_name)
-    from self_modify.digest_path import digest_field_names as _dnames
-    _dnames_list = _dnames(spec.get("digest_fields"))
+    from self_modify.digest_path import (
+        normalize_digest_fields as _norm_digest,
+    )
+    _digest_entries = _norm_digest(spec.get("digest_fields"))
+    _dnames_list = [e["name"] for e in _digest_entries]
     from urllib.parse import urlparse as _urlparse
     source_label = _urlparse(spec["api_base_url"]).hostname or ""
     endpoint_declaration = _reflect._normalize_endpoint(
@@ -445,7 +493,7 @@ async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> in
         tool_name_repr=repr(tool_name),
         base_url_repr=repr(spec["api_base_url"]),
         endpoint_path_repr=repr(spec["endpoint_path"]),
-        digest_fields_repr=repr(_dnames_list),
+        digest_fields_repr=repr(_digest_entries),
         description_repr=repr(spec["description"]),
         source_label_repr=repr(source_label),
         endpoint_declaration_repr=repr(endpoint_declaration),
@@ -467,7 +515,7 @@ async def _cmd_provision(store: P.ProposalStore, args: argparse.Namespace) -> in
     new_row = await store.get(new_id)
     import asyncio as _asyncio
     probe_task = _asyncio.create_task(_liveness.run_liveness_probe(
-        smoke_target, _dnames_list,
+        smoke_target, list(spec.get("digest_fields") or []),
     ))
     pipeline_status = await _gates.run_pipeline(store, new_row)
     print(f"provision: pipeline final_status={pipeline_status}")
@@ -896,6 +944,16 @@ async def _main(argv: list[str]) -> int:
     p_recheck.add_argument(
         "--full", action="store_true",
         help="4-hit liveness probe (7.5 min) instead of the default 1 hit",
+    )
+    p_recheck.add_argument(
+        "--regenerate", action="store_true",
+        help=(
+            "re-render the proposal's tool source with the current "
+            "TOOL_TEMPLATE (uses only the stored spec facts — no LLM "
+            "call). Fixes proposals whose stored source pre-dates a "
+            "template fix, e.g. 9f446bb4 which was rendered before "
+            "the 2026-09-29 ONE-EXTRACTOR change."
+        ),
     )
     p_recheck.set_defaults(_fn=_cmd_recheck)
 

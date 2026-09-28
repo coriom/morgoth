@@ -217,19 +217,33 @@ async def run_post_submission_checks(
             )
             return results, P.STATUS_CHECKS_INCOMPLETE
 
-    # PASS path — assemble the composite note into status_reason so the
-    # operator sees the liveness verdict and overlap note at `morgoth show`.
-    notes: list[str] = []
+    # 2026-09-29: liveness REJECT (rules a/b) → rejected_static. Mirrors
+    # reflect's flow so `morgoth recheck` and reflect converge on the
+    # same terminal for a genuine field-liveness failure.
+    liveness_res = next(
+        (r for r in results if r.name == CHECK_LIVENESS), None,
+    )
+    if liveness_res is not None and liveness_res.status == "reject":
+        reason = f"rejected_static: {liveness_res.message}"[:2000]
+        await store.update_status(
+            proposal_id, P.STATUS_REJECTED_STATIC, reason,
+        )
+        return results, P.STATUS_REJECTED_STATIC
+
+    # PASS path — write a FRESH composite reason from the current
+    # check results (never append to the row's prior reason, so a
+    # recheck cleanly reflects the current verdict slate instead of
+    # accumulating stale reasons).
+    parts: list[str] = []
     for r in results:
         if r.status == "warn":
-            notes.append(f"{r.name}: {r.message}")
-    if notes:
-        row = await store.get(proposal_id)
-        existing = (row or {}).get("status_reason") or ""
-        combined = (existing + " | " + " | ".join(notes)).strip(" |") \
-            if existing else " | ".join(notes)
+            parts.append(f"{r.name}: {r.message}")
+        elif r.status == "ok" and r.name == CHECK_LIVENESS:
+            parts.append(f"liveness: {r.message}")
+    if parts:
         await store.update_status(
-            proposal_id, P.STATUS_PENDING_APPROVAL, combined[:2000],
+            proposal_id, P.STATUS_PENDING_APPROVAL,
+            (" | ".join(parts))[:2000],
         )
     return results, P.STATUS_PENDING_APPROVAL
 

@@ -208,19 +208,28 @@ async def _one_get(url: str) -> dict[str, Any]:
 
 
 def _project_digest_values(
-    sample: dict[str, Any], digest_fields: list[str],
+    sample: dict[str, Any], digest_fields: list[Any],
 ) -> dict[str, Any]:
+    """Project the fields the LLM will reason about. 2026-09-29: goes
+    through resolve_digest_fields (the SAME resolver as the generated
+    tool + the liveness probe). Prior to this the shadow read fields
+    at top level via ``body.get(f)`` — which is why 9f446bb4's Deribit
+    JSON-RPC body reported all 11 fields null: values sit under
+    ``result.<name>``, not at top level. The tool, the liveness probe,
+    and the shadow now agree by construction."""
     if not sample.get("ok"):
         return {}
     body = sample.get("body")
-    if not isinstance(body, dict):
+    if body is None:
         return {}
-    return {f: body.get(f) for f in digest_fields}
+    from self_modify.digest_path import resolve_digest_fields
+    values, _errors, _meta = resolve_digest_fields(digest_fields, body)
+    return values
 
 
 async def sample_endpoint(
     base_url: str, endpoint_path: str, *, gap_secs: int = _SAMPLE_GAP_SECS,
-    digest_fields: list[str] | None = None,
+    digest_fields: list[Any] | None = None,
     now_sleep: Any = asyncio.sleep,
 ) -> dict[str, Any]:
     """Two GETs, ~gap apart. Returns the material the LLM needs to
@@ -538,17 +547,19 @@ async def run_shadow_verdict(
     verdicts on already-decided rows.
     """
     facts = extract_spec_facts(proposal.get("content") or "")
-    # 2026-09-29: normalize before passing to sample_endpoint. facts
-    # may hold path-digest {name, path} dicts; the sampler + LLM only
-    # need NAMES (top-level projection). Preserves the shadow contract
-    # while eliminating the ``unhashable type: 'dict'`` regression seen
-    # on 9f446bb4.
-    from self_modify.digest_path import digest_field_names as _dnames
-    _digest_name_list = _dnames(facts.get("digest_fields") or [])
+    # 2026-09-29 ONE EXTRACTOR: pass the RAW digest_fields into
+    # sample_endpoint. resolve_digest_fields handles both plain
+    # strings (with the pre-path-grammar top-level → data[0] → list[0]
+    # unwrap) and {name, path} dicts (path grammar; no unwrap). The
+    # LLM only needs the projected values — never the resolution rules.
+    # Pre-normalizing to dicts would suppress the string-entry unwrap
+    # and regress legacy specs; that was the shape of the 9f446bb4
+    # regression (Deribit JSON-RPC values under result.<name>).
+    _digest_raw = facts.get("digest_fields") or []
     sampler = endpoint_sampler or sample_endpoint
     sample = await sampler(
         facts.get("base_url") or "", facts.get("endpoint_path") or "",
-        digest_fields=_digest_name_list,
+        digest_fields=_digest_raw,
     )
     registry = collect_registry_context(config, pm)
 

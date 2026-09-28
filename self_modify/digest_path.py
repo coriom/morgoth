@@ -453,6 +453,23 @@ def resolve_digest_fields(
             "<digest_fields>",
             f"cap exceeded: {len(digest_fields)} > MAX_DIGEST_FIELDS={MAX_DIGEST_FIELDS}",
         )], meta
+    # 2026-09-29: for STRING entries only, pre-unwrap the body via the
+    # template extraction contract (top-level → {"data": [...]}[0] →
+    # list[0]). This preserves the pre-path-grammar template behavior
+    # so a spec like ``digest_fields: ["volume_24h"]`` still works on
+    # a list-shaped body — critical for the 1182ee96-shape fixture the
+    # test_liveness_gate suite locks. Path-grammar entries are NEVER
+    # auto-unwrapped: the user's path already encodes their intent
+    # about the body's top-level structure (e.g.
+    # ``peggedAssets[*].circulating.peggedUSD`` presumes top-level
+    # ``peggedAssets``).
+    string_body: Any = body
+    if any(isinstance(e, str) for e in digest_fields):
+        from self_modify.extraction import template_extraction_site
+        string_names = [e for e in digest_fields if isinstance(e, str)]
+        site, _label = template_extraction_site(body, string_names)
+        if site is not None:
+            string_body = site
     for entry in digest_fields:
         try:
             name, path = parse_digest_entry(entry)
@@ -461,8 +478,9 @@ def resolve_digest_fields(
             continue
         # Reset per-call so aggregate metadata doesn't leak between fields.
         _resolve_aggregate.last_meta = None
+        resolve_body = string_body if isinstance(entry, str) else body
         try:
-            v = resolve(path, body)
+            v = resolve(path, resolve_body)
         except DigestPathError as exc:
             errors.append((name, f"segment={exc.segment!r}: {exc}"))
             continue

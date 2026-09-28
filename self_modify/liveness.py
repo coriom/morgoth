@@ -85,7 +85,7 @@ async def _one_hit(
 
 async def run_liveness_probe(
     url: str,
-    digest_fields: list[str],
+    digest_fields: list[Any],
     *,
     hits: int = DEFAULT_HITS,
     gap_secs: int = DEFAULT_GAP_SECS,
@@ -100,15 +100,27 @@ async def run_liveness_probe(
     the value"). Downstream classification treats an error-string as
     "not observed as movement" but does not raise.
 
-    Field extraction goes through
-    ``self_modify.extraction.template_extraction_site`` — the SAME
-    contract the shape gate uses and the template will use at runtime.
-    List-shaped bodies unwrap to ``list[0]``; nested ``{"data": [...]}``
-    unwraps to ``data[0]``; top-level dict returns as-is. The 1182ee96
-    hole (probe blind on list-shaped bodies) was a divergence between
-    the probe and the template — closed by single-sourcing.
+    ONE EXTRACTOR (2026-09-29): field projection goes through
+    ``self_modify.digest_path.resolve_digest_fields`` — the SAME
+    resolver the generated tool's ``execute()`` runs and the shadow
+    sampler runs. The probe no longer re-implements top-level
+    projection (which was blind to JSON-RPC bodies with values under
+    ``result.<name>`` — 9f446bb4 was reported "moved or plausibly
+    live" by the probe while every path resolved to null). Any
+    resolve error for a field becomes ``error:<msg>`` on that hit,
+    which classify_probe already handles as "unknown, not dead".
     """
-    from self_modify.extraction import template_extraction_site
+    from self_modify.digest_path import (
+        resolve_digest_fields, normalize_digest_fields,
+    )
+    # normalize is used ONLY to derive the ordered name list — the
+    # ORIGINAL entries (which may be plain-string legacy shape) are
+    # what we pass into the resolver so it can trigger the top-level →
+    # data[0] → list[0] unwrap for string entries. Pre-normalizing to
+    # dicts here would suppress the unwrap (dicts always mean "path
+    # grammar, don't unwrap"), and the 1182ee96 list-shaped fixture
+    # would regress to "unknown, not frozen".
+    names = [e["name"] for e in normalize_digest_fields(digest_fields)]
 
     per_hit: list[dict[str, Any]] = []
     for i in range(hits):
@@ -116,23 +128,21 @@ async def run_liveness_probe(
         h = await _one_hit(url, timeout=hit_timeout)
         vals: dict[str, Any] = {}
         if h.get("ok"):
-            site, _label = template_extraction_site(
-                h.get("body"), list(digest_fields),
+            values, errors, _meta = resolve_digest_fields(
+                digest_fields, h.get("body"),
             )
-            if isinstance(site, dict):
-                for f in digest_fields:
-                    vals[f] = site.get(f)
-            else:
-                # Body was well-formed JSON but no extraction site
-                # matched — the template would find nothing either.
-                # Mark as extraction-error so classifier keeps the
-                # fail-open discipline (unknown, not frozen).
-                for f in digest_fields:
-                    vals[f] = "error:extraction-failed"
+            error_map = {n: m for n, m in errors}
+            for n in names:
+                if n in values:
+                    vals[n] = values[n]
+                elif n in error_map:
+                    vals[n] = f"error:resolve-{error_map[n][:80]}"
+                else:
+                    vals[n] = "error:extraction-failed"
         else:
             err = h.get("error") or f"HTTP {h.get('status')}"
-            for f in digest_fields:
-                vals[f] = f"error:{err}"
+            for n in names:
+                vals[n] = f"error:{err}"
         per_hit.append({
             "i": i, "ok": h.get("ok"), "vals": vals,
             "status": h.get("status"), "error": h.get("error"),
@@ -141,7 +151,7 @@ async def run_liveness_probe(
             elapsed = now_fn() - t0
             await sleep_fn(max(0.0, gap_secs - elapsed))
     return {"url": url, "hits": per_hit, "n_hits": hits,
-            "digest_fields": list(digest_fields)}
+            "digest_fields": names}
 
 
 # ---------------------------------------------------------------------------
