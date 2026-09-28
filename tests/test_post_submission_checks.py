@@ -265,54 +265,163 @@ async def test_run_reflection_end_to_end_path_digest_spec_reaches_submitted(
     assert result["pipeline_status"] == P.STATUS_PENDING_APPROVAL
 
 
-# --------- artifact check -------------------------------------------------
+# --------- artifact check (routes through the sandbox runner) ------------
 
-@pytest.mark.asyncio
-async def test_artifact_check_rejects_on_module_exec_crash() -> None:
-    """A syntax error at module scope → REJECT with the traceback tail."""
+def _mock_runner(kind: str, message: str, detail: dict[str, Any] | None = None,
+                  ok: bool = False) -> Any:
+    """Build a patched artifact_runner.run_artifact_in_sandbox that
+    returns a pre-shaped ArtifactResult. Every hermetic artifact-check
+    unit test uses this — the real bwrap runner is exercised ONLY by
+    the integration tests below."""
+    from self_modify.artifact_runner import ArtifactResult
+    def _fn(content: str, target_path: str, body: Any, **kw: Any) -> ArtifactResult:
+        return ArtifactResult(
+            ok=ok, kind=kind, message=message, detail=detail or {},
+        )
+    return _fn
+
+
+def test_artifact_check_rejects_on_module_exec_crash() -> None:
+    """A syntax error at module scope → REJECT with the harness's
+    module_exec kind + traceback tail. Hermetic — mocks the bwrap
+    runner; the real bwrap path is exercised by the integration
+    tests below."""
     from self_modify.post_submission_checks import _artifact_check, CHECK_ARTIFACT
-    row = {"content": "1 = 2  # SyntaxError at line 1\n"}
+    from self_modify import artifact_runner
+    row = {"content": "1 = 2\n", "target_path": "tools/data_feeds/x.py"}
     probe = {"hits": [{"ok": True, "body": {"x": 1}}]}
-    r = _artifact_check(row, probe)
+    with patch.object(
+        artifact_runner, "run_artifact_in_sandbox",
+        _mock_runner("module_exec",
+                     "SyntaxError: cannot assign to literal here",
+                     detail={"traceback_tail": "SyntaxError: ..."}),
+    ):
+        r = _artifact_check(row, probe)
     assert r.name == CHECK_ARTIFACT
     assert r.status == "reject"
-    assert "SyntaxError" in r.message or "syntax" in r.message.lower()
+    assert "module_exec" in r.message
+    assert "SyntaxError" in r.message
 
 
-@pytest.mark.asyncio
-async def test_artifact_check_rejects_pre_fix_broken_template() -> None:
-    """Replays the 9f446bb4 shape: _DIGEST_FIELDS is a list of dicts
-    but the OLD template's ``for key in _DIGEST_FIELDS: if key in data:``
-    loop treats each entry as a hashable key → TypeError at runtime.
-    The artifact check catches it — gate_tests never ran the tool."""
-    from self_modify.post_submission_checks import _artifact_check, CHECK_ARTIFACT
-    # Minimal shape of the pre-fix template — the crashing loop only.
-    old_style = (
-        "from tools.base_tool import BaseTool\n"
-        "_DIGEST_FIELDS = [{'name': 'x', 'path': 'x'}]\n"
-        "class BrokenTool(BaseTool):\n"
-        "    name = 'broken'; is_data_source = True\n"
-        "    description = 'x'; digest_fields = ('x',)\n"
-        "    def __init__(self, cfg, client=None): self._client = client\n"
-        "    async def execute(self, **_kw):\n"
-        "        data = {'x': 1}\n"
-        "        for key in _DIGEST_FIELDS:\n"
-        "            if key in data:  # crash: unhashable dict\n"
-        "                pass\n"
-        "        return {'success': True, 'result': {}}\n"
-    )
-    row = {"content": old_style}
+def test_artifact_check_rejects_on_execute_crash() -> None:
+    """A crash INSIDE execute() (e.g. the 9f446bb4 shape:
+    ``for key in _DIGEST_FIELDS: if key in data`` where _DIGEST_FIELDS
+    is a list of dicts) → REJECT with kind=execute + traceback tail."""
+    from self_modify.post_submission_checks import _artifact_check
+    from self_modify import artifact_runner
+    row = {"content": "# rendered\n", "target_path": "tools/data_feeds/x.py"}
     probe = {"hits": [{"ok": True, "body": {"x": 1}}]}
-    r = _artifact_check(row, probe)
+    with patch.object(
+        artifact_runner, "run_artifact_in_sandbox",
+        _mock_runner("execute", "TypeError: unhashable type: 'dict'"),
+    ):
+        r = _artifact_check(row, probe)
     assert r.status == "reject"
-    assert "TypeError" in r.message or "unhashable" in r.message
+    assert "unhashable" in r.message
 
 
-@pytest.mark.asyncio
-async def test_artifact_check_ok_on_rendered_defillama() -> None:
-    """Positive: the current TOOL_TEMPLATE rendered with a path-digest
-    spec, executed against the DefiLlama fixture, extracts values → OK."""
-    from self_modify.post_submission_checks import _artifact_check, CHECK_ARTIFACT
+def test_artifact_check_ok_when_harness_returns_values() -> None:
+    """OK verdict — hermetic. The real harness+bwrap is exercised
+    by the integration tests below."""
+    from self_modify.post_submission_checks import _artifact_check
+    from self_modify import artifact_runner
+    row = {"content": "# rendered\n", "target_path": "tools/data_feeds/x.py"}
+    probe = {"hits": [{"ok": True, "body": {"x": 1}}]}
+    with patch.object(
+        artifact_runner, "run_artifact_in_sandbox",
+        _mock_runner("ok", "executed against recorded body → 3 value(s) extracted",
+                     detail={"digest": {"a": 1, "b": 2, "c": 3}}, ok=True),
+    ):
+        r = _artifact_check(row, probe)
+    assert r.status == "ok"
+    assert "3 value(s)" in r.message
+    assert r.detail is not None and r.detail["digest"] == {"a": 1, "b": 2, "c": 3}
+
+
+def test_no_module_execs_rendered_proposal_content_outside_sandbox() -> None:
+    """Repo-wide grep-lock: no module in the reflect/checks/cli surface
+    may exec/compile/importlib-load a proposal's rendered ``content``
+    outside the sandbox runner. The only allowed exec-site is
+    ``self_modify/_artifact_harness.py``, which itself runs INSIDE the
+    bwrap wrapper (``self_modify.artifact_runner``).
+
+    Any future check that decides "we'll just quickly import the
+    rendered module on the host" reopens the surface the operator
+    called out: LLM-authored code executing with the operator's env."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    allowed = {
+        # The harness's exec IS the sandbox — it runs INSIDE bwrap.
+        root / "self_modify" / "_artifact_harness.py",
+    }
+    banned_patterns = (
+        "exec(compile(",
+        "importlib.util.spec_from_file_location",
+        "importlib.import_module",
+    )
+    import ast
+    offenders: list[tuple[str, str]] = []
+    for py in list((root / "self_modify").rglob("*.py")):
+        if py in allowed:
+            continue
+        text = py.read_text(encoding="utf-8")
+        # Strip module + function docstrings so security-rationale
+        # wording ("host exec()", "exec(compile(content))") doesn't
+        # self-trip the grep. We AST-parse and check only executable
+        # statements.
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.Module, ast.ClassDef)):
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    node.body = node.body[1:]  # type: ignore[attr-defined]
+        body_src = ast.unparse(tree)
+        for pat in banned_patterns:
+            if pat in body_src:
+                # Discovery uses importlib.import_module for tools/data_feeds
+                # discovery — legitimate; already excluded by file name.
+                if pat == "importlib.import_module" and py.name == "discovery.py":
+                    continue
+                offenders.append((str(py.relative_to(root)), pat))
+    assert not offenders, (
+        "found dynamic module loading outside the sandbox harness: "
+        f"{offenders}"
+    )
+
+
+def test_artifact_check_never_execs_content_on_host() -> None:
+    """Grep-lock: the artifact check MUST NOT call exec/compile on the
+    proposal's content in post_submission_checks. The sandbox harness
+    is the only path — the rendered file never touches the host
+    interpreter. We split on the docstring so the wording of the
+    security rationale doesn't self-trip the grep."""
+    import inspect, ast
+    from self_modify import post_submission_checks as P
+    src = inspect.getsource(P._artifact_check)
+    # Strip the docstring — the rationale mentions ``host exec()``.
+    tree = ast.parse(src)
+    func = tree.body[0]
+    if (isinstance(func.body[0], ast.Expr)
+            and isinstance(func.body[0].value, ast.Constant)):
+        func.body = func.body[1:]
+    body_src = ast.unparse(func)
+    assert "exec(" not in body_src, (
+        f"artifact check must not exec content on host; got:\n{body_src}"
+    )
+    assert "compile(" not in body_src, (
+        f"artifact check must not compile content on host; got:\n{body_src}"
+    )
+
+
+def _rendered_defillama_content(desc: str = "test") -> str:
+    """Helper: render the current TOOL_TEMPLATE with a DefiLlama-shape
+    spec and return the source. Used by the hermetic escaping test AND
+    by the integration positive control."""
     from self_modify import reflect
     from self_modify.digest_path import normalize_digest_fields
     spec = {
@@ -324,10 +433,10 @@ async def test_artifact_check_ok_on_rendered_defillama() -> None:
              "path": "sum(peggedAssets[*].circulating.peggedUSD)"},
             {"name": "asset_count", "path": "count(peggedAssets[*])"},
         ],
-        "description": "test", "rationale": "test",
+        "description": desc, "rationale": "test",
     }
     entries = normalize_digest_fields(spec["digest_fields"])
-    content = reflect.TOOL_TEMPLATE.format(
+    return reflect.TOOL_TEMPLATE.format(
         tool_name=spec["tool_name"],
         class_name=reflect._snake_to_class_name(spec["tool_name"]),
         tool_name_repr=repr(spec["tool_name"]),
@@ -340,20 +449,97 @@ async def test_artifact_check_ok_on_rendered_defillama() -> None:
         requires_key_env_repr=repr(None),
         key_in_repr=repr(None), key_param_repr=repr(None),
     )
+
+
+def test_template_escapes_quotes_triple_quotes_newlines_verbatim() -> None:
+    """Escaping proof: a description with quotes, triple quotes, and
+    an embedded newline renders a file that (a) compiles and (b)
+    embeds the exact string verbatim as the tool's __doc__/
+    description. The repr()-based renderer must be the ONLY thing
+    that reaches user-supplied text.
+
+    Regression lock: any future ``digest_fields_repr=str(...)`` or
+    ``description_repr=f"...{desc}..."`` drift would let a quote
+    close a string literal — exactly the surface the operator
+    called out."""
+    tricky = 'has "double", \'single\', """triple""", and a\nnewline; and \\backslash'
+    content = _rendered_defillama_content(desc=tricky)
+    # (a) compiles — no unterminated string literals, no syntax error.
+    code = compile(content, "<escaping>", "exec")
+    # (b) the tricky string is embedded VERBATIM as an object.
+    ns: dict[str, Any] = {}
+    exec(code, ns, ns)  # NOTE: only in this test — file was built from
+    # a locally-controlled spec, not an LLM. Production paths never
+    # exec rendered files outside the sandbox harness.
+    assert ns["_TOOL_DESCRIPTION"] == tricky, (
+        f"description not preserved verbatim: {ns['_TOOL_DESCRIPTION']!r}"
+    )
+
+
+# ---------- real bwrap harness --------------------------------------------
+# These tests actually spawn systemd-run + unshare + bwrap + the harness.
+# Skipped when the sandbox posture is not OK (host without bwrap or
+# systemd-run cannot run them). Runtime: ~2-3s per test.
+
+def _sandbox_ok() -> bool:
+    from self_modify import gates
+    return bool(gates.sandbox_posture().get("ok"))
+
+
+@pytest.mark.skipif(not _sandbox_ok(), reason="sandbox (bwrap+unshare+systemd-run) not available")
+def test_artifact_integration_ok_on_rendered_defillama() -> None:
+    """Real bwrap: render a valid DefiLlama-shape tool, run through
+    the sandbox harness, verify total_supply=$165B / asset_count=3."""
+    from self_modify.artifact_runner import run_artifact_in_sandbox
+    content = _rendered_defillama_content()
     body = {
         "peggedAssets": [
-            {"circulating": {"peggedUSD": 100_000_000_000}},
+            {"circulating": {"peggedUSD": 120_000_000_000}},
             {"circulating": {"peggedUSD":  40_000_000_000}},
+            {"circulating": {"peggedUSD":   5_000_000_000}},
         ]
     }
-    row = {"content": content}
-    probe = {"hits": [{"ok": True, "body": body}]}
-    r = _artifact_check(row, probe)
-    assert r.status == "ok", r
-    assert r.detail is not None
-    result = r.detail["result"]
-    assert result["total_supply"] == 140_000_000_000
-    assert result["asset_count"] == 2
+    r = run_artifact_in_sandbox(
+        content, "tools/data_feeds/get_defillama_stablecoins_art.py", body,
+    )
+    assert r.ok, r
+    digest = (r.detail or {}).get("digest", {})
+    assert digest["total_supply"] == 165_000_000_000, digest
+    assert digest["asset_count"] == 3, digest
+
+
+@pytest.mark.skipif(not _sandbox_ok(), reason="sandbox (bwrap+unshare+systemd-run) not available")
+def test_artifact_integration_canary_dot_env_unreachable() -> None:
+    """Confinement proof: a rendered file whose IMPORT tries to read
+    ~/Morgoth/morgoth/.env MUST fail inside the harness. The sandbox
+    binds only /usr /lib /lib64 /bin /etc /venv and the sandbox tree
+    itself — the operator's ~ is not on the mount table, so the .env
+    read must raise FileNotFoundError inside the harness (surfaced
+    as kind='module_exec' from the JSON verdict)."""
+    from self_modify.artifact_runner import run_artifact_in_sandbox
+    canary_file = (
+        "# CANARY: this file must NEVER be able to read the host's .env.\n"
+        "from tools.base_tool import BaseTool\n"
+        "with open('/home/corio/Morgoth/morgoth/.env', 'r') as _f:\n"
+        "    _leaked = _f.read()\n"
+        "class GetCanaryTool(BaseTool):\n"
+        "    name = 'get_canary_tool'; is_data_source = True\n"
+        "    description = 'canary'; digest_fields = ('x',)\n"
+        "    def __init__(self, cfg, client=None): self._client = client\n"
+        "    async def execute(self, **_kw):\n"
+        "        return {'success': True, 'result': {'x': 1}}\n"
+    )
+    r = run_artifact_in_sandbox(
+        canary_file, "tools/data_feeds/get_canary_tool.py", {"x": 1},
+    )
+    assert not r.ok, r
+    # The harness's module_exec kind reports the import failure.
+    assert r.kind == "module_exec", r
+    assert (
+        "FileNotFoundError" in r.message
+        or "No such file" in r.message
+        or "PermissionError" in r.message
+    ), r
 
 
 # --------- state-machine lock ---------------------------------------------

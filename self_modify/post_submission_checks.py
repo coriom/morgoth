@@ -74,51 +74,29 @@ def _crashed(name: str, exc: BaseException) -> CheckResult:
     )
 
 
-def _run_coroutine_sync(coro: Any) -> Any:
-    """Run a coroutine to completion regardless of whether an event
-    loop is already running in the current thread. Used by the
-    artifact check so it composes both inside async callers (reflect,
-    recheck via ``await run_post_submission_checks(...)``) and inside
-    plain sync unit tests."""
-    import asyncio, threading
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    # A loop is already running in this thread; run the coroutine in
-    # a fresh loop in a worker thread and wait for the result.
-    box: dict[str, Any] = {}
-    def _target() -> None:
-        try:
-            box["value"] = asyncio.run(coro)
-        except BaseException as exc:  # noqa: BLE001
-            box["error"] = exc
-    t = threading.Thread(target=_target, daemon=True)
-    t.start()
-    t.join()
-    if "error" in box:
-        raise box["error"]
-    return box.get("value")
-
-
 def _artifact_check(
     proposal_row: dict[str, Any],
     probe: dict[str, Any] | None,
 ) -> CheckResult:
     """Execute the GENERATED FILE against the responses the liveness
-    probe recorded. Rendering bugs OUTSIDE the resolver (URL/query
-    formatting, header wiring, class body, execute() loop, exception
-    handling) surface here — a shape ``resolve_digest_fields`` handles
-    correctly could still crash at the wrapper layer. 9f446bb4 was the
-    call-out: gate_tests happily reported 46→46 while the generated
-    tool raised ``TypeError: unhashable type: 'dict'`` on every real
-    request. This check runs the tool end-to-end in-process against
-    the probe's recorded body — no network, no re-hit — and rejects
-    on crash or all-null digest with the traceback tail attached.
+    probe recorded — INSIDE THE SAME BWRAP WRAPPER as gate_tests.
+
+    The rendered file is LLM-authored code carrying LLM-supplied
+    strings interpolated via ``repr()``. A subtle escaping bug in the
+    template (or a future change to the interpolation contract) would
+    otherwise let a proposal execute arbitrary code with the operator's
+    env: .env, ~/.claude tokens, DB creds, keystores. The safe
+    assumption is that any rendered file could be adversarial —
+    handing it to a host ``exec()`` was a scope escalation.
+
+    Delegates to ``artifact_runner.run_artifact_in_sandbox`` which
+    copies the repo tree, writes the rendered file at target_path,
+    writes the recorded body as JSON, and runs a small harness
+    (``_artifact_harness``) under bwrap+unshare+systemd-run. The
+    host reads ONLY the harness's stdout JSON — the rendered file
+    NEVER touches the host Python interpreter.
     """
-    import asyncio, importlib, traceback as _tb
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
+    from self_modify.artifact_runner import run_artifact_in_sandbox
 
     content = proposal_row.get("content") or ""
     if not content:
@@ -133,83 +111,20 @@ def _artifact_check(
             "no OK probe body recorded — nothing to replay",
         )
     body = ok_hits[0]["body"]
-
-    # Exec the file in an isolated namespace. Imports (BaseTool,
-    # resolve_digest_fields, httpx, etc.) resolve against the live
-    # repo — the check runs AFTER gate_tests, so any harmful imports
-    # already failed in the sandbox. This check judges FUNCTIONAL
-    # correctness of the artifact, not safety.
-    ns: dict[str, Any] = {}
-    try:
-        exec(compile(content, "<artifact>", "exec"), ns, ns)
-    except Exception as exc:  # noqa: BLE001
-        tail = "\n".join(_tb.format_exception(type(exc), exc, exc.__traceback__)
-                         )[-500:]
+    target_path = proposal_row.get("target_path") or ""
+    if not target_path:
         return CheckResult(
-            CHECK_ARTIFACT, "reject",
-            f"module exec crashed: {type(exc).__name__}: {exc}",
-            detail={"traceback_tail": tail},
+            CHECK_ARTIFACT, "skipped",
+            "proposal has no target_path — cannot place rendered file",
         )
-    cls = next(
-        (v for v in ns.values()
-         if isinstance(v, type) and getattr(v, "is_data_source", False)),
-        None,
-    )
-    if cls is None:
+    result = run_artifact_in_sandbox(content, target_path, body)
+    if result.ok:
         return CheckResult(
-            CHECK_ARTIFACT, "reject",
-            "no data_source tool class found in the rendered module",
-        )
-
-    fake_resp = SimpleNamespace(
-        status_code=200, json=lambda: body,
-        raise_for_status=lambda: None,
-    )
-    fake_client = MagicMock()
-    fake_client.get = AsyncMock(return_value=fake_resp)
-    fake_client.aclose = AsyncMock()
-    cfg = SimpleNamespace(
-        permissions=SimpleNamespace(
-            permissions=SimpleNamespace(can_access_internet=True),
-        )
-    )
-    try:
-        tool = cls(cfg, client=fake_client)
-        # Route the tool's async execute() through a dedicated helper
-        # so we can be called from either a running loop (reflect,
-        # recheck) or a plain sync test — asyncio.run() alone would
-        # raise "cannot be called from a running event loop" inside
-        # pytest-asyncio and inside run_post_submission_checks.
-        out = _run_coroutine_sync(tool.execute())
-    except Exception as exc:  # noqa: BLE001
-        tail = "\n".join(_tb.format_exception(type(exc), exc, exc.__traceback__)
-                         )[-500:]
-        return CheckResult(
-            CHECK_ARTIFACT, "reject",
-            f"execute() crashed: {type(exc).__name__}: {exc}",
-            detail={"traceback_tail": tail},
-        )
-
-    if not (isinstance(out, dict) and out.get("success")):
-        return CheckResult(
-            CHECK_ARTIFACT, "reject",
-            f"execute() returned failure: "
-            f"{(out or {}).get('error') if isinstance(out, dict) else out!r}",
-            detail={"out": out},
-        )
-    values = out.get("result", {}) or {}
-    if not values or all(v is None for v in values.values()):
-        return CheckResult(
-            CHECK_ARTIFACT, "reject",
-            f"execute() extracted no values from the recorded body "
-            f"(digest all-null): {list(values)}",
-            detail={"result": values},
+            CHECK_ARTIFACT, "ok", result.message, detail=result.detail,
         )
     return CheckResult(
-        CHECK_ARTIFACT, "ok",
-        f"executed against recorded body → "
-        f"{len(values)} value(s) extracted",
-        detail={"result": values},
+        CHECK_ARTIFACT, "reject",
+        f"{result.kind}: {result.message}", detail=result.detail,
     )
 
 

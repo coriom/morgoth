@@ -490,6 +490,58 @@ class SandboxUnavailableError(RuntimeError):
     NOT run on a proposal tree unless every layer applies."""
 
 
+def wrap_command_in_sandbox(
+    sandbox: Path, inner_cmd: list[str],
+) -> list[str]:
+    """Wrap an arbitrary command in the SAME confinement layers as
+    gate_tests: systemd-run cgroup + unshare --user --map-root-user
+    --net + bwrap --clearenv --tmpfs /tmp --bind <sandbox> <sandbox>
+    --ro-bind system dirs + venv --share-net --die-with-parent
+    --chdir <sandbox>. FAIL-CLOSED — raises SandboxUnavailableError
+    if any layer is missing.
+
+    Used by _artifact_check to execute the proposal's rendered file
+    inside the sandbox — never on the host. The rendered file is
+    LLM-authored code carrying LLM-supplied strings; one interpolation
+    flaw would otherwise mean host code execution with the operator's
+    env (.env, keystores, DB creds).
+    """
+    posture = sandbox_posture()
+    if not posture["ok"]:
+        raise SandboxUnavailableError(posture["reason"])
+    import shlex
+    bwrap = [
+        "bwrap", "--clearenv",
+        "--setenv", "PATH", "/usr/sbin:/usr/bin:/bin",
+        "--setenv", "HOME", str(sandbox),
+        "--setenv", "LANG", "C.UTF-8",
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/lib", "/lib",
+        "--ro-bind", "/lib64", "/lib64",
+        "--ro-bind", "/bin", "/bin",
+        "--ro-bind", "/etc", "/etc",
+        "--ro-bind", _VENV_ROOT, _VENV_ROOT,
+        "--tmpfs", "/tmp",
+        "--bind", str(sandbox), str(sandbox),
+        "--proc", "/proc", "--dev", "/dev",
+        "--share-net", "--die-with-parent",
+        "--chdir", str(sandbox),
+        "--",
+    ] + inner_cmd
+    inner_str = "ip link set lo up; exec " + " ".join(shlex.quote(a) for a in bwrap)
+    outer = [
+        "unshare", "--user", "--map-root-user", "--net",
+        "sh", "-c", inner_str,
+    ]
+    return [
+        "systemd-run", "--user", "--scope", "--quiet",
+        f"--property=MemoryMax={_MEMORY_MAX_BYTES}",
+        f"--property=TasksMax={_TASKS_MAX}",
+        f"--property=CPUQuota={_CPU_QUOTA_PCT}%",
+        "--",
+    ] + outer
+
+
 import xml.etree.ElementTree as _ET
 
 
