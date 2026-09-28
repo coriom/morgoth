@@ -431,13 +431,15 @@ class {class_name}(BaseTool):
         data = resp.json()
         # 2026-09-29: ONE EXTRACTOR. The tool, the liveness probe, and
         # the shadow sampler share this resolver — no re-implementation.
-        # Path grammar (dotted + selectors + aggregates) unlocks nested
-        # sources such as JSON-RPC ``result.<name>`` or DefiLlama's
-        # ``peggedAssets[*].circulating.peggedUSD``. Plain-string entries
-        # remain top-level scalar lookups, byte-identical to the pre-
-        # path-grammar era.
+        # 2026-09-30 RESILIENT PARTIAL: a SINGLE missing field must not
+        # fail the whole call — return the resolved fields with an
+        # explicit `missing` list in metadata. Fail hard only when
+        # NOTHING resolves. Design-time strictness lives at the
+        # liveness gate (a field null across every hit still rejects
+        # the proposal at review time).
         record, errors, _meta = resolve_digest_fields(_DIGEST_FIELDS, data)
-        if errors or not record:
+        missing = [n for n, _ in errors]
+        if not record:
             head = "; ".join(f"{{n}}: {{m}}" for n, m in errors[:3]) or "no fields resolved"
             return self.failure(
                 f"{{_SOURCE_LABEL}}: digest resolve failed — {{head}}",
@@ -445,7 +447,10 @@ class {class_name}(BaseTool):
             )
 
         fetched_at = datetime.now(timezone.utc).isoformat()
-        return self.success(record, source=_SOURCE_LABEL, fetched_at=fetched_at)
+        return self.success(
+            record, source=_SOURCE_LABEL, fetched_at=fetched_at,
+            missing=missing,
+        )
 '''
 
 

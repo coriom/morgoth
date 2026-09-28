@@ -549,6 +549,133 @@ def test_checks_incomplete_registered_in_all_statuses() -> None:
     assert P.STATUS_CHECKS_INCOMPLETE in P.ALL_STATUSES
 
 
+def test_amend_cli_registered() -> None:
+    """Grep-lock: ``morgoth amend`` MUST be wired so an operator has a
+    third path at gate 3 (approve / reject / amend). Amendments live
+    in the ``amendments`` jsonb column and are shown by ``morgoth show``.
+    Descriptions are invisible to synthesis; units belong in FIELD
+    NAMES — this is the surface that gets them there."""
+    import pathlib
+    from self_modify import cli
+    src = pathlib.Path(cli.__file__).read_text(encoding="utf-8")
+    assert '"amend"' in src
+    assert "_cmd_amend" in src
+    # Show renders the amendment history.
+    assert 'amendments' in src
+
+
+def test_amend_records_diff_and_reruns_checks(monkeypatch) -> None:
+    """End-to-end (with the store + probe + shadow mocked): an amend
+    call must (a) parse the stored spec, (b) apply --rename and
+    --description, (c) persist a new content + a JSON amendment row,
+    (d) run the post-submission checks. This locks the shape of the
+    amendment JSON (ts / who / changes.before / changes.after / note)."""
+    import argparse, asyncio, json
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from self_modify import cli as _cli
+    from self_modify import proposals as P
+    from self_modify import reflect as _reflect
+    from self_modify.digest_path import normalize_digest_fields
+    # Render a minimal proposal with two path-digest fields.
+    entries = normalize_digest_fields([
+        {"name": "open_interest", "path": "result.open_interest"},
+        {"name": "volume_24h", "path": "result.stats.volume"},
+    ])
+    content = _reflect.TOOL_TEMPLATE.format(
+        tool_name="get_amend_probe",
+        class_name=_reflect._snake_to_class_name("get_amend_probe"),
+        tool_name_repr=repr("get_amend_probe"),
+        base_url_repr=repr("https://api.example.com"),
+        endpoint_path_repr=repr("/probe"),
+        digest_fields_repr=repr(entries),
+        description_repr=repr("old description"),
+        source_label_repr=repr("api.example.com"),
+        endpoint_declaration_repr=repr("api.example.com/probe"),
+        requires_key_env_repr=repr(None),
+        key_in_repr=repr(None), key_param_repr=repr(None),
+    )
+    row = {
+        "proposal_id": "amend-1",
+        "target_path": "tools/data_feeds/get_amend_probe.py",
+        "content": content,
+        "rationale": "old rationale",
+        "status": P.STATUS_PENDING_APPROVAL,
+        "status_reason": "",
+    }
+    execute_calls: list[tuple[str, tuple[Any, ...]]] = []
+    class _FakePM:
+        async def execute(self, q: str, *a: Any) -> None:
+            execute_calls.append((q, a))
+            # Update the local row so subsequent get() sees new content/rationale
+            if "UPDATE self_modify_proposals" in q and "content = $1" in q:
+                row["content"] = a[0]; row["rationale"] = a[1]
+    store = MagicMock()
+    store._pm = _FakePM()
+    store.get = AsyncMock(side_effect=lambda pid: row)
+    store.update_status = AsyncMock()
+    args = argparse.Namespace(
+        proposal_id="amend-1",
+        rename=["open_interest_usd=open_interest",
+                "volume_24h_btc=volume_24h"],
+        path=[], description="Deribit BTC-PERPETUAL: open interest in "
+              "USD; 24h volume in BTC.",
+        rationale=None, note="verified from docs.deribit.com",
+        full=False,
+    )
+
+    async def _fake_resolve(store_, ident):
+        return "amend-1", 0
+
+    async def _fake_probe(url, entries, *, hits=1):
+        # Return values matching the amended names so the shadow
+        # sampler + artifact check are happy.
+        return {
+            "url": url, "hits": [{
+                "i": 0, "ok": True,
+                "vals": {"open_interest_usd": 1.0, "volume_24h_btc": 2.0},
+                "body": {"result": {"open_interest": 1.0,
+                                    "stats": {"volume": 2.0}}},
+            }],
+            "n_hits": 1, "gap_secs": 150,
+            "digest_fields": ["open_interest_usd", "volume_24h_btc"],
+        }
+
+    from self_modify import post_submission_checks as _pc
+
+    async def _fake_checks(**kw: Any) -> Any:
+        return [], P.STATUS_PENDING_APPROVAL
+
+    with patch.object(_cli, "_resolve_or_bail", _fake_resolve), \
+         patch.object(_cli, "load_config",
+                      AsyncMock(return_value=MagicMock())), \
+         patch.object(_pc, "run_post_submission_checks", _fake_checks), \
+         patch("self_modify.liveness.run_liveness_probe", _fake_probe), \
+         patch("self_modify.reflect._registered_digest_fields",
+               return_value=set()):
+        rc = asyncio.run(_cli._cmd_amend(store, args))
+    assert rc == 0
+    # The persist call carries: content, rationale, amendment JSON, ...
+    upd = [c for c in execute_calls if "UPDATE self_modify_proposals" in c[0]]
+    assert upd, "amend must persist content + amendment"
+    q, a = upd[0]
+    amendment_json = a[2]
+    amendment = json.loads(amendment_json)[0]
+    assert amendment["who"], amendment
+    assert amendment["note"] == "verified from docs.deribit.com"
+    changes = amendment["changes"]
+    # digest_fields diff: name renamed (path unchanged).
+    df = changes["digest_fields"]
+    before_names = [e.get("name") if isinstance(e, dict) else e
+                    for e in df["before"]]
+    after_names = [e["name"] for e in df["after"]]
+    assert "open_interest" in before_names
+    assert "open_interest_usd" in after_names
+    # description diff:
+    dd = changes["description"]
+    assert dd["before"] == "old description"
+    assert "USD" in dd["after"]
+
+
 def test_recheck_cli_registered() -> None:
     """Grep-lock: the recheck subcommand MUST be wired so operators can
     resurrect a proposal from checks_incomplete without invoking reflect."""

@@ -192,9 +192,187 @@ async def _cmd_show(store: P.ProposalStore, args: argparse.Namespace) -> int:
                 print(f"    {axis:<26} {level}")
             for r in (v.get("reasons") or []):
                 print(f"    - {r}")
+    # Amendments — operator edits recorded via `morgoth amend` (2026-09-30).
+    amendments = row.get("amendments")
+    if isinstance(amendments, str):
+        import json as _json
+        try:
+            amendments = _json.loads(amendments)
+        except Exception:  # noqa: BLE001
+            amendments = None
+    if amendments:
+        print(f"--- amendments ({len(amendments)}) ---")
+        for a in amendments:
+            print(f"  {a.get('ts')}  by {a.get('who')}")
+            if a.get("note"):
+                print(f"    note: {a['note']}")
+            for k, v in (a.get("changes") or {}).items():
+                b = v.get("before"); af = v.get("after")
+                print(f"    {k}: BEFORE={b!r}")
+                print(f"    {' ' * len(k)}  AFTER ={af!r}")
     print("--- content ---")
     print(row.get("content") or "")
     return 0
+
+
+async def _cmd_amend(store: P.ProposalStore, args: argparse.Namespace) -> int:
+    """Operator amendment: rename digest fields (units go here so every
+    downstream step sees them), edit description/rationale. Regenerates
+    the tool source and reruns ALL post-submission checks. The
+    amendment is appended to the row's ``amendments`` jsonb (who, ts,
+    changes, note) and surfaced by ``morgoth show``.
+
+    Rationale (2026-09-30): synthesis reads payload FIELD NAMES and
+    VALUES, never descriptions. Units that live only in a description
+    are invisible to every downstream consumer. ``morgoth amend`` is
+    the third way at gate 3 — between approve and reject — so an
+    operator can correct a unit-carrying detail without dropping the
+    proposal (and its already-earned artifact/shadow verdicts).
+    """
+    from self_modify import post_submission_checks as _pchecks
+    from self_modify import liveness as _liveness
+    from self_modify import reflect as _reflect
+    from self_modify.digest_path import normalize_digest_fields as _norm
+    from urllib.parse import urlparse as _urlparse
+    import ast as _ast, json as _json, os as _os
+    import re as _re
+    from datetime import datetime as _dt, timezone as _tz
+
+    pid, rc = await _resolve_or_bail(store, args.proposal_id)
+    if pid is None:
+        return rc
+    row = await store.get(pid)
+    if not row:
+        print(f"no proposal with id {args.proposal_id!r}", file=sys.stderr)
+        return 1
+
+    # Parse existing spec facts out of the rendered source (same shape
+    # as _cmd_recheck's regenerate path).
+    content = row.get("content") or ""
+    def _grab(sym: str) -> str | None:
+        m = _re.search(rf"^{sym}\s*=\s*(.+)$", content, _re.MULTILINE)
+        return m.group(1).strip() if m else None
+    base_raw, ep_raw, df_raw = _grab("_BASE_URL"), _grab("_ENDPOINT_PATH"), _grab("_DIGEST_FIELDS")
+    desc_raw = _grab("_TOOL_DESCRIPTION")
+    if not (base_raw and ep_raw and df_raw):
+        print("amend: could not parse spec facts from proposal content", file=sys.stderr)
+        return 2
+    try:
+        base_url = _ast.literal_eval(base_raw)
+        endpoint_path = _ast.literal_eval(ep_raw)
+        digest_fields = _ast.literal_eval(df_raw)
+        description = _ast.literal_eval(desc_raw) if desc_raw else ""
+    except (ValueError, SyntaxError) as exc:
+        print(f"amend: proposal content parse failed: {exc}", file=sys.stderr)
+        return 2
+
+    # Snapshot BEFORE.
+    before = {
+        "digest_fields": list(digest_fields),
+        "description": description,
+        "rationale": row.get("rationale") or "",
+    }
+    # Apply --rename NEW_NAME=OLD_NAME and --path FIELD_NAME=EXPR.
+    rename = dict(pair.split("=", 1) for pair in (args.rename or []) if "=" in pair)
+    path_edits = dict(pair.split("=", 1) for pair in (args.path or []) if "=" in pair)
+    entries = _norm(digest_fields)
+    new_entries: list[dict[str, str]] = []
+    for e in entries:
+        n, p = e["name"], e["path"]
+        # rename maps NEW=OLD so operators think in "what should this be called"
+        for new_name, old_name in rename.items():
+            if n == old_name:
+                n = new_name
+                break
+        if n in path_edits:
+            p = path_edits[n]
+        new_entries.append({"name": n, "path": p})
+    new_description = args.description if args.description is not None else description
+    new_rationale = args.rationale if args.rationale is not None else (row.get("rationale") or "")
+    after = {
+        "digest_fields": new_entries,
+        "description": new_description,
+        "rationale": new_rationale,
+    }
+    if after == before:
+        print("amend: no changes — nothing to do")
+        return 0
+
+    # Re-render with the current TOOL_TEMPLATE + amended fields.
+    tool_name = (row.get("target_path") or "").split("/")[-1].rstrip(".py")
+    class_name = _reflect._snake_to_class_name(tool_name)
+    source_label = _urlparse(base_url).hostname or ""
+    endpoint_declaration = _reflect._normalize_endpoint(base_url, endpoint_path)
+    new_content = _reflect.TOOL_TEMPLATE.format(
+        tool_name=tool_name, class_name=class_name,
+        tool_name_repr=repr(tool_name),
+        base_url_repr=repr(base_url),
+        endpoint_path_repr=repr(endpoint_path),
+        digest_fields_repr=repr(new_entries),
+        description_repr=repr(new_description or tool_name),
+        source_label_repr=repr(source_label),
+        endpoint_declaration_repr=repr(endpoint_declaration),
+        requires_key_env_repr=repr(None),
+        key_in_repr=repr(None), key_param_repr=repr(None),
+    )
+    compile(new_content, f"<amended:{pid}>", "exec")
+
+    who = _os.getenv("USER") or _os.getenv("USERNAME") or "operator"
+    amendment = {
+        "ts": _dt.now(_tz.utc).isoformat(),
+        "who": who,
+        "changes": {k: {"before": before[k], "after": after[k]}
+                     for k in before if before[k] != after[k]},
+        "note": args.note or "",
+    }
+    # Persist the amendment + rendered content + updated rationale.
+    pm = store._pm  # noqa: SLF001
+    await pm.execute(
+        "UPDATE self_modify_proposals SET content = $1, rationale = $2, "
+        "updated_at = now(), amendments = COALESCE(amendments, '[]'::jsonb) "
+        "|| $3::jsonb, status = $4, status_reason = $5 "
+        "WHERE proposal_id = $6::uuid",
+        new_content, new_rationale, _json.dumps([amendment]),
+        P.STATUS_PENDING_APPROVAL,
+        f"amended by {who}: {', '.join(amendment['changes'].keys())}",
+        pid,
+    )
+    print(f"amend: recorded {len(amendment['changes'])} change(s) by {who}; "
+          f"content re-rendered ({len(new_content)} bytes)")
+
+    # Rerun ALL post-submission checks: fresh liveness probe + artifact
+    # + overlap + shadow + delegation. Uses the recheck argv machinery.
+    smoke_target = base_url + endpoint_path
+    hits = 4 if args.full else 1
+    probe = None
+    try:
+        print(f"amend: liveness probe ({hits} hit{'s' if hits > 1 else ''}) → {smoke_target}")
+        probe = await _liveness.run_liveness_probe(smoke_target, new_entries, hits=hits)
+    except Exception as exc:  # noqa: BLE001
+        print(f"amend: liveness probe crashed: {type(exc).__name__}: {exc}")
+
+    spec = {
+        "tool_name": tool_name, "api_base_url": base_url,
+        "endpoint_path": endpoint_path,
+        "digest_fields": new_entries,
+        "description": new_description, "rationale": new_rationale,
+    }
+    config = await load_config()
+    registered_field_names = _reflect._registered_digest_fields(config, pm)
+    results, final_status = await _pchecks.run_post_submission_checks(
+        store=store, proposal_id=pid, spec=spec, probe=probe,
+        registered_field_names=registered_field_names,
+        config=config, pm=pm,
+        delegation_enabled=_reflect._delegation_enabled(),
+    )
+    print(f"amend: recheck final_status={final_status}")
+    for r in results:
+        print(f"  [{r.status:<8}] {r.name:<12} {r.message[:200]}")
+    row = await store.get(pid)
+    print(f"  status_reason: {(row or {}).get('status_reason') or ''}")
+    return 0 if final_status in (
+        P.STATUS_PENDING_APPROVAL, P.STATUS_SHADOW_REJECTED,
+    ) else 1
 
 
 async def _cmd_recheck(store: P.ProposalStore, args: argparse.Namespace) -> int:
@@ -956,6 +1134,50 @@ async def _main(argv: list[str]) -> int:
         ),
     )
     p_recheck.set_defaults(_fn=_cmd_recheck)
+
+    p_amend = subparsers.add_parser(
+        "amend",
+        help=(
+            "amend a pending proposal's spec (digest field names, "
+            "description, rationale) and rerun ALL checks. Units "
+            "belong in FIELD NAMES so every downstream step sees "
+            "them; descriptions are invisible to synthesis."
+        ),
+    )
+    p_amend.add_argument("proposal_id")
+    p_amend.add_argument(
+        "--rename", action="append", default=[], metavar="NEW=OLD",
+        help=(
+            "rename a digest field. Repeatable. Format 'NEW=OLD' — "
+            "so 'open_interest_usd=open_interest' reads as 'the new "
+            "name is open_interest_usd, replacing open_interest'."
+        ),
+    )
+    p_amend.add_argument(
+        "--path", action="append", default=[], metavar="FIELD=EXPR",
+        help=(
+            "override the resolver path expression for a field. "
+            "Repeatable. Format 'FIELD_NAME=path.expression'."
+        ),
+    )
+    p_amend.add_argument(
+        "--description", default=None,
+        help="replace the tool's description text",
+    )
+    p_amend.add_argument(
+        "--rationale", default=None,
+        help="replace the proposal's rationale text",
+    )
+    p_amend.add_argument(
+        "--note", default=None,
+        help="a short note (e.g. 'verified from docs.deribit.com') "
+             "recorded alongside the amendment for gate-3 audit",
+    )
+    p_amend.add_argument(
+        "--full", action="store_true",
+        help="4-hit liveness probe (7.5 min) after amend; default 1 hit",
+    )
+    p_amend.set_defaults(_fn=_cmd_amend)
 
     p_provision = subparsers.add_parser(
         "provision",

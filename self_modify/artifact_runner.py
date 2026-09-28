@@ -142,10 +142,14 @@ def run_artifact_in_sandbox(
             )
         if payload.get("ok"):
             digest = payload.get("digest") or {}
+            meta = payload.get("meta") or {}
+            missing = meta.get("missing") or []
+            msg = f"executed against recorded body → {len(digest)} value(s) extracted"
+            if missing:
+                msg += f"; missing={missing}"
             return ArtifactResult(
-                ok=True, kind="ok",
-                message=f"executed against recorded body → {len(digest)} value(s) extracted",
-                detail={"digest": digest, "meta": payload.get("meta") or {}},
+                ok=True, kind="ok", message=msg,
+                detail={"digest": digest, "meta": meta, "missing": missing},
             )
         return ArtifactResult(
             ok=False, kind=payload.get("kind") or "unknown",

@@ -78,6 +78,68 @@ class TestDefillamaSpecClearsShapeGate:
         assert values["asset_count"]  == 3
         assert meta["total_supply"]["resolved"] == 3
 
+    def test_rendered_tool_returns_partial_when_a_field_is_missing(self):
+        """2026-09-30 RESILIENT PARTIAL: a single missing digest field
+        must NOT fail the whole call. The rendered tool returns the
+        fields that DID resolve plus a ``missing`` list in metadata.
+        Design-time strictness stays at the liveness gate — a field
+        null across every hit still rejects the proposal at review
+        time — but a runtime hiccup (transient schema drift, one
+        deprecated field alongside three live ones) doesn't dark-
+        night the tool."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+        from self_modify import reflect
+        from self_modify.digest_path import normalize_digest_fields
+
+        spec = self._spec()
+        # ONE broken path — the other three still resolve.
+        spec["digest_fields"] = list(spec["digest_fields"])
+        spec["digest_fields"][0] = {
+            "name": "total_supply",
+            "path": "sum(peggedAssets[*].circulating.notThere)",
+        }
+        entries = normalize_digest_fields(spec["digest_fields"])
+        content = reflect.TOOL_TEMPLATE.format(
+            tool_name=spec["tool_name"],
+            class_name=reflect._snake_to_class_name(spec["tool_name"]),
+            tool_name_repr=repr(spec["tool_name"]),
+            base_url_repr=repr(spec["api_base_url"]),
+            endpoint_path_repr=repr(spec["endpoint_path"]),
+            digest_fields_repr=repr(entries),
+            description_repr=repr(spec["description"]),
+            source_label_repr=repr("stablecoins.llama.fi"),
+            endpoint_declaration_repr=repr("stablecoins.llama.fi/stablecoins"),
+            requires_key_env_repr=repr(None),
+            key_in_repr=repr(None), key_param_repr=repr(None),
+        )
+        ns: dict = {}
+        exec(compile(content, "<partial>", "exec"), ns, ns)
+        cls = ns["GetDefillamaStablecoinsTool"]
+        fake_resp = SimpleNamespace(
+            status_code=200, json=lambda: self._live_shape_body(),
+            raise_for_status=lambda: None,
+        )
+        fake_client = MagicMock()
+        fake_client.get = AsyncMock(return_value=fake_resp)
+        fake_client.aclose = AsyncMock()
+        cfg = SimpleNamespace(
+            permissions=SimpleNamespace(
+                permissions=SimpleNamespace(can_access_internet=True),
+            )
+        )
+        out = asyncio.run(cls(cfg, client=fake_client).execute())
+        assert out["success"] is True, out
+        data = out["result"]
+        # total_supply broken; the other three still resolve.
+        assert "total_supply" not in data
+        assert data["usdt_supply"] == 120_000_000_000
+        assert data["usdc_supply"] ==  40_000_000_000
+        assert data["asset_count"] == 3
+        # And the missing list surfaces so the operator sees it.
+        assert "total_supply" in (out.get("metadata") or {}).get("missing", [])
+
     def test_rendered_tool_returns_real_values_against_fixture(self):
         """The RENDERED tool (not the resolver in isolation) must produce
         the four expected values on the DefiLlama fixture. Locks the

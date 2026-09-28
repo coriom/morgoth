@@ -503,6 +503,16 @@ class PersistentMemory:
                     "CREATE INDEX IF NOT EXISTS self_modify_proposals_status_idx "
                     "ON self_modify_proposals (status);"
                 )
+                # 2026-09-30 amendments: operator edits to a pending
+                # proposal's spec (units in field names, description
+                # refinements). Each row records {ts, who, changes,
+                # note}. Non-destructive: reflect never writes this
+                # column, only `morgoth amend`.
+                await connection.execute(
+                    "ALTER TABLE self_modify_proposals "
+                    "ADD COLUMN IF NOT EXISTS amendments JSONB "
+                    "DEFAULT '[]'::jsonb;"
+                )
             except Exception as exc:
                 logger.warning(
                     "Could not ensure self_modify_proposals table (non-fatal): {}", exc
