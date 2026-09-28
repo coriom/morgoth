@@ -29,12 +29,12 @@ CAMPAIGN_DUP_JACCARD: float = 0.7
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
-_STOPWORDS: frozenset[str] = frozenset({
-    "the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for",
-    "with", "vs", "versus", "over", "under", "how", "what", "why", "is",
-    "are", "does", "do", "impact", "effect", "relationship", "between",
-    "investigate", "examine", "analyze", "analyse", "determine",
-})
+# 2026-09-30 chantier-1: sourced from the active domain pack
+# (domains/<name>/domain.yaml → core.domain.current_domain()) so a
+# domain switch changes the vocabulary without a code edit. See
+# core/domain.py for the loader and the grep-lock test.
+from core.domain import current_domain as _current_domain  # noqa: E402
+_STOPWORDS: frozenset[str] = frozenset(_current_domain().campaign_title_stopwords)
 
 
 def _tokens(text: str) -> set[str]:
@@ -50,10 +50,9 @@ def _tokens(text: str) -> set[str]:
 # drift off the subject. Distinctive tokens are subject tokens MINUS
 # these generics. If the subject is entirely generic (e.g. "BTC")
 # we fall back to requiring ALL tokens instead.
-_GENERIC_SUBJECT_TOKENS: frozenset[str] = frozenset({
-    "btc", "bitcoin", "eth", "ethereum", "crypto", "cryptocurrency",
-    "market", "markets", "price", "prices",
-})
+_GENERIC_SUBJECT_TOKENS: frozenset[str] = frozenset(
+    _current_domain().generic_subject_tokens,
+)
 
 
 def _distinctive_subject_tokens(subject: str) -> set[str]:

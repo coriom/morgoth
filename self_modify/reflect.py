@@ -110,12 +110,10 @@ _OUTCOME_TO_STATUS: dict[str, str] = {
 # (recall/remember/notify) are stopworded so the calibration passes
 # all 18 registered tools; reflect only proposes data_feeds tools so
 # these stopwords never affect a live gate decision.
-_NAME_STOPWORDS: frozenset[str] = frozenset({
-    "get", "fetch", "the", "a", "an", "tool",
-    "btc", "bitcoin", "eth", "ethereum", "crypto", "cryptocurrency",
-    "data", "info", "stats", "index",
-    "recall", "remember", "notify",
-})
+# 2026-09-30 chantier-1: sourced from the active domain pack
+# (domains/<name>/domain.yaml). See core/domain.py.
+from core.domain import current_domain as _current_domain  # noqa: E402
+_NAME_STOPWORDS: frozenset[str] = frozenset(_current_domain().name_stopwords)
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]")
 

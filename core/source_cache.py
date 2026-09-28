@@ -47,40 +47,17 @@ def cache_enabled() -> bool:
 # TOTAL in-scope: 4 + 144 + 48 + 48 + 2 = ~246 req/day = 10.25 req/hr,
 # independent of the number of agents reading. Live sources per agent
 # per cycle continue on top.
-SOURCE_CACHE_CONFIG: dict[str, tuple[int, int]] = {
-    "get_fear_greed_index":         (6 * 3600, 26 * 3600),  # 6h poll, 26h stale
-    "get_bitcoin_onchain":          (10 * 60,  40 * 60),    # 10min poll, 40min stale
-    "get_bitcoin_futures_funding":  (30 * 60,  2 * 3600),   # 30min poll, 2h stale
-    "get_bitcoin_long_short_ratio": (30 * 60,  2 * 3600),
-    "fred_series_observations":     (12 * 3600, 48 * 3600),
-    # 2026-09-18 additions — remaining slow sources.
-    # get_coinbase_btc_stats: 24h OHLC + 30d volume, moves per-minute
-    #   but no one queries it at that granularity — 15min covers thesis-
-    #   generation timescales. Coinbase Exchange: 10 req/s public →
-    #   96/day margin ≥ 900000×.
-    "get_coinbase_btc_stats":       (15 * 60,  60 * 60),
-    # get_ethereum_network_stats: block height (~12s blocks), gas +
-    #   base_fee (variable). 5-min poll = 288/day. BlockCypher free:
-    #   ~200/hour → 4800/day margin 17×. Tight but adequate.
-    "get_ethereum_network_stats":   (5 * 60,   20 * 60),
-    # get_news: RSS aggregates; each poll returns a LIST payload (not
-    #   a scalar digest). serve_from_cache returns the list as-is;
-    #   the metadata envelope carries observed_at + age. 20-min poll
-    #   is generous — news moves in minutes but RSS feeds refresh in
-    #   the same window. Aggregate over feeds ≤ 30 req per poll.
-    "get_news":                     (20 * 60,  60 * 60),
-    # get_crypto_price stays LIVE — its value is per-second (spot
-    # price + last-hour move). Caching would serve stale spot to
-    # objectives whose whole point is a directional read.
-}
-
-# Default args for sources whose tool signature requires named parameters.
-# FRED's schema requires series_id; we poll the canonical inflation series
-# (CPIAUCSL). Multi-series polling can be added later without changing the
-# schema — one row per series via distinct source names if needed.
-SOURCE_DEFAULT_ARGS: dict[str, dict[str, Any]] = {
-    "fred_series_observations": {"series_id": "CPIAUCSL"},
-}
+# 2026-09-30 chantier-1: SOURCE_CACHE_CONFIG + SOURCE_DEFAULT_ARGS
+# sourced from the active domain pack (domains/<name>/domain.yaml).
+# The per-tool cadence rationale (rate-limit margins vs upstream
+# ceilings) lives in the YAML as comments alongside each entry.
+from core.domain import current_domain as _current_domain  # noqa: E402
+SOURCE_CACHE_CONFIG: dict[str, tuple[int, int]] = dict(
+    _current_domain().source_cache_config,
+)
+SOURCE_DEFAULT_ARGS: dict[str, dict[str, Any]] = dict(
+    _current_domain().source_cache_default_args,
+)
 
 
 def is_cached_source(name: str) -> bool:

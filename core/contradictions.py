@@ -73,12 +73,10 @@ CONTRADICTION_WINDOW_HOURS_PRICE: float = float(
 # (weekly/monthly/yearly), the long-timeframe path already keeps it
 # in its own bucket via subjects_timeframe_conflict — this classifier
 # does not need to re-check that.
-PRICE_CLASS_TOKENS: frozenset[str] = frozenset({
-    "price",
-    "change",
-    "trend",
-    "volume",
-})
+# 2026-09-30 chantier-1: sourced from the active domain pack
+# (domains/<name>/domain.yaml). See core/domain.py.
+from core.domain import current_domain as _current_domain  # noqa: E402
+PRICE_CLASS_TOKENS: frozenset[str] = frozenset(_current_domain().price_class_tokens)
 
 
 def subject_is_price_class(subject: str) -> bool:
@@ -102,7 +100,9 @@ def subject_is_price_class(subject: str) -> bool:
 # rows against the SAME belief. This canonicalisation collapses them;
 # genuinely different subjects ("market cap" vs "trading volume") keep
 # distinct root tokens so they stay in separate groups.
-_SUBJECT_PREFIX_STOPWORDS: tuple[str, ...] = ("global", "crypto", "the")
+_SUBJECT_PREFIX_STOPWORDS: tuple[str, ...] = tuple(
+    _current_domain().subject_prefix_stopwords,
+)
 
 
 def canonicalize_subject_for_grouping(subject: str) -> str:

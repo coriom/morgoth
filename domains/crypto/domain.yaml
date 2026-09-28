@@ -1,0 +1,576 @@
+# Crypto domain pack — chantier 1 of 5 of the domain-pack refactor.
+#
+# Pure DATA. No Python. Every value here was previously a hard-coded
+# constant in core/, analysis/, or self_modify/; grep-locked in
+# tests/test_domain_pack_locks.py so no literal drifts back to code.
+#
+# Crypto stays in the current Postgres schema + Chroma collections
+# — this pack is a LITERAL EXTRACTION, not a behaviour change. A
+# byte-identical before/after is the acceptance criterion.
+
+name: crypto
+tagline: "crypto and finance research"
+
+# ---------------------------------------------------------------------
+# Subject / prompt vocab
+# ---------------------------------------------------------------------
+
+# core/campaign.py::_GENERIC_SUBJECT_TOKENS — asset/market qualifiers
+# too generic to prove a title stays on-subject.
+generic_subject_tokens:
+  [btc, bitcoin, eth, ethereum, crypto, cryptocurrency, market, markets, price, prices]
+
+# core/contradictions.py::PRICE_CLASS_TOKENS — substring markers that
+# flip the contradiction window from long (8h) to short (2h).
+price_class_tokens: [price, change, trend, volume]
+
+# core/contradictions.py::_SUBJECT_PREFIX_STOPWORDS — prefixes stripped
+# for contradiction GROUPING ONLY. Stored subjects are NOT rewritten.
+subject_prefix_stopwords: [global, crypto, the]
+
+# self_modify/reflect.py::_NAME_STOPWORDS — tokens that do not
+# contribute distinctiveness to a proposed tool_name. Mixes generic
+# English (get/fetch/the/a/an/tool) with domain framing (btc/bitcoin/
+# eth/…) and generic containers (data/info/stats/index) and utility
+# tool names (recall/remember/notify). Kept as one flat list per the
+# literal-extraction rule; a future refactor could split into
+# language vs domain vs framework subsets.
+name_stopwords:
+  - get
+  - fetch
+  - the
+  - a
+  - an
+  - tool
+  - btc
+  - bitcoin
+  - eth
+  - ethereum
+  - crypto
+  - cryptocurrency
+  - data
+  - info
+  - stats
+  - index
+  - recall
+  - remember
+  - notify
+
+# analysis/campaign_quality.py::_PHRASE_STOPWORDS — first/last tokens
+# forbidden in extracted bigrams/trigrams. Mostly language, but the
+# tail (btc/bitcoin/crypto/…) is domain-specific.
+phrase_stopwords:
+  # generic template
+  - the
+  - and
+  - or
+  - of
+  - in
+  - on
+  - at
+  - to
+  - for
+  - with
+  - vs
+  - versus
+  - via
+  - through
+  - under
+  - over
+  - into
+  - amid
+  - during
+  - toward
+  - against
+  - within
+  - between
+  - exploring
+  - explore
+  - analyzing
+  - analyze
+  - analysis
+  - investigating
+  - investigate
+  - examining
+  - examine
+  - unexplored
+  - emerging
+  - evolving
+  - recent
+  - current
+  - new
+  - novel
+  - potential
+  # generic effects
+  - impact
+  - influence
+  - context
+  - correlation
+  - relationship
+  - changes
+  - change
+  - trends
+  - trend
+  - effects
+  - effect
+  - adoption
+  - activities
+  - activity
+  - aggregates
+  - aggregate
+  - response
+  - responses
+  # generic modifiers
+  - global
+  - major
+  - novel
+  - unspecified
+  - indicators
+  - indicator
+  - drivers
+  - factors
+  - dynamics
+  - patterns
+  - level
+  - levels
+  - state
+  - share
+  - shares
+  - distribution
+  - distributions
+  - framework
+  - frameworks
+  - environment
+  - series
+  - metrics
+  - metric
+  - variable
+  # already stripped as subject / template — domain-specific tail
+  - btc
+  - bitcoin
+  - crypto
+  - cryptocurrency
+  - market
+  - markets
+  - rate
+  - rates
+  - ratio
+  - ratios
+
+# core/campaign.py::_STOPWORDS — language stopwords used by the
+# title-token comparator. Copied here so a new domain can override
+# without touching the general English stoplist.
+campaign_title_stopwords:
+  - the
+  - a
+  - an
+  - of
+  - and
+  - or
+  - in
+  - on
+  - at
+  - to
+  - for
+  - with
+  - vs
+  - versus
+  - over
+  - under
+  - how
+  - what
+  - why
+  - is
+  - are
+  - does
+  - do
+  - impact
+  - effect
+  - relationship
+  - between
+  - investigate
+  - examine
+  - analyze
+  - analyse
+  - determine
+
+# ---------------------------------------------------------------------
+# Served-concept vocabulary — analysis/campaign_quality.py::
+# TOOL_SERVED_PHRASES. Per-rail-tool phrases the campaign scorer
+# treats as "this tool can answer angles containing this phrase".
+# ---------------------------------------------------------------------
+
+tool_served_phrases:
+  get_news:
+    - news
+    - news headlines
+    - headlines
+    - news events
+    - news impact
+    - economic news
+    - major news
+    - news sentiment
+    - market news
+    - crypto news
+  get_fear_greed_index:
+    - fear
+    - greed
+    - fear and greed
+    - "fear & greed"
+    - market sentiment
+    - sentiment index
+    - crypto sentiment
+  fred_series_observations:
+    - fred
+    - federal reserve
+    - cpi
+    - unemployment
+    - gdp
+    - treasury
+    - economic indicators
+    - economic data
+    - inflation
+    - inflation rates
+    - us inflation
+    - macro indicators
+    - macroeconomic
+    - oecd series
+    - banking system confidence
+  get_coinbase_btc_stats:
+    - coinbase
+    - coinbase exchange
+    - coinbase spot
+    - spot market
+    - spot price
+  get_crypto_global_market:
+    - market cap
+    - market capitalization
+    - dominance
+    - btc dominance
+    - bitcoin dominance
+    - trading volume
+    - 24h volume
+    - 24-hour volume
+    - global crypto
+    - global market
+    - crypto market volume
+  get_bitcoin_futures_funding:
+    - funding
+    - funding rate
+    - funding rates
+    - perpetual funding
+    - mark price
+    - index price
+    - premium
+    - futures funding
+    - derivatives
+    - perpetuals
+    - perp
+    - perpetual
+    - leverage
+    - leveraged positions
+    - leverage ratio
+    - basis
+    - mark-index basis
+    - mark/index basis
+    - index basis
+    - futures basis
+    - premium index
+  get_bitcoin_long_short_ratio:
+    - long-short
+    - long/short
+    - long short
+    - positioning
+    - long account
+    - short account
+    - long-short ratio
+    - long/short ratio
+    - long short ratio
+    - long/short account ratio
+    - long-short account ratio
+    - retail positioning
+    - retail long
+    - retail short
+    - whale positioning
+    - whale long
+    - whale short
+    - trader positioning
+    - account positioning
+  get_bitcoin_onchain:
+    - hashrate
+    - hash rate
+    - network hashrate
+    - mining difficulty
+    - difficulty
+    - difficulty adjustment
+    - mempool
+    - mempool size
+    - unconfirmed transactions
+    - onchain
+    - on-chain
+    - bitcoin on-chain
+  get_ethereum_network_stats:
+    - gas
+    - gwei
+    - ethereum gas
+    - base fee
+    - block height
+    - ethereum network
+    - ethereum network stats
+  get_crypto_price:
+    - crypto price
+    - spot price
+    - short-term price
+    - short-term crypto price
+  technical_analysis:
+    - technical analysis
+    - technical indicators
+    - moving average
+
+# analysis/campaign_quality.py::RAIL_TOOL_FIELDS — numeric fields
+# each rail tool exposes. Used by cross-source collision detection.
+rail_tool_fields:
+  get_bitcoin_futures_funding: [lastFundingRate, markPrice, indexPrice, nextFundingTime]
+  get_bitcoin_long_short_ratio: [longShortRatio, longAccount, shortAccount]
+  get_bitcoin_onchain: [hash_rate, difficulty, mempool_vsize, mempool_tx_count]
+  get_ethereum_network_stats:
+    [height, unconfirmed_count, base_fee, high_gas_price, medium_gas_price, low_gas_price]
+  get_crypto_global_market:
+    [market_cap_usd, market_cap_change_24h, volume_24h_usd, volume_24h_change_24h,
+     bitcoin_dominance_percentage, cryptocurrencies_number]
+  get_fear_greed_index: [value]
+  get_coinbase_btc_stats: [last, high, low, volume, volume_30day]
+  fred_series_observations: [value]
+  get_crypto_price: [price, market_cap, volume_24h]
+  get_stablecoin_market_activity: []
+  get_news: []
+  web_search: []
+  technical_analysis: [score, value, signal]
+
+# ---------------------------------------------------------------------
+# Classifier tables — campaign_quality error classes
+# ---------------------------------------------------------------------
+
+# _BULLISH_WORDS / _BEARISH_WORDS — only UNAMBIGUOUS direction claims.
+bullish_words:
+  - bullish
+  - bull
+  - buyer
+  - buyers
+  - more buyers
+  - buying pressure
+  - upward
+  - positive sentiment
+
+bearish_words:
+  - bearish
+  - bear
+  - seller
+  - sellers
+  - more sellers
+  - selling pressure
+  - downward
+  - negative sentiment
+
+# METRIC_FAMILIES — used only for fragmentation counting; a subject
+# containing one of these keywords is bucketed into that family.
+metric_families:
+  funding_rate: [funding rate, funding_rate, perpetual funding]
+  long_short: [long-short, long/short, long short, positioning, long account, short account]
+  hashrate: [hashrate, hash rate, hash-rate, network hash]
+  difficulty: [difficulty]
+  dominance: [dominance]
+  mempool: [mempool, unconfirmed]
+  gas: [gas price, gwei]
+  fear_greed: [fear, greed, sentiment index]
+  market_cap: [market cap, market_cap, marketcap]
+  trading_volume: [trading volume, 24h volume, 24-hour volume]
+
+# classify_scope_misattribution's inline tokens:
+scope_source_tool: get_crypto_global_market
+scope_asset_subject_tokens: [btc, bitcoin]
+scope_asset_metric_tokens: [volume, market cap, trading volume, market_cap, price]
+scope_dominance_exception_tokens: [dominance]
+
+# ---------------------------------------------------------------------
+# core/field_confusion.py — the audit's missed item #1
+# ---------------------------------------------------------------------
+
+field_phrases:
+  get_crypto_global_market:
+    market_cap_usd: [market_cap_usd]
+    market_cap_change_24h:
+      - market_cap_change_24h
+      - market cap change
+      - market-cap change
+      - 24-hour change
+      - 24h change
+      - market cap 24h
+      - 24h market cap change
+    volume_24h_usd:
+      - volume_24h_usd
+      - 24h volume
+      - 24-hour volume
+      - trading volume
+    volume_24h_change_24h:
+      - volume_24h_change_24h
+      - volume 24h change
+      - volume change
+    bitcoin_dominance_percentage:
+      - bitcoin_dominance_percentage
+      - btc dominance
+      - bitcoin dominance
+      - dominance
+    cryptocurrencies_number:
+      - cryptocurrencies_number
+      - number of cryptocurrencies
+  get_bitcoin_futures_funding:
+    lastFundingRate:
+      - lastFundingRate
+      - last funding rate
+      - funding rate
+      - funding_rate
+    markPrice: [markPrice, mark price, mark_price]
+    indexPrice: [indexPrice, index price, index_price]
+    nextFundingTime: [nextFundingTime, next funding time]
+  get_bitcoin_onchain:
+    hash_rate: [hash rate, hashrate, hash_rate, hashRate]
+    difficulty: [mining difficulty, difficulty]
+    mempool_vsize: [mempool vsize, mempool size]
+    mempool_tx_count: [mempool tx count, unconfirmed transactions]
+  get_ethereum_network_stats:
+    height: [block height, block_height, blockHeight, current block height]
+    unconfirmed_count: [unconfirmed, mempool]
+    base_fee: [base fee, base_fee, baseFee]
+    high_gas_price: [high gas, high gwei, high gas price]
+    medium_gas_price: [medium gas, medium gwei, medium gas price]
+    low_gas_price: [low gas, low gwei, low gas price]
+  get_fear_greed_index:
+    value:
+      - index value
+      - fear & greed value
+      - fear greed value
+      - f&g value
+      - sentiment value
+  get_bitcoin_long_short_ratio:
+    longShortRatio:
+      - long/short account ratio
+      - long-short account ratio
+      - long short account ratio
+      - long/short ratio
+      - long-short ratio
+      - longShortRatio
+      - long short ratio
+    longAccount: [long account, longAccount]
+    shortAccount: [short account, shortAccount]
+  get_coinbase_btc_stats:
+    last: [last price]
+    high: [24h high]
+    low: [24h low]
+    volume: [24h volume, coinbase volume]
+    volume_30day: [30-day volume, 30d volume, volume_30day]
+
+# Phrases that name TWO or more fields — always resolve to None.
+ambiguous_phrases: [value, rate, change, price, volume]
+
+# Tools whose numeric output is effectively ONE scalar.
+single_numeric_field:
+  get_fear_greed_index: value
+
+# Metadata fields (unix epochs, next-window times) — NEVER a
+# candidate for cited-value matching.
+timestamp_like_fields:
+  - timestamp
+  - nextFundingTime
+  - next_funding_time
+  - next_difficulty_adjustment
+  - observed_at
+  - occurred_at
+  - created_at
+  - updated_at
+
+# ---------------------------------------------------------------------
+# core/metric_recorder.py — canonical metric names + field map
+# ---------------------------------------------------------------------
+
+metric_names:
+  btc_dominance: btc_dominance
+  global_market_cap: global_market_cap
+  global_volume_24h: global_volume_24h
+
+metric_field_map:
+  bitcoin_dominance_percentage: btc_dominance
+  market_cap_usd: global_market_cap
+  volume_24h_usd: global_volume_24h
+
+metric_source_tool: get_crypto_global_market
+
+# ---------------------------------------------------------------------
+# analysis/thesis_backtest_descriptive.py — subject-marker tables
+# ---------------------------------------------------------------------
+
+backtest_subject_markers:
+  hashrate: [btc hash rate, bitcoin hash rate]
+  difficulty:
+    - bitcoin mining difficulty
+    - bitcoin difficulty
+  btc_market_cap:
+    - btc market cap
+    - btc's market cap
+    - bitcoin market cap
+  btc_volume:
+    - btc short-term trading volume
+    - bitcoin volume
+    - btc volume
+    - btc trading volume
+    - bitcoin trading volume
+  btc_futures_funding:
+    - bitcoin futures funding
+    - btc futures funding
+    - funding rate
+  global_market_cap:
+    - global crypto market cap
+    - global crypto market capitalization
+    - crypto market cap
+    - crypto market capitalization
+    - market capitalization of all cryptocurrencies
+
+# ---------------------------------------------------------------------
+# Prompt bootstrap / defaults — core/brain.py
+# ---------------------------------------------------------------------
+
+# Injected into the "no active objectives" prompt path so a fresh
+# rail can seed one.
+prompt_bootstrap_snippet: |
+  NO ACTIVE OBJECTIVES.
+
+  STEP 1: Call get_crypto_price with symbol='bitcoin' to scan markets.
+  STEP 2: After receiving the price, IMMEDIATELY call create_objective with a title and description based on what you observed. Pick a specific topic to investigate next (e.g., on-chain metrics, sentiment shift, news event, technical pattern).
+
+  MANDATORY: end this cycle by calling create_objective. Do not narrate. Tool calls only.
+
+# core/brain.py objectives_test_bootstrap defaults.
+test_bootstrap_tool_defaults:
+  get_crypto_price:
+    symbol: bitcoin
+  get_crypto_history:
+    symbol: bitcoin
+    days: 1
+
+# ---------------------------------------------------------------------
+# Source cache polling schedule — core/source_cache.py
+# ---------------------------------------------------------------------
+
+source_cache_config:
+  get_fear_greed_index: [21600, 93600]           # 6h poll, 26h stale
+  get_bitcoin_onchain: [600, 2400]               # 10min, 40min
+  get_bitcoin_futures_funding: [1800, 7200]      # 30min, 2h
+  get_bitcoin_long_short_ratio: [1800, 7200]
+  fred_series_observations: [43200, 172800]      # 12h, 48h
+  get_coinbase_btc_stats: [900, 3600]            # 15min, 1h
+  get_ethereum_network_stats: [300, 1200]        # 5min, 20min
+  get_news: [1200, 3600]                         # 20min, 1h
+
+source_cache_default_args:
+  fred_series_observations:
+    series_id: CPIAUCSL

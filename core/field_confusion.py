@@ -28,107 +28,18 @@ from typing import Any
 # substring match. A phrase that could name two fields is deliberately
 # ABSENT — better to classify a number as "no confident mapping" than
 # to force-fit it into a bucket. Keep this table conservative.
+# 2026-09-30 chantier-1: FIELD_PHRASES + AMBIGUOUS_PHRASES +
+# SINGLE_NUMERIC_FIELD + TIMESTAMP_LIKE_FIELDS all sourced from the
+# active domain pack (domains/<name>/domain.yaml). The grep-lock at
+# tests/test_domain_pack_locks.py refuses to let these literals
+# reappear outside domains/. See core/domain.py for the loader.
+from core.domain import current_domain as _current_domain  # noqa: E402
 FIELD_PHRASES: dict[str, dict[str, tuple[str, ...]]] = {
-    "get_crypto_global_market": {
-        "market_cap_usd": (
-            "market_cap_usd",
-        ),
-        "market_cap_change_24h": (
-            "market_cap_change_24h", "market cap change", "market-cap change",
-            "24-hour change", "24h change", "market cap 24h", "24h market cap change",
-        ),
-        "volume_24h_usd": (
-            "volume_24h_usd", "24h volume", "24-hour volume", "trading volume",
-        ),
-        "volume_24h_change_24h": (
-            "volume_24h_change_24h", "volume 24h change", "volume change",
-        ),
-        "bitcoin_dominance_percentage": (
-            "bitcoin_dominance_percentage", "btc dominance", "bitcoin dominance",
-            "dominance",
-        ),
-        "cryptocurrencies_number": (
-            "cryptocurrencies_number", "number of cryptocurrencies",
-        ),
-    },
-    "get_bitcoin_futures_funding": {
-        "lastFundingRate": (
-            "lastFundingRate", "last funding rate", "funding rate", "funding_rate",
-        ),
-        "markPrice": ("markPrice", "mark price", "mark_price"),
-        "indexPrice": ("indexPrice", "index price", "index_price"),
-        "nextFundingTime": ("nextFundingTime", "next funding time"),
-    },
-    "get_bitcoin_onchain": {
-        # Payload keys are snake_case (verified against live snapshot).
-        "hash_rate": ("hash rate", "hashrate", "hash_rate", "hashRate"),
-        "difficulty": ("mining difficulty", "difficulty"),
-        "mempool_vsize": ("mempool vsize", "mempool size"),
-        "mempool_tx_count": ("mempool tx count", "unconfirmed transactions"),
-    },
-    "get_ethereum_network_stats": {
-        "height": ("block height", "block_height", "blockHeight", "current block height"),
-        "unconfirmed_count": ("unconfirmed", "mempool"),
-        "base_fee": ("base fee", "base_fee", "baseFee"),
-        "high_gas_price": ("high gas", "high gwei", "high gas price"),
-        "medium_gas_price": ("medium gas", "medium gwei", "medium gas price"),
-        "low_gas_price": ("low gas", "low gwei", "low gas price"),
-    },
-    "get_fear_greed_index": {
-        "value": ("index value", "fear & greed value", "fear greed value",
-                   "f&g value", "sentiment value"),
-    },
-    "get_bitcoin_long_short_ratio": {
-        "longShortRatio": (
-            # 2026-09-24: Binance's own name for this field is
-            # "long/short account ratio". Include LONGEST forms so the
-            # longest-match resolver wins over the bare "short account"
-            # phrase mapped to shortAccount below (was incorrectly
-            # attributing longShortRatio citations to shortAccount).
-            "long/short account ratio", "long-short account ratio",
-            "long short account ratio",
-            "long/short ratio", "long-short ratio", "longShortRatio",
-            "long short ratio",
-        ),
-        "longAccount": ("long account", "longAccount"),
-        "shortAccount": ("short account", "shortAccount"),
-    },
-    "get_coinbase_btc_stats": {
-        "last": ("last price",),
-        "high": ("24h high",),
-        "low": ("24h low",),
-        "volume": ("24h volume", "coinbase volume"),
-        "volume_30day": ("30-day volume", "30d volume", "volume_30day"),
-    },
+    tool: dict(fields) for tool, fields in _current_domain().field_phrases.items()
 }
-
-# Phrases that name TWO or more fields (or "value" / "rate" / "change"
-# in isolation) — always resolve to None. Anything on this list guarantees
-# no confident mapping is attempted.
-AMBIGUOUS_PHRASES: frozenset[str] = frozenset({
-    "value", "rate", "change", "price", "volume",
-})
-
-# Tools whose numeric output is effectively ONE scalar. Any number
-# extracted from a citation of such a tool is by construction the
-# single numeric field — no phrase needed to disambiguate.
-# get_fear_greed_index: value ∈ [0,100]; the other keys (timestamp,
-# value_classification) are non-scalar for this purpose.
-SINGLE_NUMERIC_FIELD: dict[str, str] = {
-    "get_fear_greed_index": "value",
-}
-
-
-# Fields that are METADATA (unix epochs, next-window times) and must
-# NEVER count as a candidate for a cited-value match. A model that
-# writes "at timestamp 1789689600" is quoting metadata, not a value.
-# 2026-09-22: without this exclusion, F&G "value" trivial-mapping
-# treated the unix timestamp as a genuine value confusion.
-TIMESTAMP_LIKE_FIELDS: frozenset[str] = frozenset({
-    "timestamp", "nextFundingTime", "next_funding_time",
-    "next_difficulty_adjustment", "observed_at", "occurred_at",
-    "created_at", "updated_at",
-})
+AMBIGUOUS_PHRASES: frozenset[str] = frozenset(_current_domain().ambiguous_phrases)
+SINGLE_NUMERIC_FIELD: dict[str, str] = dict(_current_domain().single_numeric_field)
+TIMESTAMP_LIKE_FIELDS: frozenset[str] = frozenset(_current_domain().timestamp_like_fields)
 
 
 _NUMBER_RE = re.compile(

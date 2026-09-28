@@ -50,144 +50,48 @@ from core.field_confusion import (
     parse_findings_payloads,
     phrase_to_field,
 )
+# 2026-09-30 chantier-1: domain-pack loader — sourced from
+# ``domains/<name>/domain.yaml`` via ``core.domain.current_domain()``.
+from core.domain import current_domain as _current_domain
 
 
 # Rail tools: what NUMERIC fields they publish. Used for cross-source
 # collision detection and scope checks. Non-rail sources (web_search,
 # get_news) have no fields — they carry qualitative content only.
+# 2026-09-30 chantier-1: sourced from the active domain pack
+# (domains/<name>/domain.yaml → rail_tool_fields). See core/domain.py.
 RAIL_TOOL_FIELDS: dict[str, frozenset[str]] = {
-    "get_bitcoin_futures_funding": frozenset({
-        "lastFundingRate", "markPrice", "indexPrice", "nextFundingTime",
-    }),
-    "get_bitcoin_long_short_ratio": frozenset({
-        "longShortRatio", "longAccount", "shortAccount",
-    }),
-    "get_bitcoin_onchain": frozenset({
-        "hash_rate", "difficulty", "mempool_vsize", "mempool_tx_count",
-    }),
-    "get_ethereum_network_stats": frozenset({
-        "height", "unconfirmed_count", "base_fee",
-        "high_gas_price", "medium_gas_price", "low_gas_price",
-    }),
-    "get_crypto_global_market": frozenset({
-        "market_cap_usd", "market_cap_change_24h", "volume_24h_usd",
-        "volume_24h_change_24h", "bitcoin_dominance_percentage",
-        "cryptocurrencies_number",
-    }),
-    "get_fear_greed_index": frozenset({"value"}),
-    "get_coinbase_btc_stats": frozenset({
-        "last", "high", "low", "volume", "volume_30day",
-    }),
-    "fred_series_observations": frozenset({"value"}),
-    "get_crypto_price": frozenset({"price", "market_cap", "volume_24h"}),
-    "get_stablecoin_market_activity": frozenset(),
-    "get_news": frozenset(),
-    "web_search": frozenset(),
-    "technical_analysis": frozenset({"score", "value", "signal"}),
+    k: frozenset(v) for k, v in _current_domain().rail_tool_fields.items()
 }
 
 # Direction rules: only UNAMBIGUOUS cases. Any subject/claim/value combo
 # where the operator would readily agree the direction is wrong. Skip
 # borderline cases (they count as "not-flagged" — no false positive).
-_BULLISH_WORDS = frozenset({
-    "bullish", "bull", "buyer", "buyers", "more buyers", "buying pressure",
-    "upward", "positive sentiment",
-})
-_BEARISH_WORDS = frozenset({
-    "bearish", "bear", "seller", "sellers", "more sellers", "selling pressure",
-    "downward", "negative sentiment",
-})
+# 2026-09-30 chantier-1: sourced from the active domain pack.
+_BULLISH_WORDS = frozenset(_current_domain().bullish_words)
+_BEARISH_WORDS = frozenset(_current_domain().bearish_words)
 
 # Metric families — variants under one canonical metric. Used only for
 # fragmentation counting; the tokens are lower-cased subject substrings.
-METRIC_FAMILIES: dict[str, tuple[str, ...]] = {
-    "funding_rate":  ("funding rate", "funding_rate", "perpetual funding"),
-    "long_short":    ("long-short", "long/short", "long short", "positioning",
-                       "long account", "short account"),
-    "hashrate":      ("hashrate", "hash rate", "hash-rate", "network hash"),
-    "difficulty":    ("difficulty",),
-    "dominance":     ("dominance",),
-    "mempool":       ("mempool", "unconfirmed"),
-    "gas":           ("gas price", "gwei"),
-    "fear_greed":    ("fear", "greed", "sentiment index"),
-    "market_cap":    ("market cap", "market_cap", "marketcap"),
-    "trading_volume":("trading volume", "24h volume", "24-hour volume"),
-}
+# 2026-09-30 chantier-1: sourced from the active domain pack.
+METRIC_FAMILIES: dict[str, tuple[str, ...]] = dict(
+    _current_domain().metric_families,
+)
 
 
 # Per-tool served-concept phrases. PHRASE-LEVEL (not single-word) so
 # "market sentiment" (F&G) resolves separately from "social media
 # sentiment" (unservable). Serviceability checks this map first for a
 # match against the residue's PHRASE text.
-TOOL_SERVED_PHRASES: dict[str, tuple[str, ...]] = {
-    "get_news": (
-        "news", "news headlines", "headlines", "news events",
-        "news impact", "economic news", "major news", "news sentiment",
-        "market news", "crypto news",
-    ),
-    "get_fear_greed_index": (
-        "fear", "greed", "fear and greed", "fear & greed",
-        "market sentiment", "sentiment index", "crypto sentiment",
-    ),
-    "fred_series_observations": (
-        "fred", "federal reserve", "cpi", "unemployment", "gdp",
-        "treasury", "economic indicators", "economic data",
-        "inflation", "inflation rates", "us inflation",
-        "macro indicators", "macroeconomic", "oecd series",
-        "banking system confidence",
-    ),
-    "get_coinbase_btc_stats": (
-        "coinbase", "coinbase exchange", "coinbase spot",
-        "spot market", "spot price",
-    ),
-    "get_crypto_global_market": (
-        "market cap", "market capitalization", "dominance",
-        "btc dominance", "bitcoin dominance", "trading volume",
-        "24h volume", "24-hour volume", "global crypto",
-        "global market", "crypto market volume",
-    ),
-    "get_bitcoin_futures_funding": (
-        "funding", "funding rate", "funding rates", "perpetual funding",
-        "mark price", "index price", "premium", "futures funding",
-        # 2026-09-24: derivatives-side vocabulary the campaign 3 titles
-        # actually use. Basis = mark − index premium, which IS what
-        # this tool reports.
-        "derivatives", "perpetuals", "perp", "perpetual",
-        "leverage", "leveraged positions", "leverage ratio",
-        "basis", "mark-index basis", "mark/index basis",
-        "index basis", "futures basis", "premium index",
-    ),
-    "get_bitcoin_long_short_ratio": (
-        "long-short", "long/short", "long short", "positioning",
-        "long account", "short account", "long-short ratio",
-        "long/short ratio", "long short ratio",
-        # Binance's own long-form label; the field-confusion classifier
-        # matches this via the FIELD_PHRASES table too.
-        "long/short account ratio", "long-short account ratio",
-        # Retail/whale positioning — the same table is the only source
-        # for these on the rail.
-        "retail positioning", "retail long", "retail short",
-        "whale positioning", "whale long", "whale short",
-        "trader positioning", "account positioning",
-    ),
-    "get_bitcoin_onchain": (
-        "hashrate", "hash rate", "network hashrate", "mining difficulty",
-        "difficulty", "difficulty adjustment", "mempool", "mempool size",
-        "unconfirmed transactions", "onchain", "on-chain",
-        "bitcoin on-chain",
-    ),
-    "get_ethereum_network_stats": (
-        "gas", "gwei", "ethereum gas", "base fee", "block height",
-        "ethereum network", "ethereum network stats",
-    ),
-    "get_crypto_price": (
-        "crypto price", "spot price", "short-term price",
-        "short-term crypto price",
-    ),
-    "technical_analysis": (
-        "technical analysis", "technical indicators", "moving average",
-    ),
-}
+# 2026-09-30 chantier-1: TOOL_SERVED_PHRASES sourced from the active
+# domain pack (domains/<name>/domain.yaml → tool_served_phrases).
+# The grep-lock at tests/test_domain_pack_locks.py refuses to let
+# these literals reappear outside domains/. Serviceability +
+# learned_served_phrases + campaign scorer all still read from
+# TOOL_SERVED_PHRASES so downstream call-sites don't change.
+TOOL_SERVED_PHRASES: dict[str, tuple[str, ...]] = dict(
+    _current_domain().tool_served_phrases,
+)
 
 # Concepts the rail CANNOT serve — override wins over any coincidental
 # served-phrase match. Phrase-level: "market sentiment" is served by
@@ -222,30 +126,8 @@ NOT_SERVED_OVERRIDES: tuple[str, ...] = (
 # appear here without appearing there: e.g. "trends", "framework" are
 # useful markers when detecting whether an angle is on rail, but as the
 # leading/trailing word of a candidate theme they add no information.
-_PHRASE_STOPWORDS: frozenset[str] = frozenset({
-    # generic template
-    "the", "and", "or", "of", "in", "on", "at", "to", "for", "with",
-    "vs", "versus", "via", "through", "under", "over", "into", "amid",
-    "during", "toward", "against", "within", "between",
-    "exploring", "explore", "analyzing", "analyze", "analysis",
-    "investigating", "investigate", "examining", "examine",
-    "unexplored", "emerging", "evolving", "recent", "current",
-    "new", "novel", "potential",
-    # generic effects
-    "impact", "influence", "context", "correlation", "relationship",
-    "changes", "change", "trends", "trend", "effects", "effect",
-    "adoption", "activities", "activity", "aggregates", "aggregate",
-    "response", "responses",
-    # generic modifiers
-    "global", "major", "recent", "novel", "unspecified",
-    "indicators", "indicator", "drivers", "factors", "dynamics",
-    "patterns", "level", "levels", "state", "share", "shares",
-    "distribution", "distributions", "framework", "frameworks",
-    "environment", "series", "metrics", "metric", "variable",
-    # already stripped as subject / template
-    "btc", "bitcoin", "crypto", "cryptocurrency", "market", "markets",
-    "rate", "rates", "ratio", "ratios",
-})
+# 2026-09-30 chantier-1: sourced from the active domain pack.
+_PHRASE_STOPWORDS: frozenset[str] = frozenset(_current_domain().phrase_stopwords)
 
 
 def _extract_theme_phrases(
@@ -353,18 +235,20 @@ def classify_scope_misattribution(
     price) is a scope error. 'BTC dominance' is EXCEPT — that IS a
     global-market field.
     """
+    # 2026-09-30 chantier-1: subject-token / metric-token / dominance-
+    # exception lists sourced from the active domain pack.
+    _dom = _current_domain()
     subj = (thesis.get("subject") or "").lower()
-    if not ("btc" in subj or "bitcoin" in subj):
+    if not any(t in subj for t in _dom.scope_asset_subject_tokens):
         return False, ""
-    asset_metric = any(k in subj for k in (
-        "volume", "market cap", "trading volume", "market_cap", "price",
-    ))
-    if not asset_metric or "dominance" in subj:
+    asset_metric = any(k in subj for k in _dom.scope_asset_metric_tokens)
+    dominance_hit = any(t in subj for t in _dom.scope_dominance_exception_tokens)
+    if not asset_metric or dominance_hit:
         return False, ""
     for e in (thesis.get("evidence") or []):
         if not isinstance(e, dict):
             continue
-        if e.get("source") == "get_crypto_global_market":
+        if e.get("source") == _dom.scope_source_tool:
             return True, str(e.get("detail", ""))[:120]
     return False, ""
 

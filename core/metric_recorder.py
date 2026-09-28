@@ -59,15 +59,17 @@ def recorder_enabled() -> bool:
 # Metric names — stable identifiers that the descriptive-backtest scorer
 # maps into MetricKind. Kept as module-level constants so tests and the
 # backtest reader agree on the exact spellings.
-METRIC_BTC_DOMINANCE = "btc_dominance"
-METRIC_GLOBAL_MARKET_CAP = "global_market_cap"
-METRIC_GLOBAL_VOLUME_24H = "global_volume_24h"
-
-_FIELD_MAP = {
-    "bitcoin_dominance_percentage": METRIC_BTC_DOMINANCE,
-    "market_cap_usd": METRIC_GLOBAL_MARKET_CAP,
-    "volume_24h_usd": METRIC_GLOBAL_VOLUME_24H,
-}
+# 2026-09-30 chantier-1: metric names + field map + source tool
+# sourced from the active domain pack. Module-level names stay for
+# import stability (analysis/thesis_backtest_descriptive.py and tests
+# import METRIC_BTC_DOMINANCE etc).
+from core.domain import current_domain as _current_domain  # noqa: E402
+_names = _current_domain().metric_names
+METRIC_BTC_DOMINANCE = _names.get("btc_dominance", "btc_dominance")
+METRIC_GLOBAL_MARKET_CAP = _names.get("global_market_cap", "global_market_cap")
+METRIC_GLOBAL_VOLUME_24H = _names.get("global_volume_24h", "global_volume_24h")
+_FIELD_MAP = dict(_current_domain().metric_field_map)
+_METRIC_SOURCE_TOOL = _current_domain().metric_source_tool or "get_crypto_global_market"
 
 
 def extract_metrics(tool_result: dict[str, Any]) -> list[tuple[str, float]]:
@@ -101,7 +103,7 @@ async def snapshot_once(persistent_memory, tool_router) -> int:
     """
     from loguru import logger
     try:
-        tr = await tool_router.execute_tool("get_crypto_global_market", {})
+        tr = await tool_router.execute_tool(_METRIC_SOURCE_TOOL, {})
     except Exception as exc:
         logger.warning("metric recorder: tool call raised {}: {}",
                        type(exc).__name__, exc)
