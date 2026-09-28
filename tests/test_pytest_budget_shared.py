@@ -76,15 +76,20 @@ def test_env_override_propagates_to_both_sites() -> None:
 
 
 def test_apply_and_gate_tests_use_same_argv_shape() -> None:
-    """apply's live pytest MUST use xdist too — a live serial run at
-    ~2700s wall time would routinely exceed even the sandbox xdist
-    budget. Grep-level check that ``-n`` reaches the live invocation."""
+    """apply's live pytest MUST use the SAME argv shape as gate_tests
+    and `morgoth test`. 2026-09-30: apply now reads
+    HERMETIC_PYTEST_EXTRA_ARGS + _SANDBOX_XDIST_WORKERS from gates —
+    the shared single source. Prior lock checked for the literal
+    ``-n auto``; the constant now lives in gates and is inserted by
+    the runner. See tests/test_apply_shared_argv.py for the full
+    argv-shape assertion (executed argv, not just the source)."""
     import inspect
     src = inspect.getsource(apply_mod._run_live_pytest)
-    assert "-n" in src and "auto" in src, (
-        "apply._run_live_pytest missing '-n auto' — divergent budget "
-        "envelope from the sandbox"
+    assert "HERMETIC_PYTEST_EXTRA_ARGS" in src, (
+        "apply._run_live_pytest missing HERMETIC_PYTEST_EXTRA_ARGS — "
+        "divergent argv envelope from the sandbox"
     )
+    assert "_SANDBOX_XDIST_WORKERS" in src
 
 
 def test_class_cost_named_in_docstring() -> None:

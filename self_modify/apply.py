@@ -148,27 +148,86 @@ async def _wait_for_ready_and_tool(tool_name: str | None) -> bool:
 # --- subprocess wrappers ----------------------------------------------------
 
 def _run_live_pytest(
-    repo: Path, junit_out: Path | None = None,
+    repo: Path,
+    junit_out: Path | None = None,
+    *,
+    inject_file: tuple[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Live-tree pytest — same suite the sandbox ran, same budget.
+    """Sandboxed pytest — SAME wrapper as gate_tests + `morgoth test`.
 
-    ``-n auto`` matches the sandbox invocation so the live budget's
-    variance envelope matches the measured value (a live serial run
-    at ~2700s wall time would routinely exceed even the sandbox
-    xdist budget).
+    2026-09-30 fix: prior versions ran pytest on the LIVE tree with
+    an inherited env. On the operator's box the same suite that
+    completes in ~9 s under `morgoth test` took 30+ min on the live
+    tree — tests stalled to ``--timeout=60`` each because the live
+    tree carries ``.env`` at cwd, ``.pytest_cache/lastfailed``, live
+    ~/.claude tokens, and the production POSTGRES_URL. The single-
+    source argv alone is not enough; the isolation is what makes
+    hermetic tests hermetic.
 
-    ``junit_out`` (2026-09-30): when set, --junitxml is emitted so
-    apply can judge NEW failures against a pre-write baseline (same
-    primitive gate_tests uses). With 46 legacy failures on the live
-    tree, ``if returncode != 0: rollback`` would fail every apply.
+    Now:
+      1. Copy the current live tree into a fresh sandbox (excluding
+         ``.env``, ``.pytest_cache``, ``data``, ``vault``, ``backups``,
+         ``.venv``, ``.git`` — same as gate_tests).
+      2. If ``inject_file=(target_path, content)`` is set, write the
+         file into the sandbox (proposal run). Baseline run leaves
+         the sandbox as-is.
+      3. os.utime(sandbox) — copystat propagates the source dir's
+         mtime; sweep_stale_sandboxes would otherwise treat a fresh
+         copy of a >1 h-old repo as stale mid-run (same bug the
+         earlier gate_tests commit fixed).
+      4. Run pytest under ``gates.wrap_command_in_sandbox`` (unshare
+         --user --map-root-user --net + bwrap --clearenv --tmpfs /tmp
+         --bind sandbox + --ro-bind system dirs + venv + systemd-run
+         cgroup). Junit is written INSIDE the sandbox tree at
+         ``junit.xml`` and copied out to ``junit_out``.
+      5. Sandbox is cleaned up in ``finally``.
+
+    Grep-locked in tests/test_apply_shared_argv.py.
     """
-    argv = [str(_VENV_PYTHON), "-m", "pytest", "-q", "-n", "auto"]
-    if junit_out is not None:
-        argv.append(f"--junitxml={junit_out}")
-    return subprocess.run(
-        argv, cwd=str(repo), capture_output=True, text=True,
-        timeout=_PYTEST_TIMEOUT_SECS,
-    )
+    import shutil as _shu
+    import tempfile as _tempfile
+    import uuid as _uuid
+    sandbox_root = _gates._SANDBOX_ROOT
+    sandbox_root.mkdir(parents=True, exist_ok=True)
+    sandbox = sandbox_root / f"apply_{_uuid.uuid4().hex[:12]}"
+    if sandbox.exists():
+        _shu.rmtree(sandbox)
+    try:
+        _shu.copytree(str(repo), str(sandbox), ignore=_gates._SANDBOX_IGNORE)
+        import os as _os
+        _os.utime(sandbox, None)
+        # Refuse to proceed if a .env slipped past the ignore list.
+        for stray in list(sandbox.rglob(".env")):
+            if stray.is_file():
+                raise RuntimeError(
+                    f"apply sandbox contains .env at {stray} — refusing to run"
+                )
+        if inject_file is not None:
+            target_path, content = inject_file
+            target = sandbox / target_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        inner_junit = sandbox / "junit.xml"
+        pytest_call = [
+            str(_VENV_PYTHON), "-m", "pytest", "-q",
+            "-n", str(_gates._SANDBOX_XDIST_WORKERS),
+            "--max-worker-restart=3",
+            "--dist=loadfile",
+        ] + list(_gates.HERMETIC_PYTEST_EXTRA_ARGS) + [
+            f"--junitxml={inner_junit}",
+        ]
+        argv = _gates.wrap_command_in_sandbox(sandbox, pytest_call)
+        completed = subprocess.run(
+            argv, capture_output=True, text=True,
+            timeout=_PYTEST_TIMEOUT_SECS,
+            env=_gates._hardened_outer_env(),
+            start_new_session=True,
+        )
+        if junit_out is not None and inner_junit.exists():
+            _shu.copy(str(inner_junit), str(junit_out))
+        return completed
+    finally:
+        _shu.rmtree(sandbox, ignore_errors=True)
 
 
 def _systemctl_restart() -> subprocess.CompletedProcess[str]:
@@ -287,42 +346,48 @@ async def apply_proposal(
     baseline_junit = _staging / "junit.baseline.xml"
     proposal_junit = _staging / "junit.proposal.xml"
     try:
-        _log("baseline", "running pytest on live tree (no file yet)")
+        _log("baseline", "running SANDBOXED pytest on live-tree snapshot")
         try:
             await asyncio.to_thread(_pytest_runner, repo_root, baseline_junit)
         except subprocess.TimeoutExpired:
             reason = f"apply baseline pytest timed out after {_PYTEST_TIMEOUT_SECS}s"
             _log("baseline", reason)
-            await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
-            return STATUS_APPLY_FAILED_ROLLED_BACK
+            await _note_precheck(reason)
+            return APPLY_REFUSED_PRECHECK
+        except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+            reason = f"apply baseline pytest interrupted ({type(exc).__name__}); no file was written"
+            _log("baseline", reason)
+            await _note_precheck(reason)
+            raise
         base_fail, base_err = _gates._junit_failing_ids(baseline_junit)
         baseline_failures = base_fail | base_err
         _log("baseline", f"failures={len(baseline_failures)}")
 
-        # ---- 2b. write ---------------------------------------------------
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(row["content"], encoding="utf-8")
-        _log("write", f"wrote {row['target_path']}")
-
-        # ---- 3. proposal pytest ------------------------------------------
+        # ---- 2b. proposal pytest (SANDBOXED — file NOT yet on live) ------
+        # 2026-09-30: the proposal file is injected into a FRESH sandbox
+        # copy, not into the live tree. If pytest introduces new
+        # failures OR crashes, no cleanup is needed — the live tree is
+        # untouched. The actual live-tree write happens AFTER pytest
+        # verdicts converge.
         try:
-            completed = await asyncio.to_thread(_pytest_runner, repo_root, proposal_junit)
+            completed = await asyncio.to_thread(
+                _pytest_runner, repo_root, proposal_junit,
+                inject_file=(row["target_path"], row["content"]),
+            )
         except subprocess.TimeoutExpired:
-            target.unlink(missing_ok=True)
-            reason = f"apply proposal pytest timed out after {_PYTEST_TIMEOUT_SECS}s; file removed"
+            reason = f"apply proposal pytest timed out after {_PYTEST_TIMEOUT_SECS}s"
             _log("pytest", reason)
-            await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
-            return STATUS_APPLY_FAILED_ROLLED_BACK
+            await _note_precheck(reason)
+            return APPLY_REFUSED_PRECHECK
         prop_fail, prop_err = _gates._junit_failing_ids(proposal_junit)
         proposal_failures = prop_fail | prop_err
         new_failures = proposal_failures - baseline_failures
         if new_failures:
-            target.unlink(missing_ok=True)
             tail = (completed.stdout + completed.stderr)[-1500:]
             reason = (
                 f"apply pytest introduced {len(new_failures)} NEW failure(s) "
                 f"vs baseline (baseline={len(baseline_failures)}, "
-                f"proposal={len(proposal_failures)}); file removed\n"
+                f"proposal={len(proposal_failures)}); live tree untouched\n"
                 f"---new failures---\n" + "\n".join(sorted(new_failures)[:20]) +
                 f"\n---tail---\n{tail}"
             )
@@ -331,6 +396,11 @@ async def apply_proposal(
             return STATUS_APPLY_FAILED_ROLLED_BACK
         _log("pytest",
               f"PASS baseline={len(baseline_failures)} proposal={len(proposal_failures)} — 0 new")
+
+        # ---- 2c. write to LIVE tree (only after verdicts converge) -------
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(row["content"], encoding="utf-8")
+        _log("write", f"wrote {row['target_path']}")
     finally:
         import shutil as _shu
         _shu.rmtree(_staging, ignore_errors=True)

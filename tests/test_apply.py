@@ -255,6 +255,47 @@ async def test_precheck_refusal_appends_note_without_changing_status(
 
 
 @pytest.mark.asyncio
+async def test_baseline_timeout_leaves_row_at_approved_pending_apply(
+    tmp_path: Path,
+) -> None:
+    """The 30-minute hang lesson: if the BASELINE pytest times out
+    (or is interrupted), NO file has been written. The row must stay
+    at approved_pending_apply so the operator can just re-run apply
+    after fixing the hang — it must NOT be flipped to
+    apply_failed_rolled_back (nothing was applied to roll back)."""
+    _init_temp_repo(tmp_path)
+    row = {
+        "proposal_id": "00000000-0000-0000-0000-000000000009",
+        "status": P.STATUS_APPROVED_PENDING_APPLY,
+        "change_type": "new_file",
+        "target_path": "tools/data_feeds/hangs.py",
+        "content": "name = 'hangs'\n",
+    }
+    store = _fake_store_with_row(row)
+    store.set_status_reason = AsyncMock(return_value=True)
+
+    def _baseline_timeout(*_args, **_kw):
+        raise subprocess.TimeoutExpired(cmd="pytest", timeout=1)
+
+    result = await apply_mod.apply_proposal(
+        store, row["proposal_id"], repo_root=tmp_path,
+        _pytest_runner=_baseline_timeout,
+        _restart_runner=_run_ok,
+        _health_check=AsyncMock(return_value=True),
+    )
+    assert result == apply_mod.APPLY_REFUSED_PRECHECK
+    # No status change — this is a PRE-WRITE failure.
+    assert store.update_status.await_count == 0
+    # Diagnostic note captured, guarded by require_status.
+    assert store.set_status_reason.await_count == 1
+    call = store.set_status_reason.await_args
+    assert "baseline pytest timed out" in call.args[1]
+    assert call.kwargs.get("require_status") == P.STATUS_APPROVED_PENDING_APPLY
+    # File was never written.
+    assert not (tmp_path / "tools" / "data_feeds" / "hangs.py").exists()
+
+
+@pytest.mark.asyncio
 async def test_apply_ignores_pre_existing_failures(tmp_path: Path) -> None:
     """46 legacy failures on the live tree must NOT block apply. Both
     baseline and proposal pytest runs return exit != 0 with the SAME
