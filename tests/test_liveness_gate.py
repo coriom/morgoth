@@ -45,10 +45,14 @@ def _probe(hits_vals: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def test_blockcypher_peer_count_dead_trips_rule_b() -> None:
-    """FIXTURE: BlockCypher /v1/eth/main peer_count observed at 0
-    across 5 hits in an earlier operator probe. Rule (b) fires
-    regardless of the height control moving."""
+def test_blockcypher_peer_count_static_alongside_moving_height_warns() -> None:
+    """FIXTURE: BlockCypher /v1/eth/main peer_count=0 across all hits
+    while height moves.
+
+    2026-09-29 rule change: peer_count=0 is a legitimate value (some
+    APIs report 0 as a real reading, not a null). Static-among-moving
+    fields → WARN with the probe duration — the operator still sees
+    the flag at gate 3 but the proposal isn't blocked."""
     probe = _probe([
         {"peer_count": 0, "height": 25474160},
         {"peer_count": 0, "height": 25474175},
@@ -56,15 +60,16 @@ def test_blockcypher_peer_count_dead_trips_rule_b() -> None:
         {"peer_count": 0, "height": 25474205},
     ])
     v = L.classify_probe(probe, ["peer_count", "height"])
-    assert v["outcome"] == "reject"
-    assert v["rule"] == "b"
-    assert "peer_count" in v["dead_fields"]
+    assert v["outcome"] == "warn"
+    assert v["rule"] == "partial-static"
+    assert "peer_count" in v["static_fields"]
+    assert "height" in v["moving_fields"]
 
 
-def test_blockchain_info_miners_revenue_dead_trips_rule_b() -> None:
-    """FIXTURE: blockchain.info /stats miners_revenue_usd=0.0 on all
-    5 hits. Rule (b) fires — dead-field precedence over frozen-rolling
-    (trade_volume_usd was also frozen but b > a)."""
+def test_blockchain_info_all_static_trips_no_info_reject() -> None:
+    """FIXTURE: blockchain.info /stats miners_revenue_usd=0.0 AND
+    trade_volume_usd static across all hits. Every field static →
+    no information about liveness → REJECT (rule ``no-info``)."""
     probe = _probe([
         {"miners_revenue_usd": 0.0, "trade_volume_usd": 209193740.89},
         {"miners_revenue_usd": 0.0, "trade_volume_usd": 209193740.89},
@@ -73,13 +78,13 @@ def test_blockchain_info_miners_revenue_dead_trips_rule_b() -> None:
     ])
     v = L.classify_probe(probe, ["miners_revenue_usd", "trade_volume_usd"])
     assert v["outcome"] == "reject"
-    assert v["rule"] == "b"
+    assert v["rule"] == "no-info"
 
 
-def test_defillama_rolling_frozen_trips_rule_a() -> None:
+def test_defillama_all_static_trips_no_info_reject() -> None:
     """FIXTURE: api.llama.fi /overview/dexs total24h identical across
-    5 hits — the operator's manual FROZEN verdict. Rule (a) fires;
-    no field is zero so (b) doesn't preempt."""
+    5 hits — the operator's manual FROZEN verdict. Every field static
+    across the window → no information → REJECT (rule ``no-info``)."""
     v = 6565792268
     probe = _probe([
         {"total24h": v, "total7d": v, "total30d": v, "change_1d": 40.32},
@@ -89,25 +94,27 @@ def test_defillama_rolling_frozen_trips_rule_a() -> None:
     ])
     verdict = L.classify_probe(probe, ["total24h", "total7d", "total30d", "change_1d"])
     assert verdict["outcome"] == "reject"
-    assert verdict["rule"] == "a"
-    assert "total24h" in verdict["frozen_fields"]
+    assert verdict["rule"] == "no-info"
+    assert "total24h" in verdict["static_fields"]
 
 
 def test_live_moving_fixture_passes() -> None:
     """Every field moves at least once → pass."""
     probe = _probe([
         {"total24h": 100, "peer_count": 42, "height": 1000},
-        {"total24h": 105, "peer_count": 42, "height": 1001},
+        {"total24h": 105, "peer_count": 43, "height": 1001},
         {"total24h": 110, "peer_count": 43, "height": 1002},
-        {"total24h": 108, "peer_count": 42, "height": 1003},
+        {"total24h": 108, "peer_count": 44, "height": 1003},
     ])
     v = L.classify_probe(probe, ["total24h", "peer_count", "height"])
     assert v["outcome"] == "pass"
 
 
-def test_non_rolling_static_fires_warn_path_c() -> None:
-    """peer_count (non-rolling) constant at NON-ZERO across the
-    window → WARN, not REJECT — legitimate for static config."""
+def test_partial_static_fires_warn() -> None:
+    """peer_count constant while height moves → WARN with the probe
+    duration — legitimate for a static-config-among-moving-signal case
+    (e.g. Deribit's current_funding clamped to 0 while open_interest
+    moves)."""
     probe = _probe([
         {"peer_count": 42, "height": 1000},
         {"peer_count": 42, "height": 1001},
@@ -116,27 +123,50 @@ def test_non_rolling_static_fires_warn_path_c() -> None:
     ])
     v = L.classify_probe(probe, ["peer_count", "height"])
     assert v["outcome"] == "warn"
-    assert v["rule"] == "c"
+    assert v["rule"] == "partial-static"
     assert "peer_count" in v["static_fields"]
+    assert "height" in v["moving_fields"]
+    assert v.get("probe_duration_s", 0) >= 0
 
 
-def test_precedence_dead_before_rolling_frozen() -> None:
-    """Rule (b) takes precedence over (a) — a frozen zero on a
-    rolling field is severe as a dead field."""
+def test_null_missing_across_all_hits_rejects() -> None:
+    """A field observed as None across every hit → REJECT (rule
+    ``null``) — the extractor is broken (no value on any hit)."""
     probe = _probe([
-        {"total24h": 0},
-        {"total24h": 0},
-        {"total24h": 0},
-        {"total24h": 0},
+        {"total24h": 100, "broken": None},
+        {"total24h": 105, "broken": None},
+        {"total24h": 110, "broken": None},
+        {"total24h": 108, "broken": None},
     ])
-    v = L.classify_probe(probe, ["total24h"])
+    v = L.classify_probe(probe, ["total24h", "broken"])
     assert v["outcome"] == "reject"
-    assert v["rule"] == "b"  # not "a"
+    assert v["rule"] == "null"
+    assert "broken" in v["null_fields"]
 
 
-def test_error_hit_disqualifies_frozen_verdict() -> None:
-    """A field with an error-hit can't be called frozen — we don't
-    know if it would have moved. Falls through to pass."""
+def test_zero_is_not_null_no_reject_when_others_move() -> None:
+    """Regression lock for 9f446bb4: Deribit's current_funding is a
+    clamped zero (±0.025% band). Zero across all hits with other
+    fields moving must NOT reject — WARN is the correct signal.
+    A ``0`` observation is data, not absence."""
+    probe = _probe([
+        {"current_funding": 0.0, "open_interest": 3.7e9, "mark_price": 68420.0},
+        {"current_funding": 0.0, "open_interest": 3.71e9, "mark_price": 68440.0},
+        {"current_funding": 0.0, "open_interest": 3.68e9, "mark_price": 68390.0},
+        {"current_funding": 0.0, "open_interest": 3.72e9, "mark_price": 68450.0},
+    ])
+    v = L.classify_probe(probe,
+                         ["current_funding", "open_interest", "mark_price"])
+    assert v["outcome"] == "warn"
+    assert v["rule"] == "partial-static"
+    assert v["static_fields"] == ["current_funding"]
+    assert set(v["moving_fields"]) == {"open_interest", "mark_price"}
+
+
+def test_error_hit_disqualifies_static_verdict() -> None:
+    """A field with an error-hit AND fewer than 2 clean observations
+    can't be judged — falls through to pass (no null observed, no
+    static evidence)."""
     probe = {
         "url": "https://x/y",
         "hits": [
@@ -149,7 +179,10 @@ def test_error_hit_disqualifies_frozen_verdict() -> None:
         "n_hits": 4, "digest_fields": ["total24h"],
     }
     v = L.classify_probe(probe, ["total24h"])
-    assert v["outcome"] == "pass"
+    # 3 clean observations, all at 100 → static → single-field static
+    # is the "every field static" no-info condition.
+    assert v["outcome"] == "reject"
+    assert v["rule"] == "no-info"
 
 
 # ---------- scheduler: 4 hits, gap, concurrency ------------------------
@@ -281,9 +314,12 @@ async def test_list_shaped_body_with_frozen_rolling_field_now_rejects() -> None:
 
     v = L.classify_probe(probe, ["symbol", "longShortRatio",
                                   "volume_24h", "timestamp"])
+    # 2026-09-29: every field is static (identical body across 4
+    # hits) → no-info reject. The extraction contract still surfaces
+    # the values — the reject verdict comes from movement analysis.
     assert v["outcome"] == "reject"
-    assert v["rule"] == "a"
-    assert "volume_24h" in v["frozen_fields"]
+    assert v["rule"] == "no-info"
+    assert "volume_24h" in v["static_fields"]
 
 
 @pytest.mark.asyncio
@@ -335,11 +371,14 @@ async def test_nested_data_wrapper_extraction_reaches_probe() -> None:
             ["total24h", "n_tx"],
             hits=4, gap_secs=0, sleep_fn=_no_sleep,
         )
-    # total24h is 0 across all hits → rule (b) dead field
+    # 2026-09-29: total24h=0 AND n_tx=42 static across 4 hits → every
+    # field static → REJECT rule "no-info". (Under the pre-2026-09-29
+    # rules this was rule "b"/dead-field on total24h; the new rule
+    # treats 0 as a value and rejects only when every field is static.)
     v = L.classify_probe(probe, ["total24h", "n_tx"])
     assert v["outcome"] == "reject"
-    assert v["rule"] == "b"
-    assert "total24h" in v["dead_fields"]
+    assert v["rule"] == "no-info"
+    assert "total24h" in v["static_fields"]
 
 
 @pytest.mark.asyncio
@@ -364,7 +403,10 @@ async def test_extraction_failure_marks_hit_as_error_unknown() -> None:
         v = hit["vals"]["x"]
         assert isinstance(v, str) and v.startswith("error:")
     result = L.classify_probe(probe, ["x"])
-    assert result["outcome"] == "pass"
+    # Every observation is an error-string → the field is null/missing
+    # across all hits → REJECT rule "null" (extractor broken).
+    assert result["outcome"] == "reject"
+    assert result["rule"] == "null"
 
 
 def test_liveness_probe_summary_helper() -> None:

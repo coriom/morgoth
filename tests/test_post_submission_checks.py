@@ -248,12 +248,12 @@ async def test_run_reflection_end_to_end_path_digest_spec_reaches_submitted(
                AsyncMock(return_value={
                    "url": "x", "hits": [
                        {"i": i, "ok": True,
-                        "vals": {"total_supply": 140_000_000_000,
+                        "vals": {"total_supply": 140_000_000_000 + i * 1e8,
                                  "usdt_symbol": "USDT",
-                                 "asset_count": 2}}
+                                 "asset_count": 2 + (i % 2)}}
                        for i in range(4)
                    ],
-                   "n_hits": 4,
+                   "n_hits": 4, "gap_secs": 150,
                    "digest_fields": ["total_supply", "usdt_symbol",
                                      "asset_count"],
                })):
@@ -263,6 +263,97 @@ async def test_run_reflection_end_to_end_path_digest_spec_reaches_submitted(
 
     assert result["outcome"] == "submitted", result
     assert result["pipeline_status"] == P.STATUS_PENDING_APPROVAL
+
+
+# --------- artifact check -------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_artifact_check_rejects_on_module_exec_crash() -> None:
+    """A syntax error at module scope → REJECT with the traceback tail."""
+    from self_modify.post_submission_checks import _artifact_check, CHECK_ARTIFACT
+    row = {"content": "1 = 2  # SyntaxError at line 1\n"}
+    probe = {"hits": [{"ok": True, "body": {"x": 1}}]}
+    r = _artifact_check(row, probe)
+    assert r.name == CHECK_ARTIFACT
+    assert r.status == "reject"
+    assert "SyntaxError" in r.message or "syntax" in r.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_artifact_check_rejects_pre_fix_broken_template() -> None:
+    """Replays the 9f446bb4 shape: _DIGEST_FIELDS is a list of dicts
+    but the OLD template's ``for key in _DIGEST_FIELDS: if key in data:``
+    loop treats each entry as a hashable key → TypeError at runtime.
+    The artifact check catches it — gate_tests never ran the tool."""
+    from self_modify.post_submission_checks import _artifact_check, CHECK_ARTIFACT
+    # Minimal shape of the pre-fix template — the crashing loop only.
+    old_style = (
+        "from tools.base_tool import BaseTool\n"
+        "_DIGEST_FIELDS = [{'name': 'x', 'path': 'x'}]\n"
+        "class BrokenTool(BaseTool):\n"
+        "    name = 'broken'; is_data_source = True\n"
+        "    description = 'x'; digest_fields = ('x',)\n"
+        "    def __init__(self, cfg, client=None): self._client = client\n"
+        "    async def execute(self, **_kw):\n"
+        "        data = {'x': 1}\n"
+        "        for key in _DIGEST_FIELDS:\n"
+        "            if key in data:  # crash: unhashable dict\n"
+        "                pass\n"
+        "        return {'success': True, 'result': {}}\n"
+    )
+    row = {"content": old_style}
+    probe = {"hits": [{"ok": True, "body": {"x": 1}}]}
+    r = _artifact_check(row, probe)
+    assert r.status == "reject"
+    assert "TypeError" in r.message or "unhashable" in r.message
+
+
+@pytest.mark.asyncio
+async def test_artifact_check_ok_on_rendered_defillama() -> None:
+    """Positive: the current TOOL_TEMPLATE rendered with a path-digest
+    spec, executed against the DefiLlama fixture, extracts values → OK."""
+    from self_modify.post_submission_checks import _artifact_check, CHECK_ARTIFACT
+    from self_modify import reflect
+    from self_modify.digest_path import normalize_digest_fields
+    spec = {
+        "tool_name": "get_defillama_stablecoins_art",
+        "api_base_url": "https://stablecoins.llama.fi",
+        "endpoint_path": "/stablecoins",
+        "digest_fields": [
+            {"name": "total_supply",
+             "path": "sum(peggedAssets[*].circulating.peggedUSD)"},
+            {"name": "asset_count", "path": "count(peggedAssets[*])"},
+        ],
+        "description": "test", "rationale": "test",
+    }
+    entries = normalize_digest_fields(spec["digest_fields"])
+    content = reflect.TOOL_TEMPLATE.format(
+        tool_name=spec["tool_name"],
+        class_name=reflect._snake_to_class_name(spec["tool_name"]),
+        tool_name_repr=repr(spec["tool_name"]),
+        base_url_repr=repr(spec["api_base_url"]),
+        endpoint_path_repr=repr(spec["endpoint_path"]),
+        digest_fields_repr=repr(entries),
+        description_repr=repr(spec["description"]),
+        source_label_repr=repr("stablecoins.llama.fi"),
+        endpoint_declaration_repr=repr("stablecoins.llama.fi/stablecoins"),
+        requires_key_env_repr=repr(None),
+        key_in_repr=repr(None), key_param_repr=repr(None),
+    )
+    body = {
+        "peggedAssets": [
+            {"circulating": {"peggedUSD": 100_000_000_000}},
+            {"circulating": {"peggedUSD":  40_000_000_000}},
+        ]
+    }
+    row = {"content": content}
+    probe = {"hits": [{"ok": True, "body": body}]}
+    r = _artifact_check(row, probe)
+    assert r.status == "ok", r
+    assert r.detail is not None
+    result = r.detail["result"]
+    assert result["total_supply"] == 140_000_000_000
+    assert result["asset_count"] == 2
 
 
 # --------- state-machine lock ---------------------------------------------

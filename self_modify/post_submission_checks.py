@@ -46,6 +46,7 @@ from self_modify import proposals as P
 from self_modify.digest_path import digest_field_names
 
 
+CHECK_ARTIFACT = "artifact"
 CHECK_LIVENESS = "liveness"
 CHECK_OVERLAP = "overlap"
 CHECK_SHADOW = "shadow"
@@ -70,6 +71,145 @@ def _crashed(name: str, exc: BaseException) -> CheckResult:
         status="crashed",
         message=f"{type(exc).__name__}: {exc}",
         detail={"traceback_tail": "\n".join(tail)},
+    )
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Run a coroutine to completion regardless of whether an event
+    loop is already running in the current thread. Used by the
+    artifact check so it composes both inside async callers (reflect,
+    recheck via ``await run_post_submission_checks(...)``) and inside
+    plain sync unit tests."""
+    import asyncio, threading
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # A loop is already running in this thread; run the coroutine in
+    # a fresh loop in a worker thread and wait for the result.
+    box: dict[str, Any] = {}
+    def _target() -> None:
+        try:
+            box["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _artifact_check(
+    proposal_row: dict[str, Any],
+    probe: dict[str, Any] | None,
+) -> CheckResult:
+    """Execute the GENERATED FILE against the responses the liveness
+    probe recorded. Rendering bugs OUTSIDE the resolver (URL/query
+    formatting, header wiring, class body, execute() loop, exception
+    handling) surface here — a shape ``resolve_digest_fields`` handles
+    correctly could still crash at the wrapper layer. 9f446bb4 was the
+    call-out: gate_tests happily reported 46→46 while the generated
+    tool raised ``TypeError: unhashable type: 'dict'`` on every real
+    request. This check runs the tool end-to-end in-process against
+    the probe's recorded body — no network, no re-hit — and rejects
+    on crash or all-null digest with the traceback tail attached.
+    """
+    import asyncio, importlib, traceback as _tb
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    content = proposal_row.get("content") or ""
+    if not content:
+        return CheckResult(CHECK_ARTIFACT, "skipped", "no proposal content")
+    if not probe:
+        return CheckResult(CHECK_ARTIFACT, "skipped", "no probe supplied")
+    ok_hits = [h for h in probe.get("hits", [])
+               if h.get("ok") and h.get("body") is not None]
+    if not ok_hits:
+        return CheckResult(
+            CHECK_ARTIFACT, "skipped",
+            "no OK probe body recorded — nothing to replay",
+        )
+    body = ok_hits[0]["body"]
+
+    # Exec the file in an isolated namespace. Imports (BaseTool,
+    # resolve_digest_fields, httpx, etc.) resolve against the live
+    # repo — the check runs AFTER gate_tests, so any harmful imports
+    # already failed in the sandbox. This check judges FUNCTIONAL
+    # correctness of the artifact, not safety.
+    ns: dict[str, Any] = {}
+    try:
+        exec(compile(content, "<artifact>", "exec"), ns, ns)
+    except Exception as exc:  # noqa: BLE001
+        tail = "\n".join(_tb.format_exception(type(exc), exc, exc.__traceback__)
+                         )[-500:]
+        return CheckResult(
+            CHECK_ARTIFACT, "reject",
+            f"module exec crashed: {type(exc).__name__}: {exc}",
+            detail={"traceback_tail": tail},
+        )
+    cls = next(
+        (v for v in ns.values()
+         if isinstance(v, type) and getattr(v, "is_data_source", False)),
+        None,
+    )
+    if cls is None:
+        return CheckResult(
+            CHECK_ARTIFACT, "reject",
+            "no data_source tool class found in the rendered module",
+        )
+
+    fake_resp = SimpleNamespace(
+        status_code=200, json=lambda: body,
+        raise_for_status=lambda: None,
+    )
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(return_value=fake_resp)
+    fake_client.aclose = AsyncMock()
+    cfg = SimpleNamespace(
+        permissions=SimpleNamespace(
+            permissions=SimpleNamespace(can_access_internet=True),
+        )
+    )
+    try:
+        tool = cls(cfg, client=fake_client)
+        # Route the tool's async execute() through a dedicated helper
+        # so we can be called from either a running loop (reflect,
+        # recheck) or a plain sync test — asyncio.run() alone would
+        # raise "cannot be called from a running event loop" inside
+        # pytest-asyncio and inside run_post_submission_checks.
+        out = _run_coroutine_sync(tool.execute())
+    except Exception as exc:  # noqa: BLE001
+        tail = "\n".join(_tb.format_exception(type(exc), exc, exc.__traceback__)
+                         )[-500:]
+        return CheckResult(
+            CHECK_ARTIFACT, "reject",
+            f"execute() crashed: {type(exc).__name__}: {exc}",
+            detail={"traceback_tail": tail},
+        )
+
+    if not (isinstance(out, dict) and out.get("success")):
+        return CheckResult(
+            CHECK_ARTIFACT, "reject",
+            f"execute() returned failure: "
+            f"{(out or {}).get('error') if isinstance(out, dict) else out!r}",
+            detail={"out": out},
+        )
+    values = out.get("result", {}) or {}
+    if not values or all(v is None for v in values.values()):
+        return CheckResult(
+            CHECK_ARTIFACT, "reject",
+            f"execute() extracted no values from the recorded body "
+            f"(digest all-null): {list(values)}",
+            detail={"result": values},
+        )
+    return CheckResult(
+        CHECK_ARTIFACT, "ok",
+        f"executed against recorded body → "
+        f"{len(values)} value(s) extracted",
+        detail={"result": values},
     )
 
 
@@ -147,6 +287,14 @@ async def run_post_submission_checks(
     """
     results: list[CheckResult] = []
 
+    # 0. artifact — execute the generated file against the probe's
+    # recorded body. Rendering bugs outside the resolver surface here.
+    proposal_row_now = await store.get(proposal_id)
+    try:
+        results.append(_artifact_check(proposal_row_now or {}, probe))
+    except Exception as exc:  # noqa: BLE001
+        results.append(_crashed(CHECK_ARTIFACT, exc))
+
     # 1. liveness
     try:
         results.append(_liveness_check(probe, spec))
@@ -217,9 +365,20 @@ async def run_post_submission_checks(
             )
             return results, P.STATUS_CHECKS_INCOMPLETE
 
-    # 2026-09-29: liveness REJECT (rules a/b) → rejected_static. Mirrors
-    # reflect's flow so `morgoth recheck` and reflect converge on the
-    # same terminal for a genuine field-liveness failure.
+    # 2026-09-29: artifact reject OR liveness reject → rejected_static.
+    # An artifact failure is the most severe (the tool literally can't
+    # produce a value on any real request); a liveness null/no-info
+    # reject is next. Both share the terminal so downstream negative-
+    # list logic and retry policy treats them uniformly.
+    artifact_res = next(
+        (r for r in results if r.name == CHECK_ARTIFACT), None,
+    )
+    if artifact_res is not None and artifact_res.status == "reject":
+        reason = f"rejected_static: artifact: {artifact_res.message}"[:2000]
+        await store.update_status(
+            proposal_id, P.STATUS_REJECTED_STATIC, reason,
+        )
+        return results, P.STATUS_REJECTED_STATIC
     liveness_res = next(
         (r for r in results if r.name == CHECK_LIVENESS), None,
     )
@@ -238,8 +397,8 @@ async def run_post_submission_checks(
     for r in results:
         if r.status == "warn":
             parts.append(f"{r.name}: {r.message}")
-        elif r.status == "ok" and r.name == CHECK_LIVENESS:
-            parts.append(f"liveness: {r.message}")
+        elif r.status == "ok" and r.name in (CHECK_LIVENESS, CHECK_ARTIFACT):
+            parts.append(f"{r.name}: {r.message}")
     if parts:
         await store.update_status(
             proposal_id, P.STATUS_PENDING_APPROVAL,

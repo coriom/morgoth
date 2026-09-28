@@ -146,103 +146,130 @@ async def run_liveness_probe(
         per_hit.append({
             "i": i, "ok": h.get("ok"), "vals": vals,
             "status": h.get("status"), "error": h.get("error"),
+            # 2026-09-29: retain the raw body so the artifact check
+            # can execute the generated FILE against it (no re-hit
+            # needed — the probe already paid the network cost).
+            "body": h.get("body") if h.get("ok") else None,
         })
         if i < hits - 1:
             elapsed = now_fn() - t0
             await sleep_fn(max(0.0, gap_secs - elapsed))
     return {"url": url, "hits": per_hit, "n_hits": hits,
-            "digest_fields": names}
+            "digest_fields": names, "gap_secs": gap_secs}
 
 
 # ---------------------------------------------------------------------------
 # classification
 # ---------------------------------------------------------------------------
 
-_DEAD_VALUES: tuple[Any, ...] = (0, 0.0, None, "")
+def _is_error(v: Any) -> bool:
+    return isinstance(v, str) and v.startswith("error:")
 
 
-def _is_dead(v: Any) -> bool:
-    if isinstance(v, str) and v.startswith("error:"):
-        return False  # an error is neither dead nor alive — see rule design
-    return v in _DEAD_VALUES
+def _is_null(v: Any) -> bool:
+    """Null/missing = None or an error-string (extraction failed)."""
+    return v is None or _is_error(v)
 
 
 def classify_probe(
     probe: dict[str, Any], digest_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Apply rules (a)/(b)/(c). Returns:
-      {"outcome": "reject" | "warn" | "pass",
-       "rule": "a" | "b" | "c" | None,
-       "reason": str,
-       "per_field": {field: [hit_values...]}}
+    """Field-liveness verdict from a probe.
 
-    Precedence: (b) dead-field is checked before (a) rolling-frozen —
-    a frozen zero is more severe than a frozen nonzero. (c) fires only
-    if neither (a) nor (b) applied.
+    Rules (2026-09-29 — revised after 9f446bb4):
+
+      · REJECT (rule ``null``) — ANY field is null/missing across all
+        hits. Signals a broken extractor (the tool won't produce a
+        value on any real request). ``0`` is NOT null: a legitimate
+        clamped-zero value (Deribit funding at ±0.025% inner band,
+        Binance funding at ±0.01%, blockchain.info miners_revenue
+        during a quiet block) is a real observation.
+
+      · REJECT (rule ``no-info``) — EVERY judgeable field is static
+        across the probe window. No information about liveness at
+        all; the endpoint may be frozen. Requires ≥2 hits.
+
+      · WARN (rule ``partial-static``) — some fields static, others
+        move. The static ones are recorded (visible at gate 3 with
+        the probe duration) but do NOT block: a clamped-zero funding
+        rate alongside a moving open_interest is expected behaviour
+        for the source, not a defect. Requires ≥2 hits.
+
+      · PASS — every judgeable field moved OR the probe carried too
+        few observations to judge (1 hit).
+
+    Fields whose observations are ALL error-strings are skipped for
+    static/moving determination — we can't tell what the value would
+    have been.
+
+    Returns ``{outcome, rule, reason, per_field, null_fields?,
+    static_fields?, moving_fields?, probe_duration_s?}``.
     """
     fields = list(digest_fields or probe.get("digest_fields") or [])
+    hits = probe.get("hits", [])
+    n_hits = len(hits)
     per_field: dict[str, list[Any]] = {f: [] for f in fields}
-    for hit in probe.get("hits", []):
+    for h in hits:
         for f in fields:
-            per_field[f].append(hit.get("vals", {}).get(f))
+            per_field[f].append(h.get("vals", {}).get(f))
 
-    # (b) dead field across all hits
-    dead: list[str] = []
-    for f in fields:
-        vals = per_field[f]
-        if vals and all(_is_dead(v) for v in vals):
-            dead.append(f)
-    if dead:
+    # null/missing across ALL hits — extractor broken for this field.
+    null_fields = [f for f in fields
+                   if per_field[f] and all(_is_null(v) for v in per_field[f])]
+    if null_fields:
         return {
-            "outcome": "reject", "rule": "b",
-            "reason": (f"rejected_static (b): digest field(s) at zero/null "
-                       f"across all {len(probe.get('hits', []))} hits: "
-                       f"{dead} — no digest signal"),
-            "per_field": per_field, "dead_fields": dead,
+            "outcome": "reject", "rule": "null",
+            "reason": (f"rejected_static (null): field(s) null/missing "
+                       f"across all {n_hits} hits: {null_fields} — "
+                       f"extractor broken (nothing to compare)"),
+            "per_field": per_field, "null_fields": null_fields,
         }
 
-    # (a) rolling-named frozen across all hits
-    frozen_rolling: list[str] = []
-    for f in fields:
-        if not is_rolling_named(f):
-            continue
-        vals = per_field[f]
-        # Any error hit disqualifies "frozen" — we can't tell if it
-        # would have moved. Frozen means all hits succeeded with the
-        # identical value.
-        if not vals or any(isinstance(v, str) and v.startswith("error:")
-                           for v in vals):
-            continue
-        if len({repr(v) for v in vals}) == 1:
-            frozen_rolling.append(f)
-    if frozen_rolling:
-        return {
-            "outcome": "reject", "rule": "a",
-            "reason": (f"rejected_static (a): rolling-named field(s) frozen "
-                       f"across probe window: {frozen_rolling} — "
-                       f"endpoint-freeze evidence"),
-            "per_field": per_field, "frozen_fields": frozen_rolling,
-        }
+    if n_hits < 2:
+        return {"outcome": "pass", "rule": None,
+                "reason": (f"insufficient hits ({n_hits}) for movement "
+                           "verdict — no null field observed"),
+                "per_field": per_field}
 
-    # (c) non-rolling static → warn
-    static_nonrolling: list[str] = []
+    static_fields: list[str] = []
+    moving_fields: list[str] = []
     for f in fields:
-        if is_rolling_named(f):
-            continue
         vals = per_field[f]
-        if not vals or any(isinstance(v, str) and v.startswith("error:")
-                           for v in vals):
+        # Fields with any error-string observation are unjudgeable —
+        # we don't know if they would have moved.
+        clean = [v for v in vals if not _is_error(v)]
+        if len(clean) < 2:
             continue
-        if len({repr(v) for v in vals}) == 1:
-            static_nonrolling.append(f)
-    if static_nonrolling:
-        return {
-            "outcome": "warn", "rule": "c",
-            "reason": (f"note: non-rolling digest field(s) static across "
-                       f"probe: {static_nonrolling}"),
-            "per_field": per_field, "static_fields": static_nonrolling,
-        }
+        if len({repr(v) for v in clean}) == 1:
+            static_fields.append(f)
+        else:
+            moving_fields.append(f)
 
+    probe_duration_s = (n_hits - 1) * int(probe.get("gap_secs") or DEFAULT_GAP_SECS)
+
+    if static_fields and not moving_fields:
+        return {
+            "outcome": "reject", "rule": "no-info",
+            "reason": (f"rejected_static (no-info): every judgeable field "
+                       f"static across the {probe_duration_s}s probe "
+                       f"window ({n_hits} hits): {static_fields} — probe "
+                       f"carries no information about liveness"),
+            "per_field": per_field, "static_fields": static_fields,
+            "moving_fields": [], "probe_duration_s": probe_duration_s,
+        }
+    if static_fields:
+        return {
+            "outcome": "warn", "rule": "partial-static",
+            "reason": (f"partial-static: {static_fields} static across "
+                       f"the {probe_duration_s}s probe window ({n_hits} "
+                       f"hits) while {moving_fields} moved — legitimate "
+                       f"for clamped/reserved fields"),
+            "per_field": per_field, "static_fields": static_fields,
+            "moving_fields": moving_fields,
+            "probe_duration_s": probe_duration_s,
+        }
     return {"outcome": "pass", "rule": None,
-            "reason": "all digest fields moved or plausibly live",
-            "per_field": per_field}
+            "reason": (f"every judgeable field moved across "
+                       f"{probe_duration_s}s ({n_hits} hits)"),
+            "per_field": per_field, "moving_fields": moving_fields,
+            "probe_duration_s": probe_duration_s}
