@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "instrument_name": "BTC-PERPETUAL",
+    "mark_price": 68420.5,
+    "index_price": 68418.25,
+    "open_interest": 3700000000.0,
+    "current_funding": 0.0,
+    "funding_8h": 0.000104,
+    "last_price": 68421.0,
+    "best_bid_price": 68420.0,
+    "best_ask_price": 68422.0,
+    "stats": {"volume": 15000.0, "high": 69000.0, "low": 67000.0}
+  }
+}

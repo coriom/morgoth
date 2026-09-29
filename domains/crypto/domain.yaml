@@ -201,6 +201,21 @@ campaign_title_stopwords:
 # ---------------------------------------------------------------------
 
 tool_served_phrases:
+  get_deribit_btc_perpetual:
+  - deribit
+  - deribit perpetual
+  - open interest
+  - open interest notional
+  - 24h volume
+  - funding rate
+  - 8h funding
+  - current funding
+  - mark price
+  - index price
+  - last price
+  - best bid
+  - best ask
+  - bid ask spread
   get_news:
     - news
     - news headlines
@@ -330,6 +345,18 @@ tool_served_phrases:
 # analysis/campaign_quality.py::RAIL_TOOL_FIELDS — numeric fields
 # each rail tool exposes. Used by cross-source collision detection.
 rail_tool_fields:
+  get_deribit_btc_perpetual:
+  - mark_price_usd
+  - index_price_usd
+  - last_price_usd
+  - best_bid_usd
+  - best_ask_usd
+  - high_24h_usd
+  - low_24h_usd
+  - open_interest_usd
+  - volume_24h_btc
+  - funding_current_rate
+  - funding_8h_rate
   get_bitcoin_futures_funding: [lastFundingRate, markPrice, indexPrice, nextFundingTime]
   get_bitcoin_long_short_ratio: [longShortRatio, longAccount, shortAccount]
   get_bitcoin_onchain: [hash_rate, difficulty, mempool_vsize, mempool_tx_count]
@@ -397,6 +424,56 @@ scope_dominance_exception_tokens: [dominance]
 # ---------------------------------------------------------------------
 
 field_phrases:
+  get_deribit_btc_perpetual:
+    mark_price_usd:
+    - mark_price_usd
+    - mark price
+    - price
+    index_price_usd:
+    - index_price_usd
+    - index price
+    - price
+    last_price_usd:
+    - last_price_usd
+    - last price
+    - price
+    best_bid_usd:
+    - best_bid_usd
+    - best bid
+    - bid price
+    best_ask_usd:
+    - best_ask_usd
+    - best ask
+    - ask price
+    high_24h_usd:
+    - high_24h_usd
+    - 24h high
+    - 24-hour high
+    low_24h_usd:
+    - low_24h_usd
+    - 24h low
+    - 24-hour low
+    open_interest_usd:
+    - open_interest_usd
+    - open interest
+    volume_24h_btc:
+    - volume_24h_btc
+    - 24h volume
+    - 24-hour volume
+    - trading volume
+    funding_current_rate:
+    - funding_current_rate
+    - current funding
+    - current funding rate
+    - funding rate
+    - funding
+    funding_8h_rate:
+    - funding_8h_rate
+    - 8h funding
+    - 8h funding rate
+    - 8-hour funding
+    - funding rate
+    - funding
   get_crypto_global_market:
     market_cap_usd: [market_cap_usd]
     market_cap_change_24h:
@@ -427,11 +504,12 @@ field_phrases:
   get_bitcoin_futures_funding:
     lastFundingRate:
       - lastFundingRate
+      - funding
       - last funding rate
       - funding rate
       - funding_rate
-    markPrice: [markPrice, mark price, mark_price]
-    indexPrice: [indexPrice, index price, index_price]
+    markPrice: [markPrice, mark price, mark_price, price]
+    indexPrice: [indexPrice, index price, index_price, price]
     nextFundingTime: [nextFundingTime, next funding time]
   get_bitcoin_onchain:
     hash_rate: [hash rate, hashrate, hash_rate, hashRate]
@@ -562,6 +640,9 @@ test_bootstrap_tool_defaults:
 # ---------------------------------------------------------------------
 
 source_cache_config:
+  get_deribit_btc_perpetual:
+  - 1800
+  - 7200
   get_fear_greed_index: [21600, 93600]           # 6h poll, 26h stale
   get_bitcoin_onchain: [600, 2400]               # 10min, 40min
   get_bitcoin_futures_funding: [1800, 7200]      # 30min, 2h
@@ -586,3 +667,159 @@ source_cache_default_args:
 postgres_schema: "public"
 chroma_prefix: ""
 vault_dir: "~/Morgoth/vault"
+
+# Explicit measurement semantics. No units inferred from prose or field spelling.
+# Generic Deribit phrases may designate multiple fields; longest specific phrase wins.
+tool_sources:
+  get_bitcoin_futures_funding: Binance
+  get_bitcoin_long_short_ratio: Binance
+  get_deribit_btc_perpetual: Deribit
+  get_coinbase_btc_stats: Coinbase
+  get_crypto_global_market: CoinPaprika
+  get_crypto_price: CoinGecko
+  get_bitcoin_onchain: mempool.space
+  get_ethereum_network_stats: BlockCypher
+  get_fear_greed_index: Alternative.me
+  fred_series_observations: FRED
+source_aliases:
+  Binance:
+  - Binance
+  Deribit:
+  - Deribit
+  Coinbase:
+  - Coinbase
+  CoinPaprika:
+  - CoinPaprika
+  CoinGecko:
+  - CoinGecko
+  mempool.space:
+  - mempool.space
+  BlockCypher:
+  - BlockCypher
+  Alternative.me:
+  - Alternative.me
+  FRED:
+  - FRED
+field_units:
+  get_deribit_btc_perpetual:
+    mark_price_usd: usd
+    index_price_usd: usd
+    last_price_usd: usd
+    best_bid_usd: usd
+    best_ask_usd: usd
+    high_24h_usd: usd
+    low_24h_usd: usd
+    open_interest_usd: usd
+    volume_24h_btc: btc
+    funding_current_rate: fraction
+    funding_8h_rate: fraction
+  get_bitcoin_futures_funding:
+    lastFundingRate: fraction
+    markPrice: usd
+    indexPrice: usd
+  get_bitcoin_long_short_ratio:
+    longAccount: fraction
+    shortAccount: fraction
+    longShortRatio: ratio
+  get_coinbase_btc_stats:
+    open: usd
+    high: usd
+    low: usd
+    last: usd
+    volume: btc
+    volume_30day: btc
+  get_crypto_global_market:
+    market_cap_usd: usd
+    volume_24h_usd: usd
+    bitcoin_dominance_percentage: percent
+    market_cap_change_24h: percent
+    volume_24h_change_24h: percent
+    cryptocurrencies_number: count
+  get_fear_greed_index:
+    value: index
+field_contexts:
+  get_deribit_btc_perpetual:
+    mark_price_usd: mark_price
+    index_price_usd: index_price
+    last_price_usd: last_price
+    best_bid_usd: bid_price
+    best_ask_usd: ask_price
+    high_24h_usd: high_24h_price
+    low_24h_usd: low_24h_price
+    open_interest_usd: open_interest
+    volume_24h_btc: volume_24h
+    funding_current_rate: funding
+    funding_8h_rate: funding
+  get_bitcoin_futures_funding:
+    lastFundingRate: funding
+    markPrice: mark_price
+    indexPrice: index_price
+  get_bitcoin_long_short_ratio:
+    longAccount: long_accounts
+    shortAccount: short_accounts
+    longShortRatio: long_short_ratio
+  get_coinbase_btc_stats:
+    open: open_24h_price
+    high: high_24h_price
+    low: low_24h_price
+    last: last_price
+    volume: volume_24h
+    volume_30day: volume_30day
+  get_crypto_global_market:
+    market_cap_usd: global_market_cap
+    volume_24h_usd: global_volume_24h
+    bitcoin_dominance_percentage: btc_dominance
+    market_cap_change_24h: global_market_cap_change
+    volume_24h_change_24h: global_volume_change
+    cryptocurrencies_number: asset_count
+  get_fear_greed_index:
+    value: fear_greed_index
+coverage_exemptions:
+  rail_tool_fields:
+    get_news: qualitative article list, no scalar measurements
+    get_bitcoin_futures_funding.symbol: instrument identifier
+    get_bitcoin_futures_funding.nextFundingTime: settlement timestamp metadata
+    get_bitcoin_long_short_ratio.symbol: instrument identifier
+    get_bitcoin_long_short_ratio.timestamp: observation timestamp metadata
+    get_crypto_price.symbol: asset identifier
+    get_fear_greed_index.value_classification: qualitative label
+    get_fear_greed_index.timestamp: observation timestamp metadata
+    get_bitcoin_onchain.next_difficulty_adjustment: time metadata
+    get_bitcoin_onchain.fees_sat_vb: nested fee tiers, no scalar reference
+  field_phrases:
+    get_news: qualitative article list, no scalar measurements
+    get_bitcoin_futures_funding.symbol: instrument identifier
+    get_bitcoin_futures_funding.nextFundingTime: settlement timestamp metadata
+    get_bitcoin_long_short_ratio.symbol: instrument identifier
+    get_bitcoin_long_short_ratio.timestamp: observation timestamp metadata
+    get_crypto_price.symbol: asset identifier
+    get_fear_greed_index.value_classification: qualitative label
+    get_fear_greed_index.timestamp: observation timestamp metadata
+    get_bitcoin_onchain.next_difficulty_adjustment: time metadata
+    get_bitcoin_onchain.fees_sat_vb: nested fee tiers, no scalar reference
+  field_units:
+    get_news: qualitative article list, no scalar measurements
+    get_bitcoin_futures_funding.symbol: instrument identifier
+    get_bitcoin_futures_funding.nextFundingTime: settlement timestamp metadata
+    get_bitcoin_long_short_ratio.symbol: instrument identifier
+    get_bitcoin_long_short_ratio.timestamp: observation timestamp metadata
+    get_crypto_price.symbol: asset identifier
+    get_fear_greed_index.value_classification: qualitative label
+    get_fear_greed_index.timestamp: observation timestamp metadata
+    get_bitcoin_onchain.next_difficulty_adjustment: time metadata
+    get_bitcoin_onchain.fees_sat_vb: nested fee tiers, no scalar reference
+  field_contexts:
+    get_news: qualitative article list, no scalar measurements
+    get_bitcoin_futures_funding.symbol: instrument identifier
+    get_bitcoin_futures_funding.nextFundingTime: settlement timestamp metadata
+    get_bitcoin_long_short_ratio.symbol: instrument identifier
+    get_bitcoin_long_short_ratio.timestamp: observation timestamp metadata
+    get_crypto_price.symbol: asset identifier
+    get_fear_greed_index.value_classification: qualitative label
+    get_fear_greed_index.timestamp: observation timestamp metadata
+    get_bitcoin_onchain.next_difficulty_adjustment: time metadata
+    get_bitcoin_onchain.fees_sat_vb: nested fee tiers, no scalar reference
+  tool_sources:
+    get_news: multiple publishers; no single source identity
+  source_cache_config:
+    get_crypto_price: live price endpoint; intentionally uncached

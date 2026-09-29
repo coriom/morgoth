@@ -160,6 +160,8 @@ def render_table(results: list[RailResult]) -> str:
         counts[r.status] = counts.get(r.status, 0) + 1
     tally = ", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
     lines.append(f"\n  ─── {tally} ───")
+    from analysis.measurement_coverage import measurement_blind_spots, render_blind_spots
+    lines.extend(render_blind_spots(measurement_blind_spots()))
     return "\n".join(lines)
 
 

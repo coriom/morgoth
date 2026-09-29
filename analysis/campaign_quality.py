@@ -38,6 +38,7 @@ Also computes:
 from __future__ import annotations
 
 import re
+import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -202,6 +203,11 @@ class QualityReport:
     snapshots_without_interest_rate: int = 0
     unservable_titles: list[str] = field(default_factory=list)
     top_missing_themes: list[tuple[str, int]] = field(default_factory=list)
+    # Additive instrument: old error classes/control remain byte-for-byte logic.
+    measurement_counts: Counter = field(default_factory=Counter)
+    measurement_examples: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    measurement_blind_spots: list[dict[str, Any]] = field(default_factory=list)
+
 
 
 def _canonicalize_number_re() -> re.Pattern:
@@ -603,7 +609,7 @@ def score_thesis(
     thesis: dict[str, Any],
     findings_payloads: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, tuple[bool, str]]:
-    """Run every classifier on one thesis. Returns
+    """Run historical classifiers on one thesis. Returns
     {class_name: (hit, example_snippet)}."""
     out: dict[str, tuple[bool, str]] = {}
     hit, ex = classify_scope_misattribution(thesis)
@@ -660,6 +666,12 @@ def render_report(report: QualityReport) -> str:
     )
     for fam, variants in list(report.fragmentation_families.items())[:3]:
         lines.append(f"    · {fam}: {len(variants)} variants — {variants[:4]}")
+    lines.append("")
+    lines.append("SOURCE / UNIT MEASUREMENT (cross_source: theses; others: distinct citations):")
+    for name in ("cross_source", "source_misattribution", "unit_mismatch", "unattributed", "gate_rewritten_citations"):
+        lines.append(f"  {name:<25} {report.measurement_counts.get(name, 0):>4}")
+    from analysis.measurement_coverage import render_blind_spots
+    lines.extend(render_blind_spots(report.measurement_blind_spots))
     lines.append("")
     lines.append("B · lastFundingRate=0.0001 CITATIONS:")
     lines.append(
@@ -740,6 +752,7 @@ async def score_campaign(
     for o in objs:
         for t in await pm.get_theses_by_objective(o["objective_id"]):
             t["_obj_title"] = o.get("title")
+            t["_measurement_objective_id"] = str(o["objective_id"])
             theses.append(t)
     # Payload references — pull the LATEST source_snapshot per source. This
     # is the closest thing to "the tool's actual output" for numeric-collision
@@ -779,6 +792,43 @@ async def score_campaign(
         snapshots_with_interest_rate=w,
         snapshots_without_interest_rate=wo,
     )
+
+    # New source/unit instrument uses ONLY the objective's recorded read-set.
+    # Legacy classes below retain their historical reference policy for comparison.
+    from analysis.source_attribution import measure_thesis, references_from_objective
+    from analysis.measurement_coverage import measurement_blind_spots
+    rep.measurement_blind_spots = measurement_blind_spots()
+    objective_refs = {}
+    async with pool.acquire() as connection:
+        for objective in objs:
+            oid = str(objective["objective_id"])
+            stored = await connection.fetchrow(
+                "SELECT evidence FROM objectives WHERE objective_id::text = $1", oid,
+            )
+            evidence = stored["evidence"] if stored else []
+            if isinstance(evidence, str):
+                evidence = json.loads(evidence or "[]")
+            objective_refs[oid] = references_from_objective(evidence or [])
+        gate_rows = await connection.fetch(
+            "SELECT objective_id, subject, tool, action, reason, cited_value, true_value "
+            "FROM numeric_fidelity_events WHERE objective_id = ANY($1::text[])",
+            list(objective_refs),
+        ) if objective_refs else []
+    for objective in objs:
+        oid = str(objective["objective_id"])
+        payloads, read_tools = objective_refs[oid]
+        events = [dict(event) for event in gate_rows if str(event["objective_id"]) == oid]
+        for thesis in (t for t in theses if str(t.get("_measurement_objective_id")) == oid):
+            measured = measure_thesis(thesis, payloads, read_tools=read_tools, gate_events=events)
+            rep.measurement_counts["cross_source"] += int(measured["cross_source"])
+            for citation in measured["citations"]:
+                rep.measurement_counts["unattributed"] += int(citation["source"] is None)
+                rep.measurement_counts["gate_rewritten_citations"] += bool(citation["gate_rewrites"])
+                for name in ("source_misattribution", "unit_mismatch"):
+                    if citation[name]:
+                        rep.measurement_counts[name] += 1
+                        if len(rep.measurement_examples[name]) < 3:
+                            rep.measurement_examples[name].append({"thesis_id": str(thesis.get("thesis_id")), **citation})
 
     # A: six classes
     for t in theses:

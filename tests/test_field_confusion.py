@@ -20,12 +20,13 @@ class TestFieldMap:
         # "value" / "rate" / "change" alone map to no field.
         for source in FIELD_PHRASES:
             for word in AMBIGUOUS_PHRASES:
-                # A phrase that IS exactly the ambiguous word should
-                # not be listed as a distinctive-phrase for any field.
-                for field, phrases in FIELD_PHRASES[source].items():
-                    assert word not in phrases, (
-                        f"{source}.{field} lists ambiguous phrase {word!r}"
-                    )
+                # Generic phrases can be explicitly multi-valued, but MUST NOT
+                # force a singular field. This preserves the old ambiguity
+                # guarantee while admitting Deribit's mark/index/last price.
+                owners = [field for field, phrases in FIELD_PHRASES[source].items() if word in phrases]
+                if owners:
+                    assert len(owners) >= 2
+                    assert phrase_to_field(source, word) is None
 
 
 class TestPhraseResolution:

@@ -1,0 +1,334 @@
+{
+  "provenance": "Read-only historical snapshot; active campaign excluded; 2026-09-29. Only numeric controls, no raw corpus.",
+  "rows": [
+    {
+      "thesis_id": "7126b966",
+      "cited": 0.0001,
+      "reference_rate": 8.205e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "2c7ca372",
+      "cited": 0.0001,
+      "reference_rate": 3.863e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "9a86af93",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "9b689688",
+      "cited": 2.986e-05,
+      "reference_rate": 2.986e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "ae5c8a57",
+      "cited": 8.308e-05,
+      "reference_rate": 8.308e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "92b228ff",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "e4675518",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "7c9ac05c",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "a41860e4",
+      "cited": 0.0001,
+      "reference_rate": 3.105e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "88bec06b",
+      "cited": 0.0001,
+      "reference_rate": 3.105e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "1cef80b4",
+      "cited": 0.0001,
+      "reference_rate": 7.758e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "a600e1e5",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "86e39ddb",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "6c442e43",
+      "cited": 0.0001,
+      "reference_rate": 6.723e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "8ed3d316",
+      "cited": 0.0001,
+      "reference_rate": 4.931e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "e4a010c0",
+      "cited": 0.0001,
+      "reference_rate": 6.003e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "150c161d",
+      "cited": 5.811e-05,
+      "reference_rate": 5.811e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "911d2e8f",
+      "cited": 3.593e-05,
+      "reference_rate": 3.593e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "e79cd35e",
+      "cited": 0.0001,
+      "reference_rate": 7.799e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "640430bd",
+      "cited": 0.0001,
+      "reference_rate": 7.712e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "49fe566d",
+      "cited": 0.0001,
+      "reference_rate": 7.712e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "9242a8a2",
+      "cited": 8.04e-05,
+      "reference_rate": 8.04e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "17da35a7",
+      "cited": 0.0001,
+      "reference_rate": 6.322e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "6bccdd4e",
+      "cited": 0.0001,
+      "reference_rate": 6.741e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "34b54b3b",
+      "cited": 0.0001,
+      "reference_rate": 8.182e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "3c42196b",
+      "cited": 0.0001,
+      "reference_rate": 7.413e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "38e9ae8c",
+      "cited": 0.0001,
+      "reference_rate": 6.551e-05,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "confused"
+    },
+    {
+      "thesis_id": "8a0107ab",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "ff5be6ea",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "26121ea6",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "2e57f99e",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "987f271d",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "0dbebc46",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "30129f9b",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "47baea85",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "a928b3ed",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "23c4c4fa",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "230f2ae7",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "66e113f9",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "f549eabf",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "ad93de91",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "chromadb_same_obj",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "e68331e3",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "cycle_payload",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "7504de1b",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "cycle_payload",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "ff5cc239",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "cycle_payload",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "e802e278",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "cycle_payload",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "1b63d3c4",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "cycle_payload",
+      "verdict": "genuine"
+    },
+    {
+      "thesis_id": "24baa3d1",
+      "cited": 0.0001,
+      "reference_rate": 0.0001,
+      "reference_source": "cycle_payload",
+      "verdict": "genuine"
+    }
+  ]
+}

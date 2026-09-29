@@ -1,5 +1,24 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-09-29 — Deribit measurement coverage and source/unit audit
+
+- Completed declarative Deribit served/rail/phrase/source/unit/context/cache metadata;
+  warning-only coverage diagnostic reports missing metadata after explicit exemptions.
+- Added analysis/source_attribution.py using the existing fidelity number parser:
+  clause then evidence attribution, corresponding objective fields, written precision,
+  explicit units, cross-source counts and retained gate-rewrite provenance.
+- Historical read-only snapshots replayed offline: old counts/gaps/fragmentation
+  unchanged; 0.0001 control remains 31 genuine / 16 confused. Three unit errors
+  manually confirmed, no new source errors. See docs/DERIBIT_MEASUREMENT.md.
+- Canonical suite: 1802 passed (+64), 2 skipped, 0 failed, wall 15.3s, exit 0.
+  Focused Deribit + unchanged Project/namespace regressions: 132 passed, wall 6.9s.
+- Project selection/storage, Deribit tool, numeric gate, thesis extraction, UI and
+  Codex SAFE_FOR_WORKLOADS=False unchanged. No dependencies or production writes.
+- Campaign persisted status active; system/user service state reads returned inactive.
+  No lifecycle action, campaign mutation, reflect, live rail-check or .env access.
+- Other tools' metadata warnings and convenience formatting deferred.
+
+
 ## 2026-09-29 — Project runtime foundation (complete, not deployed)
 
 - Added core/project.py, core/runtime.py, core/storage_namespace.py: immutable Project,

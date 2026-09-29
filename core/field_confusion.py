@@ -87,6 +87,25 @@ def phrase_to_field(source: str, context: str) -> str | None:
     return matches[0][1]
 
 
+def phrase_to_fields(source: str, context: str) -> frozenset[str]:
+    """All valid fields for the longest local phrase; ties are alternatives.
+
+    Used by source/unit measurement. The legacy singular resolver stays intact.
+    Token boundaries prevent e.g. 'price' matching the word 'repriced'.
+    """
+    if source in SINGLE_NUMERIC_FIELD:
+        return frozenset({SINGLE_NUMERIC_FIELD[source]})
+    matches: list[tuple[int, str]] = []
+    for name, phrases in FIELD_PHRASES.get(source, {}).items():
+        for phrase in phrases:
+            if re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", context, re.I):
+                matches.append((len(phrase), name))
+    if not matches:
+        return frozenset()
+    length = max(n for n, _ in matches)
+    return frozenset(name for n, name in matches if n == length)
+
+
 def iter_numbers_with_context(detail: str, window: int = 40):
     """Yield (number: float, prefix_context: str) for every number in
     detail. Prefix is the `window` characters preceding the number

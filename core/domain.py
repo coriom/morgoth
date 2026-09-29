@@ -101,6 +101,12 @@ class Domain:
     postgres_schema: str
     chroma_prefix: str
     vault_dir: str
+    # Measurement metadata only; Project storage/selection stays unchanged.
+    tool_sources: dict[str, str] = field(default_factory=dict)
+    source_aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    field_units: dict[str, dict[str, str]] = field(default_factory=dict)
+    field_contexts: dict[str, dict[str, str]] = field(default_factory=dict)
+    coverage_exemptions: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 
@@ -157,6 +163,15 @@ def _str_list_map(x: Any, path: str) -> dict[str, tuple[str, ...]]:
     if not isinstance(x, dict):
         _fail(path, "dict[str, list[str]]", x)
     return {_str(k, f"{path}.<key>"): _str_list(v, f"{path}.{k}") for k, v in x.items()}
+
+
+def _str_map_map(x: Any, path: str) -> dict[str, dict[str, str]]:
+    """Validate nested measurement maps without coercing YAML scalar types."""
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail(path, "dict[str, dict[str, str]]", x)
+    return {_str(k, f"{path}.<key>"): _str_map(v, f"{path}.{k}") for k, v in x.items()}
 
 
 def _str_list_map_map(
@@ -244,6 +259,11 @@ def _load(name: str) -> Domain:
         campaign_title_stopwords=_str_list(raw.get("campaign_title_stopwords"), "campaign_title_stopwords"),
         tool_served_phrases=_str_list_map(raw.get("tool_served_phrases"), "tool_served_phrases"),
         rail_tool_fields=_str_list_map(raw.get("rail_tool_fields"), "rail_tool_fields"),
+        tool_sources=_str_map(raw.get("tool_sources"), "tool_sources"),
+        source_aliases=_str_list_map(raw.get("source_aliases"), "source_aliases"),
+        field_units=_str_map_map(raw.get("field_units"), "field_units"),
+        field_contexts=_str_map_map(raw.get("field_contexts"), "field_contexts"),
+        coverage_exemptions=_str_map_map(raw.get("coverage_exemptions"), "coverage_exemptions"),
         bullish_words=_str_list(raw.get("bullish_words"), "bullish_words"),
         bearish_words=_str_list(raw.get("bearish_words"), "bearish_words"),
         metric_families=_str_list_map(raw.get("metric_families"), "metric_families"),
