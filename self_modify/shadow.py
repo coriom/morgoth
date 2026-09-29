@@ -547,7 +547,8 @@ async def run_shadow_verdict(
     agreement without polluting the calibration table with duplicate
     verdicts on already-decided rows.
     """
-    engine = engine or os.environ.get("SHADOW_PROVIDER") or os.environ.get("MORGOTH_LLM_SHADOW") or _ENGINE
+    from core.project import current_project
+    engine = engine or os.environ.get("SHADOW_PROVIDER") or os.environ.get("MORGOTH_LLM_SHADOW") or current_project().llm_overrides.get("shadow") or _ENGINE
     facts = extract_spec_facts(proposal.get("content") or "")
     # 2026-09-29 ONE EXTRACTOR: pass the RAW digest_fields into
     # sample_endpoint. resolve_digest_fields handles both plain

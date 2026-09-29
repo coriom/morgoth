@@ -1,29 +1,11 @@
-"""Chantier 2/5 · domain-pack namespace isolation.
+"""Legacy Domain fields remain readable; storage authority now belongs to Project.
 
-The active domain pack declares three storage-namespace fields —
-``postgres_schema``, ``chroma_prefix``, ``vault_dir`` — and every
-downstream write MUST land inside that namespace. Two processes
-running two different packs (crypto + a throwaway test pack) must
-NOT share rows, Chroma collections, or vault files.
-
-Crypto's historical values (public schema, empty prefix, ~/Morgoth/
-vault) are locked separately by the crypto-pack grep tests. This
-file focuses on the ROUTING: given a pack, does the write land in
-its namespace?
-
-The isolation test uses two Domain instances at the DATA layer — no
-live Postgres or Chroma required. What we're locking is that
-``PersistentMemory.initialize`` issues the ``SET search_path`` and
-``CREATE SCHEMA`` calls for the pack's schema, and that
-``EpisodicMemory``'s collection surface is prefixed. Behaviour under
-morgoth test (bwrap + no live services) is deterministic — a
-different domain writes to a different set of names, period.
+The original DDL, collection and vault routing checks use Project namespaces.
+Domain-only declarations are compatibility data, never storage selection.
 """
 
 from __future__ import annotations
 
-import importlib
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -69,16 +51,9 @@ def test_crypto_pack_declares_historical_namespace(monkeypatch) -> None:
 
 
 def test_missing_namespace_fields_default_safely(monkeypatch, tmp_path) -> None:
-    """A minimal pack without namespace fields must default to
-    values that leave EXISTING crypto-shaped storage untouched.
-
-    Rationale: an operator authoring a new pack should not have to
-    remember three fields to keep production intact. The safe default
-    is: ``postgres_schema=public`` (same as crypto), ``chroma_prefix=""``
-    (same as crypto), ``vault_dir=~/Morgoth/vault`` (same as crypto).
-    That means a bare pack with only the tokens declared is INDIS-
-    tinguishable from crypto at the storage layer — which is
-    intentional for chantier 2's "no production migration" contract."""
+    """Deprecated Domain fields keep historical defaults for pack readers only.
+    New Project manifests MUST supply their own isolated namespaces.
+    """
     pack_dir = tmp_path / "domains" / "minimal"
     pack_dir.mkdir(parents=True)
     (pack_dir / "domain.yaml").write_text("name: minimal\n", encoding="utf-8")
@@ -141,18 +116,13 @@ def test_two_packs_declare_disjoint_namespaces(tmp_path, monkeypatch) -> None:
 def test_persistent_memory_issues_schema_ddl_for_non_public(monkeypatch) -> None:
     """PersistentMemory.initialize must ``CREATE SCHEMA IF NOT EXISTS``
     and ``SET search_path`` for a non-public schema. This is the wire
-    that makes a new domain's rows land in its own schema."""
+    that makes a new project's rows land in its own schema."""
     from memory import persistent as _p
 
     monkeypatch.setenv("MORGOTH_DOMAIN", "crypto")  # deterministic pack
     # Cache is reset by the module-level fixture below.
-    # Force the pack into the state we want to test: non-public schema.
-    real_pack = _dom.current_domain()
-    fake = real_pack.__class__(**{
-        **{f: getattr(real_pack, f) for f in real_pack.__dataclass_fields__},
-        "postgres_schema": "weather",
-    })
-    monkeypatch.setattr(_dom, "current_domain", lambda: fake, raising=True)
+    from core import project
+    monkeypatch.setattr(project, "current_namespace", lambda: MagicMock(postgres_schema="weather"))
 
     executed: list[str] = []
 
@@ -186,7 +156,8 @@ def test_persistent_memory_issues_schema_ddl_for_non_public(monkeypatch) -> None
     joined = "\n".join(executed).lower()
     # The three load-bearing DDL/DML statements the domain namespace
     # relies on:
-    assert 'set search_path to "weather", public' in joined, executed
+    assert 'set search_path to "weather"' in joined, executed
+    assert ", public" not in joined
     assert 'create schema if not exists "weather"' in joined, executed
     # Cache is reset by the module-level fixture below.
 
@@ -235,20 +206,17 @@ def test_persistent_memory_uses_plain_search_path_for_public(monkeypatch) -> Non
 
 
 def test_episodic_memory_prefixes_collections_for_non_empty_prefix(monkeypatch) -> None:
-    """A domain with ``chroma_prefix="w_"`` exposes collections
+    """A project with ``chroma_prefix="w_"`` exposes collections
     ``w_conversations`` etc. — routing is transparent to callers who
     keep passing the logical name. This is the wire that keeps two
-    domains' Chroma data disjoint inside the SAME persist dir."""
+    projects' Chroma names disjoint, in addition to separate state dirs."""
     from memory import episodic as _e
 
     monkeypatch.setenv("MORGOTH_DOMAIN", "crypto")
     # Cache is reset by the module-level fixture below.
-    real_pack = _dom.current_domain()
-    fake = real_pack.__class__(**{
-        **{f: getattr(real_pack, f) for f in real_pack.__dataclass_fields__},
-        "chroma_prefix": "w_",
-    })
-    monkeypatch.setattr(_dom, "current_domain", lambda: fake, raising=True)
+    from core import project
+    monkeypatch.setattr(project, "current_namespace", lambda: MagicMock(
+        chroma_prefix="w_", is_legacy=False, chroma_dir=Path("/tmp/weather/chroma_db")))
 
     em = _e.EpisodicMemory("data/chroma_db")
     assert em.collections == tuple(
@@ -273,38 +241,13 @@ def test_episodic_memory_no_prefix_for_crypto(monkeypatch) -> None:
     assert em._physical_name("conversations") == "conversations"
 
 
-def test_vault_dir_expands_from_pack(monkeypatch, tmp_path) -> None:
-    """compile_wiki.VAULT_DIR is read at module import from the pack's
-    ``vault_dir`` (with ~ and $ expansion). Domain A's vault path and
-    domain B's vault path do NOT overlap — a wiki compile in one
-    domain never touches the other domain's markdown."""
-    monkeypatch.setenv("MORGOTH_DOMAIN", "crypto")
-    # Cache is reset by the module-level fixture below.
-    real_pack = _dom.current_domain()
-
-    # Domain A: crypto's default ~/Morgoth/vault.
-    fake_a = real_pack.__class__(**{
-        **{f: getattr(real_pack, f) for f in real_pack.__dataclass_fields__},
-        "vault_dir": "~/Morgoth/vault",
-    })
-    monkeypatch.setattr(_dom, "current_domain", lambda: fake_a, raising=True)
-    if "scripts.compile_wiki" in sys.modules:
-        del sys.modules["scripts.compile_wiki"]
-    import scripts.compile_wiki as cw_a
-    a_dir = cw_a.VAULT_DIR
-    assert str(a_dir).endswith("/Morgoth/vault")
-
-    # Domain B: overridden to a temp dir.
-    fake_b = real_pack.__class__(**{
-        **{f: getattr(real_pack, f) for f in real_pack.__dataclass_fields__},
-        "vault_dir": str(tmp_path / "weather_vault"),
-    })
-    monkeypatch.setattr(_dom, "current_domain", lambda: fake_b, raising=True)
-    del sys.modules["scripts.compile_wiki"]
-    import scripts.compile_wiki as cw_b
-    b_dir = cw_b.VAULT_DIR
-    assert b_dir == tmp_path / "weather_vault"
-
-    # Disjoint.
-    assert a_dir != b_dir
-    # Cache is reset by the module-level fixture below.
+def test_vault_dir_resolves_from_project(monkeypatch, tmp_path) -> None:
+    """Wiki constants use the canonical Project namespace, not Domain fields."""
+    from core import project
+    from runpy import run_path
+    for name in ("a", "b"):
+        vault = tmp_path / name
+        monkeypatch.setattr(project, "current_namespace", lambda: MagicMock(vault_dir=vault))
+        # Independent module namespace; don't poison existing API imports.
+        result = run_path(str(Path(__file__).parents[1] / "scripts/compile_wiki.py"), run_name="project_vault_test")
+        assert result["VAULT_DIR"] == vault

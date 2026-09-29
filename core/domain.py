@@ -6,25 +6,14 @@ core/, analysis/, self_modify/ now lives in ONE YAML file per
 domain — the code that consumed those constants imports them
 via ``current_domain()`` here.
 
-Contract for chantier 1 of the domain-pack refactor:
+Domain owns vocabulary, field mappings, source/tool semantics and scoring data.
+Project owns instance/storage/runtime state; see core.project.current_namespace.
+The namespace fields below remain only as backward-compatible input to the
+built-in legacy Project adapter. New projects never inherit them.
 
-  · The loader is READ-ONLY at import time (cached).
-  · Crypto stays in the current Postgres schema + Chroma
-    collections. Only NEW domains would get their own
-    namespaces (chantier 2/3). No production data migration
-    happens in this commit.
-  · Every literal moved into the YAML is grep-locked in
-    tests/test_domain_pack_locks.py: the literal MUST NOT
-    appear outside ``domains/`` (with a small allowlist for
-    docstrings/comments/tests).
-  · Behaviour preservation is verified by running the full
-    pytest suite, the campaign-quality scorer, and the
-    session report before + after the refactor and comparing
-    outputs byte-for-byte (values are wrapped, not changed).
-
-Env override: ``MORGOTH_DOMAIN=<name>`` selects the pack
-(default = crypto). A future ``morgoth domain <name>`` CLI
-just sets that env var.
+MORGOTH_PROJECT selects a project and its Domain. MORGOTH_DOMAIN remains a
+standalone semantic-pack test/inspection hook; runtime configuration rejects a
+conflicting override. No pack knowledge is duplicated into Project.
 
 INVARIANT — ONE DOMAIN PER PROCESS. The pack is bound at
 IMPORT time: every downstream constant (RAIL_TOOL_FIELDS,
@@ -107,16 +96,12 @@ class Domain:
     # -- source cache polling schedule -----------------------------------
     source_cache_config: dict[str, tuple[int, int]]
     source_cache_default_args: dict[str, dict[str, Any]]
-    # -- STORAGE NAMESPACES (chantier 2/5) --------------------------------
-    # Postgres schema, Chroma collection prefix, and vault directory. A
-    # domain writes ONLY inside its own namespace so two domains can share
-    # one Postgres DB / one Chroma persist dir / one vault root without
-    # crossing rows or files. Crypto keeps its historical namespace:
-    # public schema, no chroma prefix, current vault path — no production
-    # migration.
-    postgres_schema: str      # e.g. "public" (crypto), "weather" (new)
-    chroma_prefix: str        # collection name prefix ("" for crypto)
-    vault_dir: str            # absolute path (may contain ~ and env vars)
+    # Deprecated compatibility fields: ONLY legacy_project() imports these.
+    # Storage consumers must use current_namespace(), never current_domain().
+    postgres_schema: str
+    chroma_prefix: str
+    vault_dir: str
+
 
 
 # ─── STRICT VALIDATORS ──────────────────────────────────────────────
@@ -226,6 +211,11 @@ def _any_map_map(x: Any, path: str) -> dict[str, dict[str, Any]]:
 
 
 def _load(name: str) -> Domain:
+    from core.storage_namespace import validate_identifier
+    try:
+        validate_identifier(name)
+    except ValueError:
+        raise DomainPackError("invalid domain identifier") from None
     path = _DOMAINS_ROOT / name / "domain.yaml"
     if not path.exists():
         raise DomainPackError(
@@ -238,6 +228,11 @@ def _load(name: str) -> Domain:
             f"domain pack {name!r} at {path}: top-level YAML must be a "
             f"mapping, got {type(raw).__name__}"
         )
+    from core.storage_namespace import validate_namespace
+    try:
+        validate_namespace(raw.get("postgres_schema", "public"), raw.get("chroma_prefix") or "", legacy=True)
+    except ValueError as exc:
+        raise DomainPackError(str(exc)) from None
     return Domain(
         name=_str(raw.get("name") or name, "name"),
         tagline=_str_or_empty(raw.get("tagline"), "tagline"),
@@ -278,14 +273,15 @@ def _load(name: str) -> Domain:
 def current_domain() -> Domain:
     """Return the loaded domain pack (memoized).
 
-    Selection: env var ``MORGOTH_DOMAIN`` → default ``crypto``.
-
-    NO FALLBACK. A missing / malformed pack raises ``DomainPackError``
-    and the process fails to start. Silent fallback to crypto would
-    make a typo in MORGOTH_DOMAIN a data-corruption bug (Postgres and
-    Chroma remain scoped to the WRONG domain while code reads crypto
-    constants); refusing to boot is loudly correct."""
-    name = os.environ.get("MORGOTH_DOMAIN", DEFAULT_DOMAIN).strip() or DEFAULT_DOMAIN
+    Explicit Project selection owns the Domain. Standalone pack inspection can
+    still use MORGOTH_DOMAIN; a running engine validates this against Project.
+    Missing or malformed packs fail closed, with no semantic fallback.
+    """
+    if "MORGOTH_PROJECT" in os.environ:
+        from core.project import current_project
+        name = current_project().domain
+    else:
+        name = os.environ.get("MORGOTH_DOMAIN", DEFAULT_DOMAIN).strip() or DEFAULT_DOMAIN
     pack = _load(name)
     logger.debug("domain pack loaded: {}", pack.name)
     return pack

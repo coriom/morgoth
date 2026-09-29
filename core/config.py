@@ -13,7 +13,9 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+from core.runtime import ENGINE_ROOT
+
+ROOT_DIR = ENGINE_ROOT
 ENV_PATH = ROOT_DIR / ".env"
 PERMS_PATH = ROOT_DIR / "MORGOTH_PERMS.json"
 
@@ -184,7 +186,10 @@ async def load_permissions(path: Path = PERMS_PATH) -> MorgothPermissions:
 async def load_config() -> AppConfig:
     """Load the complete application configuration."""
 
-    await asyncio.to_thread(_load_environment)
+    from core.project import current_project
+    project = current_project()  # bind before any .env or storage I/O
+    if project.is_legacy:
+        await asyncio.to_thread(_load_environment)
     permissions = await load_permissions()
 
     env_values = {
@@ -203,6 +208,19 @@ async def load_config() -> AppConfig:
         "MAX_CYCLES_PER_OBJECTIVE": os.getenv("MAX_CYCLES_PER_OBJECTIVE", "5"),
         "permissions": permissions,
     }
+
+    if not project.is_legacy:
+        env_values.update(
+            root_dir=project.workspace_root or project.runtime_dir / "workspace",
+            data_dir=project.runtime_dir,
+            logs_dir=project.runtime_dir / "logs",
+            chroma_dir=project.chroma_dir,
+        )
+        # Shared-code mutation/legacy sandbox integration needs its own project
+        # design. New instances are research-only until that work is qualified.
+        permissions = permissions.model_copy(deep=True)
+        permissions.permissions.can_self_modify = False
+        env_values["permissions"] = permissions
 
     try:
         config = AppConfig.model_validate(env_values)

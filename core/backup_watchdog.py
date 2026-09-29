@@ -103,6 +103,9 @@ async def catch_up_if_stale() -> dict[str, Any] | None:
     """Fire scripts/backup_morgoth.sh in the background if the latest
     backup is older than the age threshold. Never awaits the script;
     never raises. Returns a status dict for logging."""
+    from core.project import current_project
+    if not current_project().is_legacy:
+        return {"action": "skip", "reason": "legacy backup script is not project-aware"}
     if not BACKUP_SCRIPT.exists():
         logger.warning("backup_watchdog: script missing at {}", BACKUP_SCRIPT)
         return None

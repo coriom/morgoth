@@ -116,27 +116,29 @@ class PersistentMemory:
     async def initialize(self) -> None:
         """Create the connection pool and initialize required tables.
 
-        2026-09-29 chantier-2: the active domain pack's
-        ``postgres_schema`` scopes every table read/write via
-        ``search_path``. Crypto uses ``public`` — behaviour unchanged.
-        A new domain declares its own schema and gets it created here
-        on first boot with the SAME DDL, no per-domain migration."""
+        Project owns storage; Domain only supplies research semantics. New
+        projects get the same DDL in an isolated schema, with no public fallback.
+        The legacy project retains public. Restore search_path on every checkout.
+        """
 
-        from core.domain import current_domain as _current_domain
-        schema = _current_domain().postgres_schema
+        from core.project import current_namespace
+        from core.storage_namespace import validate_identifier
+        schema = validate_identifier(current_namespace().postgres_schema)
 
         async def _init_conn(conn) -> None:
             # Per-connection search_path so EVERY query in this pool
-            # session resolves table names inside `schema` first, then
-            # falls back to public (needed for pg_extensions, etc).
+            # session resolves table names ONLY inside `schema`. pg_catalog is
+            # implicit; never fall back to public for missing project tables.
             if schema and schema != "public":
-                await conn.execute(f'SET search_path TO "{schema}", public')
+                await conn.execute(f'SET search_path TO "{schema}"')
             else:
                 await conn.execute('SET search_path TO public')
 
         self._pool = await asyncpg.create_pool(
             dsn=self._config.postgres_url,
             init=_init_conn,
+            setup=_init_conn,  # asyncpg RESET ALL on release must not restore public
+            server_settings={"search_path": schema},
         )
         async with self._pool.acquire() as connection:
             # CREATE SCHEMA before any DDL so the CREATE EXTENSION +
@@ -146,7 +148,11 @@ class PersistentMemory:
                 await connection.execute(
                     f'CREATE SCHEMA IF NOT EXISTS "{schema}"'
                 )
-            await connection.execute(CREATE_EXTENSION_SQL)
+            # Legacy bootstrap keeps pgcrypto. New projects use PostgreSQL
+            # 13+ built-in gen_random_uuid; never install a database-wide
+            # extension owned by a project schema (including concurrent starts).
+            if schema == "public":
+                await connection.execute(CREATE_EXTENSION_SQL)
             for statement in TABLE_STATEMENTS:
                 await connection.execute(statement)
             try:

@@ -35,6 +35,7 @@ if _FIXTURE_ENV.exists():
     for _leaky in (
         "MORGOTH_LLM_THESIS", "MORGOTH_LLM_SYNTHESIS", "MORGOTH_LLM_CHAT",
         "THESIS_GENERATOR", "POSTGRES_URL", "ANTHROPIC_API_KEY",
+        "MORGOTH_PROJECT", "MORGOTH_HOME", "MORGOTH_DOMAIN",
     ):
         os.environ.pop(_leaky, None)
     # 2026-09-29: tests/fixtures/test.env values are consulted by
@@ -96,10 +97,13 @@ def _env_snapshot_and_restore():
     """Snapshot os.environ before each test, restore after. Prevents
     cross-test env leakage — the SINGLE mechanism (no per-test surgery)
     that fixes the in-batch failures the operator identified."""
+    from core.project import current_project
+    current_project.cache_clear()
     saved = dict(os.environ)
     try:
         yield
     finally:
+        current_project.cache_clear()
         current = set(os.environ.keys())
         for k in current - saved.keys():
             os.environ.pop(k, None)

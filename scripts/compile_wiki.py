@@ -45,13 +45,10 @@ from core.llm_client import ChatMessage, OllamaLLMClient  # noqa: E402
 from memory.persistent import PersistentMemory  # noqa: E402
 
 
-# 2026-09-29 chantier-2: vault dir is domain-scoped. Crypto keeps
-# ~/Morgoth/vault (unchanged); a new domain declares its own
-# vault_dir in its pack. Read at import so the constants below stay
-# stable (see ONE-DOMAIN-PER-PROCESS invariant in core/domain.py).
-from core.domain import current_domain as _current_domain  # noqa: E402
-import os as _os  # noqa: E402
-VAULT_DIR = Path(_os.path.expandvars(_current_domain().vault_dir)).expanduser()
+# One Project per process; legacy vault unchanged. Domain fields are not storage
+# authority. API wiki routes import these same canonical paths.
+from core.project import current_namespace  # noqa: E402
+VAULT_DIR = current_namespace().vault_dir
 ENTITIES_DIR = VAULT_DIR / "entities"
 SYSTEM_DIR = VAULT_DIR / "system"
 SYSTEM_TOOLS_DIR = SYSTEM_DIR / "tools"

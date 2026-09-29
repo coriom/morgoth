@@ -4,7 +4,7 @@ Env format: MORGOTH_LLM_<TASK>=provider[:model]
   provider ∈ {ollama, codex-cli, claude-cli, api}
   model is provider-specific; "default" or omitted → provider chooses.
 
-Unset env → registry falls back to the default in tasks.DEFAULTS. Defaults are locked in tests/test_llm_registry.py.
+Unset env → Project.llm_overrides → tasks.DEFAULTS. Defaults are locked in tests/test_llm_registry.py.
 
 Legacy alias: THESIS_GENERATOR (from the earlier experiment script) is
 honored as an alias of MORGOTH_LLM_THESIS. If both are set,
@@ -64,7 +64,8 @@ def resolve(task: str) -> tuple[ProviderName, str]:
     the cycle — it just logs and stays on the pre-refactor path)."""
     if task not in T.DEFAULTS:
         raise KeyError(f"unknown task {task!r}; add it to tasks.DEFAULTS")
-    override = _read_env_for(task)
+    from core.project import current_project
+    override = _read_env_for(task) or current_project().llm_overrides.get(task)
     if override is None:
         return _parse_spec(T.DEFAULTS[task])  # type: ignore[return-value]
     try:
@@ -78,13 +79,15 @@ def resolve(task: str) -> tuple[ProviderName, str]:
 
 def routing_table() -> list[dict[str, str]]:
     """Snapshot of every task's current routing. For `morgoth models`."""
+    from core.project import current_project
+    project = current_project()
     out = []
     for task in T.all_tasks():
         override = _read_env_for(task)
         provider, model = resolve(task)
         out.append({
             "task": task, "provider": provider, "model": model,
-            "source": "env" if override is not None else "default",
+            "source": "env" if override is not None else ("project" if task in project.llm_overrides else "default"),
             "default": T.DEFAULTS[task],
         })
     return out

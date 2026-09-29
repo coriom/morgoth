@@ -14,13 +14,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 
-DEFAULT_COLLECTIONS = (
-    "conversations",
-    "research",
-    "decisions",
-    "market_patterns",
-    "code_archive",
-)
+from core.storage_namespace import COLLECTIONS as DEFAULT_COLLECTIONS
 
 
 class EpisodicMetadata(BaseModel):
@@ -53,27 +47,26 @@ class QueryMatch(BaseModel):
 class EpisodicMemory:
     """Persistent ChromaDB-backed episodic memory service.
 
-    2026-09-29 chantier-2: the active domain pack's ``chroma_prefix``
-    scopes collection names. Crypto uses ``""`` (empty prefix) so its
-    collections stay ``conversations``, ``research``, … — no
-    production migration. A new domain declares e.g.
-    ``chroma_prefix: "weather_"`` and gets its own collections
-    (``weather_conversations`` etc.) inside the SAME persist dir."""
+    Project owns physical collection names and the state directory. The default
+    project keeps historical unprefixed names and caller-provided paths. New
+    projects always use their canonical directory, even if a legacy caller
+    supplies a shared default path."""
 
     def __init__(self, persist_directory: str | Path = "data/chroma_db") -> None:
         """Initialize the memory wrapper."""
 
-        self._persist_directory = Path(persist_directory)
+        from core.project import current_namespace
+        project = current_namespace()
+        self._persist_directory = Path(persist_directory) if project.is_legacy else project.chroma_dir
         self._client: chromadb.PersistentClient | None = None
         self._collections: dict[str, Collection] = {}
-        # Pack read once at construction. See ONE-DOMAIN-PER-PROCESS.
-        from core.domain import current_domain as _current_domain
-        self._prefix: str = _current_domain().chroma_prefix
+        # Project is fixed once per engine process.
+        self._prefix: str = project.chroma_prefix
 
     @property
     def collections(self) -> tuple[str, ...]:
         """Return the collection names managed by this wrapper —
-        already prefixed with the active domain's chroma_prefix. All
+        already prefixed with the active project's chroma_prefix. All
         public API methods take the LOGICAL name (e.g. "conversations")
         and route to the prefixed physical name."""
 
@@ -83,9 +76,11 @@ class EpisodicMemory:
         """Route a logical collection name to its prefixed physical
         name. Any caller that already passed a prefixed name (defensive)
         is left alone."""
-        if self._prefix and not logical.startswith(self._prefix):
+        if logical in DEFAULT_COLLECTIONS:
             return self._prefix + logical
-        return logical
+        if logical in self.collections:
+            return logical
+        raise ValueError("Unknown episodic collection")
 
     async def initialize(self) -> None:
         """Create the persistent client and ensure all collections exist."""

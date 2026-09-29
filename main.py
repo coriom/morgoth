@@ -21,10 +21,13 @@ def _wire_log_rotation() -> None:
     already had. systemd's journald continues to capture stdout — this
     is an ADDITIONAL sink, not a replacement.
     """
+    from core.project import current_project
+    project = current_project()
+    log_path = "logs/morgoth.log" if project.is_legacy else str(project.runtime_dir / "logs/morgoth.log")
     retention_days = int(os.environ.get("LOG_RETENTION_DAYS") or 5)
     try:
         logger.add(
-            "logs/morgoth.log",
+            log_path,
             rotation="50 MB",
             retention=f"{retention_days} days",
             compression="gz",

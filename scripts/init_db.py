@@ -1,4 +1,8 @@
-"""Initialize PostgreSQL tables for Morgoth."""
+"""Initialize the selected Project schema using the shared PersistentMemory pool.
+
+MORGOTH_PROJECT selection/validation precedes SQL. Extra tables use the same
+canonical search_path as the engine; no separate storage namespace resolver.
+"""
 
 from __future__ import annotations
 

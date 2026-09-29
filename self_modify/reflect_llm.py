@@ -85,10 +85,18 @@ def resolve_provider(cli_flag: str | None) -> str:
     Empty CLI flag falls through (argparse default is None). Unknown
     values raise so a typo never silently downgrades to the default.
     """
-    raw = cli_flag or os.environ.get("REFLECT_PROVIDER") or os.environ.get("MORGOTH_LLM_REFLECT") or "codex-cli"
+    from core.project import current_project
+    raw = cli_flag or os.environ.get("REFLECT_PROVIDER") or os.environ.get("MORGOTH_LLM_REFLECT") or current_project().llm_overrides.get("reflect") or "codex-cli"
+    if ":" in raw:
+        from core.llm.registry import _parse_spec
+        try:
+            provider, model = _parse_spec(raw)
+        except ValueError:
+            raise ReflectLLMError("invalid project/provider route") from None
+        if model == "default" and provider != "codex-cli":
+            return "anthropic" if provider == "api" else provider
+        return f"{provider}:{model}"
     resolved = raw.strip().lower()
-    if resolved.startswith("codex-cli:"):
-        return raw.strip()
     if resolved not in VALID_PROVIDERS:
         raise ReflectLLMError(
             f"unknown provider {resolved!r}; expected one of {VALID_PROVIDERS!r}"
@@ -408,6 +416,20 @@ async def reflect_chat(
     The injectable client factories / runner are for tests only;
     production code passes neither and gets the default construction.
     """
+    if ":" in provider and not provider.startswith("codex-cli:"):
+        from core.llm.registry import _parse_spec
+        from core.llm.providers import get_provider
+        name, model = _parse_spec(provider)
+        owns_client = name == "ollama" and ollama_client is None
+        client = OllamaLLMClient(config) if owns_client else ollama_client
+        try:
+            text = await get_provider(name, model, ollama_client=client).complete(prompt)
+            return text, {"provider": name, "model": model}
+        except Exception as exc:
+            raise ReflectLLMError(f"provider={name} failed ({type(exc).__name__})") from None
+        finally:
+            if owns_client:
+                await client.close()
     if provider == "codex-cli" or provider.startswith("codex-cli:"):
         from core.llm.codex_cli import CodexCliProvider, CodexCliError
         model = provider.partition(":")[2] or "default"

@@ -1,5 +1,28 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-09-29 — Project runtime foundation (complete, not deployed)
+
+- Added core/project.py, core/runtime.py, core/storage_namespace.py: immutable Project,
+  fixed MORGOTH_PROJECT selection, trusted catalog, canonical namespace and collisions.
+- Domain stays declarative semantics. Only legacy_project imports old crypto namespace
+  fields; new projects must explicitly supply storage. Legacy paths/behavior preserved.
+- Wired memory/persistent.py (schema reset on every pool checkout, no public fallback),
+  memory/episodic.py, config/logs, wiki, UI token and optional task provider overrides.
+  Global permissions mutation, legacy backups and shared self-modification disabled for
+  new project runtime; human gate 3 unchanged. scripts/init_db shares the same resolver.
+- Added project unit/subprocess/integration proofs; adapted old Domain storage checks
+  to Project authority without removing pack/crypto regression coverage.
+- Documented full audit, ownership, migration boundary and future desktop contract in
+  docs/PROJECT_RUNTIME.md. UI mirrors ProjectConfig/Project in types/morgoth.ts.
+- Validation: canonical hermetic suite 1738 passed (+60), 2 skipped, wall 26.0s, exit 0;
+  morgoth_test two-process integration 1 passed (6.14s); UI tsc exit 0.
+- Live crypto report/scorer wrappers deferred: they initialize writable storage;
+  hermetic crypto/scoring/fidelity/session-report tests passed. No production database,
+  service restart, .env access/edit, real LLM, reflect job or campaign changes.
+- No new dependencies. No Tauri/Rust implementation, process manager, project CLI,
+  cross-platform sandbox, data migration or historical-script rewrite in this slice.
+
+
 > Updated by Codex after each completed deliverable.
 > Updated by human after each review, test, or decision.
 

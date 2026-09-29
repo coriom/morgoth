@@ -7,7 +7,8 @@ ANY web page the operator happens to have open. That's not acceptable
 for the self-modification kill-switch.
 
 Design: on first access, generate a 32-byte URL-safe token and write it
-to ``~/.morgoth/ui_token`` with mode 0600 (parent dir 0700). The Next.js
+to the Project token directory with mode 0600 (parent dir 0700). The legacy
+project retains ``~/.morgoth/ui_token``; new projects use runtime/auth. The Next.js
 server reads the file server-side and injects it into ``X-Morgoth-Token``
 on proxied mutations. The browser JS never sees the token.
 
@@ -23,7 +24,9 @@ import secrets
 from pathlib import Path
 
 
-TOKEN_DIR = Path.home() / ".morgoth"
+from core.project import current_project
+
+TOKEN_DIR = current_project().ui_token_dir
 TOKEN_PATH = TOKEN_DIR / "ui_token"
 HEADER_NAME = "X-Morgoth-Token"
 
@@ -34,7 +37,7 @@ def ensure_ui_token(path: Path = TOKEN_PATH) -> str:
     Parent dir 0700, file 0600. If the file already exists, it is read
     unchanged (a fresh restart must not invalidate the cockpit session).
     """
-    path.parent.mkdir(mode=0o700, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
