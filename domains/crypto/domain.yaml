@@ -574,3 +574,15 @@ source_cache_config:
 source_cache_default_args:
   fred_series_observations:
     series_id: CPIAUCSL
+
+# ─── STORAGE NAMESPACES (chantier 2/5) ─────────────────────────────────
+# Where THIS domain's data lives. Crypto keeps its historical values:
+# the ``public`` Postgres schema, no Chroma collection prefix, and the
+# original ``~/Morgoth/vault`` directory — no production migration is
+# performed by this commit. A new domain declares its own values here
+# and gets a fresh schema on first boot (see PersistentMemory.initialize).
+# ONE-DOMAIN-PER-PROCESS still holds: switching domains requires a
+# restart (module-level constants freeze the pack at import).
+postgres_schema: "public"
+chroma_prefix: ""
+vault_dir: "~/Morgoth/vault"

@@ -107,6 +107,16 @@ class Domain:
     # -- source cache polling schedule -----------------------------------
     source_cache_config: dict[str, tuple[int, int]]
     source_cache_default_args: dict[str, dict[str, Any]]
+    # -- STORAGE NAMESPACES (chantier 2/5) --------------------------------
+    # Postgres schema, Chroma collection prefix, and vault directory. A
+    # domain writes ONLY inside its own namespace so two domains can share
+    # one Postgres DB / one Chroma persist dir / one vault root without
+    # crossing rows or files. Crypto keeps its historical namespace:
+    # public schema, no chroma prefix, current vault path — no production
+    # migration.
+    postgres_schema: str      # e.g. "public" (crypto), "weather" (new)
+    chroma_prefix: str        # collection name prefix ("" for crypto)
+    vault_dir: str            # absolute path (may contain ~ and env vars)
 
 
 # ─── STRICT VALIDATORS ──────────────────────────────────────────────
@@ -258,6 +268,9 @@ def _load(name: str) -> Domain:
         test_bootstrap_tool_defaults=_any_map_map(raw.get("test_bootstrap_tool_defaults"), "test_bootstrap_tool_defaults"),
         source_cache_config=_int_pair_map(raw.get("source_cache_config"), "source_cache_config"),
         source_cache_default_args=_any_map_map(raw.get("source_cache_default_args"), "source_cache_default_args"),
+        postgres_schema=_str(raw.get("postgres_schema", "public"), "postgres_schema"),
+        chroma_prefix=_str_or_empty(raw.get("chroma_prefix"), "chroma_prefix"),
+        vault_dir=_str(raw.get("vault_dir") or str(Path.home() / "Morgoth" / "vault"), "vault_dir"),
     )
 
 

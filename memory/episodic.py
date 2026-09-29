@@ -51,7 +51,14 @@ class QueryMatch(BaseModel):
 
 
 class EpisodicMemory:
-    """Persistent ChromaDB-backed episodic memory service."""
+    """Persistent ChromaDB-backed episodic memory service.
+
+    2026-09-29 chantier-2: the active domain pack's ``chroma_prefix``
+    scopes collection names. Crypto uses ``""`` (empty prefix) so its
+    collections stay ``conversations``, ``research``, … — no
+    production migration. A new domain declares e.g.
+    ``chroma_prefix: "weather_"`` and gets its own collections
+    (``weather_conversations`` etc.) inside the SAME persist dir."""
 
     def __init__(self, persist_directory: str | Path = "data/chroma_db") -> None:
         """Initialize the memory wrapper."""
@@ -59,12 +66,26 @@ class EpisodicMemory:
         self._persist_directory = Path(persist_directory)
         self._client: chromadb.PersistentClient | None = None
         self._collections: dict[str, Collection] = {}
+        # Pack read once at construction. See ONE-DOMAIN-PER-PROCESS.
+        from core.domain import current_domain as _current_domain
+        self._prefix: str = _current_domain().chroma_prefix
 
     @property
     def collections(self) -> tuple[str, ...]:
-        """Return the collection names managed by this wrapper."""
+        """Return the collection names managed by this wrapper —
+        already prefixed with the active domain's chroma_prefix. All
+        public API methods take the LOGICAL name (e.g. "conversations")
+        and route to the prefixed physical name."""
 
-        return DEFAULT_COLLECTIONS
+        return tuple(self._prefix + c for c in DEFAULT_COLLECTIONS)
+
+    def _physical_name(self, logical: str) -> str:
+        """Route a logical collection name to its prefixed physical
+        name. Any caller that already passed a prefixed name (defensive)
+        is left alone."""
+        if self._prefix and not logical.startswith(self._prefix):
+            return self._prefix + logical
+        return logical
 
     async def initialize(self) -> None:
         """Create the persistent client and ensure all collections exist."""
@@ -171,11 +192,17 @@ class EpisodicMemory:
         return rows[:limit]
 
     def _get_collection(self, collection_name: str) -> Collection:
-        """Return a managed collection or raise a descriptive error."""
+        """Return a managed collection or raise a descriptive error.
 
-        if collection_name not in self._collections:
+        Accepts either the LOGICAL name (``conversations``) or the
+        physical prefixed name (``weather_conversations``). Callers
+        elsewhere pass the logical name — the prefix routing is
+        transparent."""
+
+        physical = self._physical_name(collection_name)
+        if physical not in self._collections:
             raise ValueError(f"Unknown episodic collection: {collection_name}")
-        return self._collections[collection_name]
+        return self._collections[physical]
 
     def _parse_query_result(self, result: dict[str, Any]) -> list[QueryMatch]:
         """Normalize a ChromaDB query response."""
