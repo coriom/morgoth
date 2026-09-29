@@ -197,7 +197,7 @@ def test_one_domain_per_process_invariant(monkeypatch) -> None:
     from core.domain import (
         current_domain,
         reset_domain_cache,
-        DEFAULT_DOMAIN,
+        DomainPackError,
     )
     from analysis import campaign_quality as cq
 
@@ -208,11 +208,12 @@ def test_one_domain_per_process_invariant(monkeypatch) -> None:
 
     # Switch the env AND reset the cache — mimic a would-be runtime
     # switch. reset_domain_cache() drops the memoized pack, so the
-    # NEXT current_domain() call would load a different pack…
+    # NEXT current_domain() call would try to load a different pack.
     monkeypatch.setenv("MORGOTH_DOMAIN", "__nonexistent_test_domain__")
     reset_domain_cache()
     try:
-        d1 = current_domain()  # falls back to crypto (missing pack)
+        with pytest.raises(DomainPackError):
+            current_domain()  # strict — no fallback
         # …but module-level constants are STILL bound to the pre-swap
         # values. A live scorer using cq.RAIL_TOOL_FIELDS would not see
         # any change — this is the invariant.
@@ -222,8 +223,128 @@ def test_one_domain_per_process_invariant(monkeypatch) -> None:
                 "reset_domain_cache — the invariant is that changing "
                 "domains requires a fresh process"
             )
-        # And the fallback keeps the DEFAULT domain.
-        assert d1.name == DEFAULT_DOMAIN
     finally:
         monkeypatch.delenv("MORGOTH_DOMAIN", raising=False)
         reset_domain_cache()
+
+
+# ---------- strict validation + unknown domain refusal ----------------------
+
+def _write_pack(root, name: str, body: str) -> None:
+    d = root / "domains" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "domain.yaml").write_text(body, encoding="utf-8")
+
+
+def _fresh_loader(tmp_path, monkeypatch):
+    """Return a ``core.domain`` module bound to a ``domains/`` root
+    under ``tmp_path`` — lets each test author its own pack."""
+    import importlib
+    import sys as _sys
+    monkeypatch.setenv("MORGOTH_DOMAIN", "test_pack")
+    if "core.domain" in _sys.modules:
+        del _sys.modules["core.domain"]
+    import core.domain as m
+    importlib.reload(m)
+    monkeypatch.setattr(m, "_DOMAINS_ROOT", tmp_path / "domains")
+    m.reset_domain_cache()
+    return m
+
+
+def test_unknown_domain_refuses_to_start(tmp_path, monkeypatch) -> None:
+    """A fresh process with ``MORGOTH_DOMAIN=<missing>`` MUST raise
+    DomainPackError — never silently fall back to crypto. Silent
+    fallback would leave a typo running the wrong domain's stopwords
+    and metric names while the underlying Postgres / Chroma remain
+    scoped elsewhere. Refusing to boot is the loud-and-correct
+    behaviour."""
+    m = _fresh_loader(tmp_path, monkeypatch)
+    # Note: NO pack is written under tmp_path/domains — the lookup
+    # must fail even though crypto EXISTS in the real repo. Import
+    # the exception class from the RELOADED module — importlib.reload
+    # produces a new class object; the pre-reload class won't match.
+    with pytest.raises(m.DomainPackError) as ei:
+        m.current_domain()
+    assert "test_pack" in str(ei.value)
+    assert "not found" in str(ei.value)
+
+
+def _minimal_valid_body() -> str:
+    return (
+        "name: test_pack\n"
+        "generic_subject_tokens: [x]\n"
+        "price_class_tokens: [x]\n"
+        "subject_prefix_stopwords: [x]\n"
+        "name_stopwords: [x]\n"
+        "phrase_stopwords: [x]\n"
+        "campaign_title_stopwords: [x]\n"
+        "tool_served_phrases: {t: [p]}\n"
+        "rail_tool_fields: {t: [c]}\n"
+        "bullish_words: [x]\n"
+        "bearish_words: [x]\n"
+        "metric_families: {m: [k]}\n"
+        "scope_asset_metric_tokens: [x]\n"
+        "scope_asset_subject_tokens: [x]\n"
+        "scope_dominance_exception_tokens: [x]\n"
+        "scope_source_tool: t\n"
+        "field_phrases: {t: {f: [p]}}\n"
+        "ambiguous_phrases: [x]\n"
+        "single_numeric_field: {t: f}\n"
+        "timestamp_like_fields: [x]\n"
+        "metric_names: {a: b}\n"
+        "metric_field_map: {a: b}\n"
+        "metric_source_tool: t\n"
+        "backtest_subject_markers: {m: [k]}\n"
+        "source_cache_config: {t: [60, 120]}\n"
+        "source_cache_default_args: {t: {a: 1}}\n"
+    )
+
+
+@pytest.mark.parametrize("mutation,field_name", [
+    # Norway problem — literal `on` becomes True.
+    ("phrase_stopwords:\n  - on\n", "phrase_stopwords"),
+    # yes → True.
+    ("phrase_stopwords:\n  - yes\n", "phrase_stopwords"),
+    # off → False.
+    ("phrase_stopwords:\n  - off\n", "phrase_stopwords"),
+    # bare null token.
+    ("phrase_stopwords:\n  - null\n", "phrase_stopwords"),
+    # An integer where a string was declared.
+    ("phrase_stopwords:\n  - 42\n", "phrase_stopwords"),
+    # bool in map value.
+    ("metric_names:\n  a: yes\n", "metric_names"),
+    # non-list where list expected.
+    ("bullish_words: not_a_list\n", "bullish_words"),
+    # source_cache_config with a bool masquerading as int.
+    ("source_cache_config:\n  t: [true, 60]\n", "source_cache_config.t"),
+])
+def test_strict_type_validation_rejects_coerced_scalars(
+    tmp_path, monkeypatch, mutation, field_name,
+) -> None:
+    """Every pack field has a declared type. YAML 1.1 auto-coercions
+    (on/off/yes/no/null and bare numerics) MUST NOT survive the
+    validator. The error names the field and the offending value."""
+    m = _fresh_loader(tmp_path, monkeypatch)
+    body = _minimal_valid_body()
+    # Replace the field being mutated so the injected mutation is the
+    # only source of that field.
+    key = mutation.split(":", 1)[0]
+    lines = [ln for ln in body.splitlines()
+             if not ln.startswith(key + ":") and not ln.startswith(key + "\n")]
+    body = "\n".join(lines) + "\n" + mutation
+    _write_pack(tmp_path, "test_pack", body)
+    with pytest.raises(m.DomainPackError) as ei:
+        m.current_domain()
+    assert field_name in str(ei.value), (
+        f"error message must name the offending field {field_name!r}, "
+        f"got: {ei.value}"
+    )
+
+
+def test_strict_validator_accepts_current_crypto_pack() -> None:
+    """The current crypto pack must load cleanly through the strict
+    validator — nothing regresses."""
+    from core.domain import current_domain, reset_domain_cache
+    reset_domain_cache()
+    d = current_domain()
+    assert d.name == "crypto"

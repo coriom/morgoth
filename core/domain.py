@@ -54,6 +54,13 @@ DEFAULT_DOMAIN: str = "crypto"
 _DOMAINS_ROOT: Path = Path(__file__).resolve().parent.parent / "domains"
 
 
+class DomainPackError(ValueError):
+    """Raised when a domain pack fails validation OR does not exist.
+
+    Distinct from generic ValueError so the process-entry code can
+    catch it and print a helpful message before exiting."""
+
+
 @dataclass(frozen=True)
 class Domain:
     """A loaded domain pack. Every field is DATA sourced from YAML.
@@ -102,74 +109,155 @@ class Domain:
     source_cache_default_args: dict[str, dict[str, Any]]
 
 
-def _as_tuple(x: Any) -> tuple[str, ...]:
+# ─── STRICT VALIDATORS ──────────────────────────────────────────────
+# YAML 1.1 silently coerces bare tokens: ``on`` → True, ``off`` → False,
+# ``yes`` / ``no`` → bool, ``null`` → None, ``1.5e10`` → float. The
+# grep-lock tests do NOT catch that because both sides read the same
+# corrupt pack. Every field-level validator below therefore REJECTS
+# non-string leaves where a string was declared, naming the field and
+# the offending value in the error. The rule: quote it in YAML, or the
+# pack refuses to load.
+
+
+def _fail(path: str, expected: str, got: Any) -> None:
+    raise DomainPackError(
+        f"domain pack: field {path!r} expected {expected}, "
+        f"got {type(got).__name__} = {got!r} "
+        f"(hint: YAML 1.1 tokens like on/off/yes/no/null and numbers "
+        f"become bool/None/int/float — quote the value with \"…\")"
+    )
+
+
+def _str(x: Any, path: str) -> str:
+    if not isinstance(x, str):
+        _fail(path, "str", x)
+    return x
+
+
+def _str_or_empty(x: Any, path: str) -> str:
+    if x is None:
+        return ""
+    return _str(x, path)
+
+
+def _str_list(x: Any, path: str) -> tuple[str, ...]:
     if x is None:
         return ()
-    if isinstance(x, (list, tuple)):
-        return tuple(str(v) for v in x)
-    if isinstance(x, str):
-        return (x,)
-    raise TypeError(f"expected list or str, got {type(x).__name__}")
+    if not isinstance(x, list):
+        _fail(path, "list[str]", x)
+    return tuple(_str(v, f"{path}[{i}]") for i, v in enumerate(x))
 
 
-def _dict_of_tuple(x: Any) -> dict[str, tuple[str, ...]]:
-    return {str(k): _as_tuple(v) for k, v in (x or {}).items()}
+def _str_map(x: Any, path: str) -> dict[str, str]:
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail(path, "dict[str, str]", x)
+    return {_str(k, f"{path}.<key>"): _str(v, f"{path}.{k}") for k, v in x.items()}
 
 
-def _dict_of_dict_of_tuple(x: Any) -> dict[str, dict[str, tuple[str, ...]]]:
-    return {str(k): _dict_of_tuple(v) for k, v in (x or {}).items()}
+def _str_list_map(x: Any, path: str) -> dict[str, tuple[str, ...]]:
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail(path, "dict[str, list[str]]", x)
+    return {_str(k, f"{path}.<key>"): _str_list(v, f"{path}.{k}") for k, v in x.items()}
 
 
-def _dict_of_str(x: Any) -> dict[str, str]:
-    return {str(k): str(v) for k, v in (x or {}).items()}
+def _str_list_map_map(
+    x: Any, path: str,
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail(path, "dict[str, dict[str, list[str]]]", x)
+    return {
+        _str(k, f"{path}.<key>"): _str_list_map(v, f"{path}.{k}")
+        for k, v in x.items()
+    }
 
 
-def _dict_of_dict(x: Any) -> dict[str, dict[str, Any]]:
-    return {str(k): dict(v) for k, v in (x or {}).items()}
+def _int_pair_map(x: Any, path: str) -> dict[str, tuple[int, int]]:
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail(path, "dict[str, [int, int]]", x)
+    out: dict[str, tuple[int, int]] = {}
+    for k, v in x.items():
+        pk = _str(k, f"{path}.<key>")
+        # A YAML sequence of two ints. Booleans are rejected because
+        # ``bool`` is a subclass of ``int`` in Python — enforce here.
+        if (not isinstance(v, list) or len(v) != 2
+                or any(isinstance(el, bool) or not isinstance(el, int) for el in v)):
+            _fail(f"{path}.{pk}", "[int, int]", v)
+        out[pk] = (int(v[0]), int(v[1]))
+    return out
 
 
-def _dict_of_pair(x: Any) -> dict[str, tuple[int, int]]:
-    return {str(k): (int(v[0]), int(v[1])) for k, v in (x or {}).items()}
+def _any_map_map(x: Any, path: str) -> dict[str, dict[str, Any]]:
+    """dict[str, dict[str, Any]] — the inner values are tool arguments
+    whose types are the tool's contract, not the pack's. We keep them
+    as-is, but still enforce the outer shape and string keys."""
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail(path, "dict[str, dict[str, Any]]", x)
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in x.items():
+        pk = _str(k, f"{path}.<key>")
+        if not isinstance(v, dict):
+            _fail(f"{path}.{pk}", "dict[str, Any]", v)
+        # Keys of the inner dict MUST be strings (tool arg names).
+        inner: dict[str, Any] = {}
+        for ik, iv in v.items():
+            inner[_str(ik, f"{path}.{pk}.<key>")] = iv
+        out[pk] = inner
+    return out
 
 
 def _load(name: str) -> Domain:
     path = _DOMAINS_ROOT / name / "domain.yaml"
     if not path.exists():
-        raise FileNotFoundError(
+        raise DomainPackError(
             f"domain pack {name!r} not found at {path}. "
             f"Existing packs: {sorted(p.name for p in _DOMAINS_ROOT.iterdir()) if _DOMAINS_ROOT.exists() else []}"
         )
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise DomainPackError(
+            f"domain pack {name!r} at {path}: top-level YAML must be a "
+            f"mapping, got {type(raw).__name__}"
+        )
     return Domain(
-        name=str(raw.get("name") or name),
-        tagline=str(raw.get("tagline") or ""),
-        generic_subject_tokens=_as_tuple(raw.get("generic_subject_tokens")),
-        price_class_tokens=_as_tuple(raw.get("price_class_tokens")),
-        subject_prefix_stopwords=_as_tuple(raw.get("subject_prefix_stopwords")),
-        name_stopwords=_as_tuple(raw.get("name_stopwords")),
-        phrase_stopwords=_as_tuple(raw.get("phrase_stopwords")),
-        campaign_title_stopwords=_as_tuple(raw.get("campaign_title_stopwords")),
-        tool_served_phrases=_dict_of_tuple(raw.get("tool_served_phrases")),
-        rail_tool_fields=_dict_of_tuple(raw.get("rail_tool_fields")),
-        bullish_words=_as_tuple(raw.get("bullish_words")),
-        bearish_words=_as_tuple(raw.get("bearish_words")),
-        metric_families=_dict_of_tuple(raw.get("metric_families")),
-        scope_asset_metric_tokens=_as_tuple(raw.get("scope_asset_metric_tokens")),
-        scope_asset_subject_tokens=_as_tuple(raw.get("scope_asset_subject_tokens")),
-        scope_dominance_exception_tokens=_as_tuple(raw.get("scope_dominance_exception_tokens")),
-        scope_source_tool=str(raw.get("scope_source_tool") or ""),
-        field_phrases=_dict_of_dict_of_tuple(raw.get("field_phrases")),
-        ambiguous_phrases=_as_tuple(raw.get("ambiguous_phrases")),
-        single_numeric_field=_dict_of_str(raw.get("single_numeric_field")),
-        timestamp_like_fields=_as_tuple(raw.get("timestamp_like_fields")),
-        metric_names=_dict_of_str(raw.get("metric_names")),
-        metric_field_map=_dict_of_str(raw.get("metric_field_map")),
-        metric_source_tool=str(raw.get("metric_source_tool") or ""),
-        backtest_subject_markers=_dict_of_tuple(raw.get("backtest_subject_markers")),
-        prompt_bootstrap_snippet=str(raw.get("prompt_bootstrap_snippet") or ""),
-        test_bootstrap_tool_defaults=_dict_of_dict(raw.get("test_bootstrap_tool_defaults")),
-        source_cache_config=_dict_of_pair(raw.get("source_cache_config")),
-        source_cache_default_args=_dict_of_dict(raw.get("source_cache_default_args")),
+        name=_str(raw.get("name") or name, "name"),
+        tagline=_str_or_empty(raw.get("tagline"), "tagline"),
+        generic_subject_tokens=_str_list(raw.get("generic_subject_tokens"), "generic_subject_tokens"),
+        price_class_tokens=_str_list(raw.get("price_class_tokens"), "price_class_tokens"),
+        subject_prefix_stopwords=_str_list(raw.get("subject_prefix_stopwords"), "subject_prefix_stopwords"),
+        name_stopwords=_str_list(raw.get("name_stopwords"), "name_stopwords"),
+        phrase_stopwords=_str_list(raw.get("phrase_stopwords"), "phrase_stopwords"),
+        campaign_title_stopwords=_str_list(raw.get("campaign_title_stopwords"), "campaign_title_stopwords"),
+        tool_served_phrases=_str_list_map(raw.get("tool_served_phrases"), "tool_served_phrases"),
+        rail_tool_fields=_str_list_map(raw.get("rail_tool_fields"), "rail_tool_fields"),
+        bullish_words=_str_list(raw.get("bullish_words"), "bullish_words"),
+        bearish_words=_str_list(raw.get("bearish_words"), "bearish_words"),
+        metric_families=_str_list_map(raw.get("metric_families"), "metric_families"),
+        scope_asset_metric_tokens=_str_list(raw.get("scope_asset_metric_tokens"), "scope_asset_metric_tokens"),
+        scope_asset_subject_tokens=_str_list(raw.get("scope_asset_subject_tokens"), "scope_asset_subject_tokens"),
+        scope_dominance_exception_tokens=_str_list(raw.get("scope_dominance_exception_tokens"), "scope_dominance_exception_tokens"),
+        scope_source_tool=_str_or_empty(raw.get("scope_source_tool"), "scope_source_tool"),
+        field_phrases=_str_list_map_map(raw.get("field_phrases"), "field_phrases"),
+        ambiguous_phrases=_str_list(raw.get("ambiguous_phrases"), "ambiguous_phrases"),
+        single_numeric_field=_str_map(raw.get("single_numeric_field"), "single_numeric_field"),
+        timestamp_like_fields=_str_list(raw.get("timestamp_like_fields"), "timestamp_like_fields"),
+        metric_names=_str_map(raw.get("metric_names"), "metric_names"),
+        metric_field_map=_str_map(raw.get("metric_field_map"), "metric_field_map"),
+        metric_source_tool=_str_or_empty(raw.get("metric_source_tool"), "metric_source_tool"),
+        backtest_subject_markers=_str_list_map(raw.get("backtest_subject_markers"), "backtest_subject_markers"),
+        prompt_bootstrap_snippet=_str_or_empty(raw.get("prompt_bootstrap_snippet"), "prompt_bootstrap_snippet"),
+        test_bootstrap_tool_defaults=_any_map_map(raw.get("test_bootstrap_tool_defaults"), "test_bootstrap_tool_defaults"),
+        source_cache_config=_int_pair_map(raw.get("source_cache_config"), "source_cache_config"),
+        source_cache_default_args=_any_map_map(raw.get("source_cache_default_args"), "source_cache_default_args"),
     )
 
 
@@ -178,15 +266,14 @@ def current_domain() -> Domain:
     """Return the loaded domain pack (memoized).
 
     Selection: env var ``MORGOTH_DOMAIN`` → default ``crypto``.
-    """
+
+    NO FALLBACK. A missing / malformed pack raises ``DomainPackError``
+    and the process fails to start. Silent fallback to crypto would
+    make a typo in MORGOTH_DOMAIN a data-corruption bug (Postgres and
+    Chroma remain scoped to the WRONG domain while code reads crypto
+    constants); refusing to boot is loudly correct."""
     name = os.environ.get("MORGOTH_DOMAIN", DEFAULT_DOMAIN).strip() or DEFAULT_DOMAIN
-    try:
-        pack = _load(name)
-    except FileNotFoundError:
-        logger.warning(
-            "domain pack {!r} missing; falling back to {!r}", name, DEFAULT_DOMAIN,
-        )
-        pack = _load(DEFAULT_DOMAIN)
+    pack = _load(name)
     logger.debug("domain pack loaded: {}", pack.name)
     return pack
 
