@@ -62,78 +62,23 @@ def _fake_match(content: str, objective_id: str = "obj-1") -> QueryMatch:
     )
 
 
-def _build_brain(llm_client: MagicMock) -> Brain:
-    tool_router = MagicMock()
-    tool_router.get_schemas.return_value = []
-    tool_router.execute_tool = AsyncMock()
-
-    config = MagicMock()
-    config.log_level_thought = False
-    config.max_cycles_per_objective = 5
-    config.autonomous_cycle_minutes = 0
-
-    episodic_memory = MagicMock()
-    episodic_memory.add_text = AsyncMock(return_value="doc-1")
-    episodic_memory.query = AsyncMock(return_value=[])
-
-    persistent_memory = MagicMock()
-    persistent_memory.insert_log = AsyncMock()
-    persistent_memory.add_source_used = AsyncMock(return_value=[])
-    persistent_memory.get_objectives = AsyncMock(return_value=[])
-    persistent_memory.increment_cycle_count = AsyncMock(return_value=0)
-    persistent_memory.get_sources_used = AsyncMock(return_value=[])
-    persistent_memory.update_objective = AsyncMock(return_value={})
-    persistent_memory.add_thesis = AsyncMock(return_value="thesis-1")
-    # 2026-09-26 — brain.run_autonomous_cycle grew async pre-cycle
-    # probes since this fixture was written. Wire AsyncMock for every
-    # method the cycle now touches so bare MagicMock() defaults don't
-    # break tests that only care about the extraction branch.
-    persistent_memory.expire_active_campaign_if_due = AsyncMock(return_value=False)
-    persistent_memory.get_active_campaign = AsyncMock(return_value=None)
-    persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)
-    persistent_memory.record_session_gap_if_any = AsyncMock()
-    persistent_memory.get_active_focus = AsyncMock(return_value=None)
-    # Tests must set claim_next_objective directly (the current cycle
-    # API). Default: no objective claimed. Bridge removed 2026-09-27.
-    persistent_memory.claim_next_objective = AsyncMock(return_value=[])
-    persistent_memory.timeout_stale_objectives = AsyncMock(return_value=[])
-    persistent_memory.record_source_snapshot = AsyncMock()
-    persistent_memory.record_connectivity_transition = AsyncMock()
-    persistent_memory.record_outage_event = AsyncMock()
-    persistent_memory.increment_outage_streak = AsyncMock(return_value=0)
-    persistent_memory.reset_outage_streak = AsyncMock()
-    persistent_memory.record_numeric_fidelity_event = AsyncMock()
-    persistent_memory.record_field_confusion_event = AsyncMock()
-    persistent_memory.get_theses_by_objective = AsyncMock(return_value=[])
-    persistent_memory.get_objective = AsyncMock(return_value=None)
-    persistent_memory.record_ctx_saturation_event = AsyncMock()
-    persistent_memory.record_web_search_cache = AsyncMock()
-    persistent_memory.latest_web_search_cache = AsyncMock(return_value=None)
-    from tests.conftest import _AsyncPoolStub
-    persistent_memory._require_pool = MagicMock(return_value=_AsyncPoolStub())
-
-    return Brain(
-        config=config,
-        llm_client=llm_client,
-        persistent_memory=persistent_memory,
-        episodic_memory=episodic_memory,
-        scheduler=MagicMock(),
-        tool_router=tool_router,
-        agent_manager=MagicMock(),
-        notifier=MagicMock(),
-        websocket_manager=None,
-    )
+from tests.conftest import (
+    build_test_brain,
+    make_cancel_after_first_sleep,
+    claim_then_cancel,
+)
 
 
-def _make_short_sleep():
-    sleep_calls = [0]
+def _build_brain(llm_client, monkeypatch=None) -> Brain:
+    """Local wrapper — shared implementation lives in tests/conftest.py."""
+    if monkeypatch is None:
+        class _Stub:
+            def setenv(self, *a, **kw): pass
+        monkeypatch = _Stub()
+    return build_test_brain(llm_client, monkeypatch)
 
-    async def short_sleep(*_args, **_kwargs):
-        sleep_calls[0] += 1
-        if sleep_calls[0] >= 2:
-            raise asyncio.CancelledError()
 
-    return short_sleep
+_make_short_sleep = make_cancel_after_first_sleep
 
 
 # ---------------------- Persistence: add_thesis / get_theses ----------------------
@@ -717,7 +662,7 @@ async def test_extract_theses_claude_cli_failure_returns_empty(monkeypatch) -> N
     monkeypatch.setattr("self_modify.reflect_llm._claude_cli_call", failing)
     llm_client = MagicMock()
     llm_client.chat = AsyncMock()
-    brain = _build_brain(llm_client)
+    brain = _build_brain(llm_client, monkeypatch)
     result = await brain._extract_theses(
         obj={"objective_id": "obj-1", "title": "X"},
         synthesis_text="text",
@@ -747,7 +692,7 @@ async def test_extract_theses_returns_empty_on_chat_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_forced_completion_stores_extracted_theses() -> None:
+async def test_forced_completion_stores_extracted_theses(monkeypatch) -> None:
     """On forced completion, each extracted thesis is persisted via add_thesis."""
 
     # First chat = synthesis; second chat = thesis extraction returning two theses
@@ -763,7 +708,7 @@ async def test_forced_completion_stores_extracted_theses() -> None:
         _fake_response(content="Cross-source: price down, news mixed."),
         _fake_response(content=thesis_payload),
     ])
-    brain = _build_brain(llm_client)
+    brain = _build_brain(llm_client, monkeypatch)
     obj_row = {
         "objective_id": "obj-1",
         "title": "BTC analysis",
@@ -771,20 +716,28 @@ async def test_forced_completion_stores_extracted_theses() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
-    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(
+        side_effect=claim_then_cancel(obj_row)
+    )
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["get_crypto_price", "get_news"]
     )
+    # Extraction fires only when findings_current is populated from
+    # cycle_payload evidence — seed one payload so both the synthesis
+    # and the extraction branch run.
+    brain._persistent_memory.get_objective = AsyncMock(return_value={
+        "evidence": [{"type": "cycle_payload", "cycle": 1,
+                       "tool_results": [{"tool": "get_crypto_price",
+                                          "success": True,
+                                          "result": {"price_change_24h": -1.6}}]}],
+    })
     brain._episodic_memory.query = AsyncMock(return_value=[
         _fake_match("price -1.6%"),
         _fake_match("news mixed"),
     ])
 
-    with (
-        patch("asyncio.sleep", new=_make_short_sleep()),
-        patch.object(brain, "_write_log_file", new=AsyncMock()),
-    ):
+    with patch.object(brain, "_write_log_file", new=AsyncMock()):
         with pytest.raises(asyncio.CancelledError):
             await brain.run_autonomous_cycle()
 
@@ -797,7 +750,7 @@ async def test_forced_completion_stores_extracted_theses() -> None:
 
 
 @pytest.mark.asyncio
-async def test_extraction_failure_does_not_block_completion() -> None:
+async def test_extraction_failure_does_not_block_completion(monkeypatch) -> None:
     """If extraction's chat blows up, the objective must still reach status=done."""
 
     llm_client = MagicMock()
@@ -807,7 +760,7 @@ async def test_extraction_failure_does_not_block_completion() -> None:
         # extraction raises a non-transient error
         RuntimeError("extraction LLM is down"),
     ])
-    brain = _build_brain(llm_client)
+    brain = _build_brain(llm_client, monkeypatch)
     obj_row = {
         "objective_id": "obj-1",
         "title": "X",
@@ -815,17 +768,16 @@ async def test_extraction_failure_does_not_block_completion() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
-    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(
+        side_effect=claim_then_cancel(obj_row)
+    )
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["get_crypto_price", "get_news"]
     )
     brain._episodic_memory.query = AsyncMock(return_value=[])
 
-    with (
-        patch("asyncio.sleep", new=_make_short_sleep()),
-        patch.object(brain, "_write_log_file", new=AsyncMock()),
-    ):
+    with patch.object(brain, "_write_log_file", new=AsyncMock()):
         with pytest.raises(asyncio.CancelledError):
             await brain.run_autonomous_cycle()
 
@@ -838,12 +790,12 @@ async def test_extraction_failure_does_not_block_completion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_extraction_skipped_when_synthesis_skipped() -> None:
+async def test_extraction_skipped_when_synthesis_skipped(monkeypatch) -> None:
     """With <2 distinct sources, synthesis is None -> extraction is skipped too."""
 
     llm_client = MagicMock()
     llm_client.chat = AsyncMock(return_value=_fake_response(content="should not be called"))
-    brain = _build_brain(llm_client)
+    brain = _build_brain(llm_client, monkeypatch)
     obj_row = {
         "objective_id": "obj-1",
         "title": "X",
@@ -851,15 +803,14 @@ async def test_extraction_skipped_when_synthesis_skipped() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
-    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(
+        side_effect=claim_then_cancel(obj_row)
+    )
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(return_value=["get_crypto_price"])
     brain._episodic_memory.query = AsyncMock(return_value=[])
 
-    with (
-        patch("asyncio.sleep", new=_make_short_sleep()),
-        patch.object(brain, "_write_log_file", new=AsyncMock()),
-    ):
+    with patch.object(brain, "_write_log_file", new=AsyncMock()):
         with pytest.raises(asyncio.CancelledError):
             await brain.run_autonomous_cycle()
 

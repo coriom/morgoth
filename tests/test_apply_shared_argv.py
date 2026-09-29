@@ -29,7 +29,7 @@ def test_apply_uses_xdist_workers_constant() -> None:
     assert "_SANDBOX_XDIST_WORKERS" in src
 
 
-def test_apply_argv_carries_marker_exclusion_socket_cut_and_timeout(tmp_path) -> None:
+def test_apply_argv_carries_marker_exclusion_socket_cut_and_timeout(tmp_path, monkeypatch) -> None:
     """Materialize the argv (via a mocked subprocess) and check the
     shape. A grep on the source alone would miss a future refactor
     that inlines the args. Seeds a minimal live-tree stand-in so
@@ -38,6 +38,14 @@ def test_apply_argv_carries_marker_exclusion_socket_cut_and_timeout(tmp_path) ->
     src = tmp_path / "repo"
     src.mkdir()
     (src / "seed.txt").write_text("")
+    # 2026-09-29: apply._run_live_pytest calls wrap_command_in_sandbox
+    # which fail-closes if sandbox_posture reports missing layers.
+    # Under `morgoth test`'s nested bwrap, systemd-run cgroup is
+    # absent — force ok=True so this pure argv-shape test can proceed.
+    monkeypatch.setattr(G, "sandbox_posture", lambda: {
+        "isolated": True, "confined": True, "cgroup_bound": True,
+        "ok": True, "reason": "",
+    })
     calls: list[list[str]] = []
     def _spy(argv, *a, **kw):
         calls.append(argv)

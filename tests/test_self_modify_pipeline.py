@@ -157,7 +157,13 @@ async def test_gate_tests_records_pending_approval_on_pytest_zero(tmp_path: Path
     fake_completed = subprocess.CompletedProcess(
         args=[], returncode=0, stdout="1 passed", stderr=""
     )
-    with patch.object(gates, "_run_pytest_in_sandbox", return_value=fake_completed):
+    # 2026-09-29: sandbox_posture is UNAVAILABLE inside a nested bwrap
+    # (no systemd-run cgroup) — force ok=True so the gate proceeds.
+    with patch.object(gates, "sandbox_posture", return_value={
+             "isolated": True, "confined": True, "cgroup_bound": True,
+             "ok": True, "reason": "",
+         }), \
+         patch.object(gates, "_run_pytest_in_sandbox", return_value=fake_completed):
         result = await gates.gate_tests(store, proposal, repo_root=tmp_path)
 
     assert result == P.STATUS_PENDING_APPROVAL
@@ -167,6 +173,10 @@ async def test_gate_tests_records_pending_approval_on_pytest_zero(tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_gate_tests_records_tests_failed_on_pytest_nonzero(tmp_path: Path) -> None:
+    # 2026-09-28: gate_tests now compares baseline vs proposal junit
+    # XML — a nonzero exit alone does not fail the gate; only NEW
+    # failures (present in proposal, absent in baseline) do. Mock
+    # _junit_failing_ids so the proposal set surfaces one new id.
     (tmp_path / "core").mkdir()
     (tmp_path / "core" / "__init__.py").write_text("")
     (tmp_path / "tools").mkdir()
@@ -180,15 +190,30 @@ async def test_gate_tests_records_tests_failed_on_pytest_nonzero(tmp_path: Path)
         "content": "raise SystemExit(1)\n",
     }
     fake_completed = subprocess.CompletedProcess(
-        args=[], returncode=1, stdout="", stderr="E   ImportError"
+        args=[], returncode=1, stdout="", stderr="E   ImportError\nFAILED tests/test_new::test_x"
     )
-    with patch.object(gates, "_run_pytest_in_sandbox", return_value=fake_completed):
+    # First _junit_failing_ids call = baseline (empty); second = proposal (one new failure).
+    junit_returns = iter([
+        (set(), set()),
+        ({"tests/test_new.py::test_x"}, set()),
+        # Flake-guard reruns: node reproduces on proposal, not on baseline.
+        ({"tests/test_new.py::test_x"}, set()),
+        (set(), set()),
+    ])
+    with patch.object(gates, "sandbox_posture", return_value={
+             "isolated": True, "confined": True, "cgroup_bound": True,
+             "ok": True, "reason": "",
+         }), \
+         patch.object(gates, "_run_pytest_in_sandbox", return_value=fake_completed), \
+         patch.object(gates, "_junit_failing_ids", side_effect=lambda _p: next(junit_returns)), \
+         patch.object(gates, "_rerun_ids_alone",
+                       side_effect=lambda sbx, ids, xml: (ids, set()) if "proposal_" in str(sbx) else (set(), set())):
         result = await gates.gate_tests(store, proposal, repo_root=tmp_path)
 
     assert result == P.STATUS_TESTS_FAILED
     reason = store.update_status.await_args.args[2]
-    assert "exit=1" in reason
-    assert "ImportError" in reason
+    assert "NEW failure" in reason
+    assert "test_x" in reason
 
 
 @pytest.mark.asyncio

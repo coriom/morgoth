@@ -50,95 +50,41 @@ def _fake_match(content: str, objective_id: str = "obj-1") -> QueryMatch:
     )
 
 
-def _build_brain(llm_client: MagicMock) -> Brain:
-    tool_router = MagicMock()
-    tool_router.get_schemas.return_value = []
-    tool_router.has_tool.return_value = True
-    tool_router.list_names.return_value = []
-    tool_router.execute_tool = AsyncMock(
-        return_value={"success": True, "result": {}, "error": None, "metadata": {}}
-    )
-
-    config = MagicMock()
-    config.log_level_thought = False
-    config.max_cycles_per_objective = 5
-    config.autonomous_cycle_minutes = 0
-
-    episodic_memory = MagicMock()
-    episodic_memory.add_text = AsyncMock(return_value="doc-1")
-    episodic_memory.query = AsyncMock(return_value=[])
-
-    persistent_memory = MagicMock()
-    persistent_memory.insert_log = AsyncMock()
-    persistent_memory.add_source_used = AsyncMock(return_value=[])
-    persistent_memory.get_objectives = AsyncMock(return_value=[])
-    persistent_memory.increment_cycle_count = AsyncMock(return_value=0)
-    persistent_memory.get_sources_used = AsyncMock(return_value=[])
-    persistent_memory.update_objective = AsyncMock(return_value={})
-    # 2026-09-26: brain grew async pre-cycle probes since these tests
-    # were written; bare MagicMocks were returning non-awaitables from
-    # `await pm.<method>()`. Wire AsyncMocks for every method the cycle
-    # now touches so the loop reaches the branch under test.
-    persistent_memory.expire_active_campaign_if_due = AsyncMock(return_value=False)
-    persistent_memory.get_active_campaign = AsyncMock(return_value=None)
-    persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)
-    persistent_memory.record_session_gap_if_any = AsyncMock()
-    persistent_memory.get_active_focus = AsyncMock(return_value=None)
-    # Tests must set claim_next_objective directly (the current cycle
-    # API). Default: no objective claimed.
-    persistent_memory.claim_next_objective = AsyncMock(return_value=[])
-    persistent_memory.timeout_stale_objectives = AsyncMock(return_value=[])
-    persistent_memory.record_source_snapshot = AsyncMock()
-    persistent_memory.record_connectivity_transition = AsyncMock()
-    persistent_memory.record_outage_event = AsyncMock()
-    persistent_memory.increment_outage_streak = AsyncMock(return_value=0)
-    persistent_memory.reset_outage_streak = AsyncMock()
-    persistent_memory.record_numeric_fidelity_event = AsyncMock()
-    persistent_memory.record_field_confusion_event = AsyncMock()
-    persistent_memory.get_theses_by_objective = AsyncMock(return_value=[])
-    persistent_memory.get_objective = AsyncMock(return_value=None)
-    persistent_memory.record_ctx_saturation_event = AsyncMock()
-    # 2026-09-27: shared async-pool stub — the six previously-per-test
-    # patches for pool.acquire()'s async-context-manager plumbing are
-    # replaced by ONE helper. See tests/conftest._AsyncPoolStub.
-    from tests.conftest import _AsyncPoolStub
-    persistent_memory._require_pool = MagicMock(return_value=_AsyncPoolStub())
-
-    return Brain(
-        config=config,
-        llm_client=llm_client,
-        persistent_memory=persistent_memory,
-        episodic_memory=episodic_memory,
-        scheduler=MagicMock(),
-        tool_router=tool_router,
-        agent_manager=MagicMock(),
-        notifier=MagicMock(),
-        websocket_manager=None,
-    )
+from tests.conftest import (
+    build_test_brain,
+    make_cancel_after_first_sleep,
+    claim_then_cancel,
+)
 
 
-def _make_short_sleep():
-    """Return an async sleep that runs the cycle body once then cancels."""
+def _build_brain(llm_client, monkeypatch=None) -> Brain:
+    """Local wrapper — shared implementation lives in tests/conftest.py.
+    monkeypatch is optional so unit tests that never touch
+    run_autonomous_cycle (e.g. the _synthesize_objective unit tests
+    below) can still call this with a stub monkeypatch."""
+    if monkeypatch is None:
+        # Unit tests only exercising _synthesize_objective / _extract_theses
+        # don't need env silencing — they never enter the loop. A stub
+        # object with a setenv no-op keeps the ONE-factory contract without
+        # forcing every unit test to receive a real monkeypatch.
+        class _Stub:
+            def setenv(self, *a, **kw): pass
+        monkeypatch = _Stub()
+    return build_test_brain(llm_client, monkeypatch)
 
-    sleep_calls = [0]
 
-    async def short_sleep(*_args, **_kwargs):
-        sleep_calls[0] += 1
-        if sleep_calls[0] >= 2:
-            raise asyncio.CancelledError()
-
-    return short_sleep
+_make_short_sleep = make_cancel_after_first_sleep
 
 
 @pytest.mark.asyncio
-async def test_synthesis_entry_added_on_forced_completion() -> None:
+async def test_synthesis_entry_added_on_forced_completion(monkeypatch) -> None:
     """T1: forced-completion with >=2 sources stores a synthesis evidence entry."""
 
     llm_client = MagicMock()
     llm_client.chat = AsyncMock(return_value=_fake_response(
         content="Cross-source: news sentiment aligns with the price surge while reddit lags."
     ))
-    brain = _build_brain(llm_client)
+    brain = _build_brain(llm_client, monkeypatch)
     obj_row = {
         "objective_id": "obj-1",
         "title": "BTC analysis",
@@ -146,22 +92,30 @@ async def test_synthesis_entry_added_on_forced_completion() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
-    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(
+        side_effect=claim_then_cancel(obj_row)
+    )
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["web_search", "get_news", "get_crypto_price"]
     )
+    # Extraction fires only when findings_current is populated (from
+    # cycle_payload evidence on the objective). Seed one payload so
+    # the forced-completion path runs BOTH synthesis and extraction.
+    brain._persistent_memory.get_objective = AsyncMock(return_value={
+        "evidence": [{"type": "cycle_payload", "cycle": 1,
+                       "tool_results": [{"tool": "get_crypto_price",
+                                          "success": True,
+                                          "result": {"price_usd": 64000}}]}],
+    })
     brain._episodic_memory.query = AsyncMock(return_value=[
         _fake_match("BTC current price 64k"),
         _fake_match("News: positive macro signals"),
     ])
 
-    with (
-        patch("asyncio.sleep", new=_make_short_sleep()),
-        patch.object(brain, "_write_log_file", new=AsyncMock()),
-    ):
-        # CancelledError propagates (asyncio contract); test's patched
-        # sleep raises it to end the loop, run_autonomous_cycle re-raises.
+    with patch.object(brain, "_write_log_file", new=AsyncMock()):
+        # CancelledError raised by claim_next_objective's 2nd call
+        # after the first cycle completes; run_autonomous_cycle re-raises.
         with pytest.raises(asyncio.CancelledError):
             await brain.run_autonomous_cycle()
 
@@ -183,12 +137,12 @@ async def test_synthesis_entry_added_on_forced_completion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_synthesis_failure_does_not_block_completion() -> None:
+async def test_synthesis_failure_does_not_block_completion(monkeypatch) -> None:
     """T2: synthesis Ollama failure still completes the objective and records a fallback."""
 
     llm_client = MagicMock()
     llm_client.chat = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
-    brain = _build_brain(llm_client)
+    brain = _build_brain(llm_client, monkeypatch)
     obj_row = {
         "objective_id": "obj-1",
         "title": "X",
@@ -196,7 +150,9 @@ async def test_synthesis_failure_does_not_block_completion() -> None:
         "status": "pending",
     }
     brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
-    brain._persistent_memory.claim_next_objective = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(
+        side_effect=claim_then_cancel(obj_row)
+    )
     brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["web_search", "get_news"]
@@ -205,12 +161,7 @@ async def test_synthesis_failure_does_not_block_completion() -> None:
         _fake_match("finding A"),
     ])
 
-    with (
-        patch("asyncio.sleep", new=_make_short_sleep()),
-        patch.object(brain, "_write_log_file", new=AsyncMock()),
-    ):
-        # CancelledError propagates (asyncio contract); test's patched
-        # sleep raises it to end the loop, run_autonomous_cycle re-raises.
+    with patch.object(brain, "_write_log_file", new=AsyncMock()):
         with pytest.raises(asyncio.CancelledError):
             await brain.run_autonomous_cycle()
 

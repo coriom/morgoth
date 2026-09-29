@@ -172,10 +172,17 @@ async def test_dedupe_against_registered_and_negative_and_existing() -> None:
     async def _no_sleep(secs: float) -> None:
         return None
 
+    # Pretend every host resolves to a public IP — the DNS-guard tests
+    # are elsewhere; here we're testing dedupe logic. Under
+    # `morgoth test` pytest-socket blocks real getaddrinfo.
+    import socket as _socket
+    fake_infos = [(_socket.AF_INET, _socket.SOCK_STREAM, 0, "",
+                    ("104.16.0.1", 0))]
     with patch(
         "scripts.compile_wiki._registered_tools_offline",
         return_value=[_FakeTool()],
-    ), patch("self_modify.scout.asyncio.sleep", _no_sleep), patch(
+    ), patch.object(scout.socket, "getaddrinfo", return_value=fake_infos), \
+         patch("self_modify.scout.asyncio.sleep", _no_sleep), patch(
         "self_modify.scout.httpx.AsyncClient"
     ) as mock_client:
         # Catalog fetch: return the fixture markdown.
@@ -395,8 +402,13 @@ def test_prompt_includes_leads_section_when_populated() -> None:
 
 def test_host_public_reason_distinguishes_resolve_failure() -> None:
     """A resolve failure returns 'dns resolve failed', NOT the old
-    misleading 'not a public DNS host'."""
-    reason = scout._host_looks_public("bitnodes.io.definitely.does.not.exist.invalid")
+    misleading 'not a public DNS host'. Under `morgoth test`, sockets
+    are blocked by pytest-socket → we simulate the unresolvable host
+    by patching getaddrinfo to raise gaierror directly."""
+    import socket as _socket
+    with patch.object(scout.socket, "getaddrinfo",
+                       side_effect=_socket.gaierror("Name or service not known")):
+        reason = scout._host_looks_public("bitnodes.io.definitely.does.not.exist.invalid")
     assert reason is not None
     assert "resolve failed" in reason.lower()
 
@@ -434,7 +446,10 @@ def test_reflect_url_gate_message_distinguishes_resolve_from_private() -> None:
     """A resolve failure produces 'dns resolve failed' in the reject
     reason, not the pre-fix 'not a public DNS host' string that
     misled the operator on bitnodes.io."""
-    err = reflect._url_passes_gate("https://bitnodes.io.does.not.exist.invalid/x")
+    import socket as _socket
+    with patch.object(reflect.socket, "getaddrinfo",
+                       side_effect=_socket.gaierror("Name or service not known")):
+        err = reflect._url_passes_gate("https://bitnodes.io.does.not.exist.invalid/x")
     assert err is not None
     assert "dns resolve failed" in err.lower()
     assert "not a public DNS host" not in err

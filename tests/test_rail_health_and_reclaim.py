@@ -171,8 +171,11 @@ def test_env_example_lists_every_touched_var():
     Add-a-var-forget-to-document is the classic drift — grep-lock the ones
     the codebase actively consumes."""
     example = Path(".env.example").read_text()
+    # 2026-09-25: the runtime env is OLLAMA_BASE_URL (full URL, not
+    # host). The test previously asserted OLLAMA_HOST which was never
+    # consumed by config.py.
     required = (
-        "POSTGRES_URL", "OLLAMA_HOST", "OLLAMA_PRIMARY_MODEL",
+        "POSTGRES_URL", "OLLAMA_BASE_URL", "OLLAMA_PRIMARY_MODEL",
         "AUTONOMOUS_CYCLE_MINUTES", "MAX_CYCLES_PER_OBJECTIVE",
         "FRED_API_KEY", "SHADOW_DELEGATION", "AUTO_APPROVE_ENABLED",
         "TRACK_RECORD_ENABLED", "ORPHAN_RECLAIM_MINUTES",

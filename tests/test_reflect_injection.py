@@ -278,6 +278,9 @@ async def test_tool_name_collision_rejected() -> None:
 # ---------- digest uniqueness ---------------------------------------------
 
 def test_duplicate_digest_fields_rejected() -> None:
+    # Error phrasing updated 2026-09: names the duplicated field
+    # instead of the abstract word "unique". Assertion follows suit.
     spec = dict(BASE_SPEC, digest_fields=["a", "a", "b"])
     err = reflect._spec_is_well_formed(spec)
-    assert err is not None and "unique" in err
+    assert err is not None
+    assert "duplicate" in err and "'a'" in err

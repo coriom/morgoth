@@ -278,7 +278,11 @@ async def test_gate_tests_status_reason_contains_isolation_on_marker(
         "change_type": "new_file",
         "content": "# harmless\n",
     }
-    with patch.object(gates, "_run_pytest_in_sandbox",
+    with patch.object(gates, "sandbox_posture", return_value={
+             "isolated": True, "confined": True, "cgroup_bound": True,
+             "ok": True, "reason": "",
+         }), \
+         patch.object(gates, "_run_pytest_in_sandbox",
                       return_value=_stub_completed(0, isolated=True)):
         result = await gates.gate_tests(store, proposal, repo_root=tmp_path)
     assert result == P.STATUS_PENDING_APPROVAL
@@ -302,7 +306,11 @@ async def test_gate_tests_status_reason_contains_isolation_off_marker(
         "change_type": "new_file",
         "content": "# harmless\n",
     }
-    with patch.object(gates, "_run_pytest_in_sandbox",
+    with patch.object(gates, "sandbox_posture", return_value={
+             "isolated": True, "confined": True, "cgroup_bound": True,
+             "ok": True, "reason": "",
+         }), \
+         patch.object(gates, "_run_pytest_in_sandbox",
                       return_value=_stub_completed(0, isolated=False)):
         result = await gates.gate_tests(store, proposal, repo_root=tmp_path)
     assert result == P.STATUS_PENDING_APPROVAL
@@ -314,6 +322,9 @@ async def test_gate_tests_status_reason_contains_isolation_off_marker(
 async def test_gate_tests_failure_reason_carries_isolation_marker(
     tmp_path: Path,
 ) -> None:
+    # 2026-09-28: gate_tests fails only when the proposal introduces a
+    # NEW failing test relative to baseline. Force one new node via
+    # mocked junit + flake-guard so the isolation marker path fires.
     (tmp_path / "core").mkdir()
     (tmp_path / "core" / "__init__.py").write_text("")
     (tmp_path / "tools").mkdir()
@@ -330,7 +341,18 @@ async def test_gate_tests_failure_reason_carries_isolation_marker(
         args=[], returncode=1, stdout="", stderr="E ConnectError",
     )
     fake.isolated = True  # type: ignore[attr-defined]
-    with patch.object(gates, "_run_pytest_in_sandbox", return_value=fake):
+    junit_returns = iter([
+        (set(), set()),                                 # baseline
+        ({"tests/t.py::test_new"}, set()),              # proposal
+    ])
+    with patch.object(gates, "sandbox_posture", return_value={
+             "isolated": True, "confined": True, "cgroup_bound": True,
+             "ok": True, "reason": "",
+         }), \
+         patch.object(gates, "_run_pytest_in_sandbox", return_value=fake), \
+         patch.object(gates, "_junit_failing_ids", side_effect=lambda _p: next(junit_returns)), \
+         patch.object(gates, "_rerun_ids_alone",
+                       side_effect=lambda sbx, ids, xml: (ids, set()) if "proposal_" in str(sbx) else (set(), set())):
         result = await gates.gate_tests(store, proposal, repo_root=tmp_path)
     assert result == P.STATUS_TESTS_FAILED
     reason = store.update_status.await_args.args[2]

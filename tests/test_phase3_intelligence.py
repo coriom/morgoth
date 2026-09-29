@@ -92,8 +92,11 @@ async def test_fred_observations_tool_normalizes_missing_values(
 
     assert result["success"] is True
     assert result["result"]["series_id"] == "UNRATE"
-    assert result["result"]["observations"][0]["value"] == 4.0
-    assert result["result"]["observations"][1]["value"] is None
+    # 2026-09-21: DESC order (newest first) preserved so [0] is the
+    # 2026-02 "." → None; [1] is the 2026-01 "4.0" → 4.0. Test was
+    # previously asserting the reverse (oldest-first) order.
+    assert result["result"]["observations"][0]["value"] is None
+    assert result["result"]["observations"][1]["value"] == 4.0
 
 
 async def test_technical_analysis_tool_returns_indicators() -> None:

@@ -260,31 +260,16 @@ async def test_no_contradiction_when_subjects_differ() -> None:
 
 
 @pytest.mark.asyncio
-async def test_detector_failure_does_not_block_completion() -> None:
+async def test_detector_failure_does_not_block_completion(monkeypatch) -> None:
     """A detector failure during forced completion must NOT prevent status=done.
 
     Wire-level check: even if get_theses raises, run_autonomous_cycle's forced-
     completion path still reaches the INTENTIONAL continue.
     """
-
-    brain = _build_brain()
-    obj_row = {
-        "objective_id": "obj-1",
-        "title": "X",
-        "description": "Y",
-        "status": "pending",
-    }
-    brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
-    brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
-    brain._persistent_memory.get_sources_used = AsyncMock(
-        return_value=["get_crypto_price", "get_news"]
-    )
-    # Synthesis + extraction both succeed; contradiction loader explodes.
-    brain._persistent_memory.get_theses = AsyncMock(
-        side_effect=RuntimeError("DB down")
-    )
-
-    # mock the LLM: 1st call = synthesis, 2nd = extraction (empty)
+    # Use the shared cycle-body factory from conftest so pre-cycle
+    # side-channels are silenced and the loop exits via
+    # claim_then_cancel after ONE cycle.
+    from tests.conftest import build_test_brain, claim_then_cancel
     from core.llm_client import ChatMessage, ChatResponse
 
     def _resp(content: str) -> ChatResponse:
@@ -293,24 +278,43 @@ async def test_detector_failure_does_not_block_completion() -> None:
             message=ChatMessage(role="assistant", content=content, tool_calls=[]),
             done=True,
         )
-
-    brain._llm_client.chat = AsyncMock(side_effect=[
+    llm_client = MagicMock()
+    llm_client.chat = AsyncMock(side_effect=[
         _resp("Some synthesis text."),
         _resp("[]"),
     ])
+    brain = build_test_brain(llm_client, monkeypatch)
+    obj_row = {
+        "objective_id": "obj-1",
+        "title": "X",
+        "description": "Y",
+        "status": "pending",
+    }
+    brain._persistent_memory.get_objectives = AsyncMock(return_value=[obj_row])
+    brain._persistent_memory.claim_next_objective = AsyncMock(
+        side_effect=claim_then_cancel(obj_row)
+    )
+    brain._persistent_memory.increment_cycle_count = AsyncMock(return_value=5)
+    brain._persistent_memory.get_sources_used = AsyncMock(
+        return_value=["get_crypto_price", "get_news"]
+    )
+    # Seed cycle_payload so findings_current is non-empty (extraction runs).
+    brain._persistent_memory.get_objective = AsyncMock(return_value={
+        "evidence": [{"type": "cycle_payload", "cycle": 1,
+                       "tool_results": [{"tool": "get_crypto_price",
+                                          "success": True,
+                                          "result": {"price_usd": 64000}}]}],
+    })
+    # Contradiction loader explodes — the failure under test.
+    brain._persistent_memory.get_theses = AsyncMock(
+        side_effect=RuntimeError("DB down")
+    )
+    brain._persistent_memory.record_contradiction = AsyncMock(return_value="contra-1")
+    brain._persistent_memory.update_thesis_status = AsyncMock(return_value=True)
 
-    sleep_calls = [0]
-
-    async def short_sleep(*_a, **_kw):
-        sleep_calls[0] += 1
-        if sleep_calls[0] >= 2:
-            raise asyncio.CancelledError()
-
-    with (
-        patch("asyncio.sleep", new=short_sleep),
-        patch.object(brain, "_write_log_file", new=AsyncMock()),
-    ):
-        await brain.run_autonomous_cycle()
+    with patch.object(brain, "_write_log_file", new=AsyncMock()):
+        with pytest.raises(asyncio.CancelledError):
+            await brain.run_autonomous_cycle()
 
     # objective still reached status=done
     update_calls = brain._persistent_memory.update_objective.call_args_list

@@ -368,6 +368,11 @@ async def _drive(
                AsyncMock(return_value={
                    "verdict": "APPROVE", "axes": {}, "reasons": [],
                    "engine": "test", "prompt_version": "test",
+               })), \
+         patch("self_modify.reflect.liveness.run_liveness_probe",
+               AsyncMock(return_value={
+                   "url": "x", "hits": [], "n_hits": 0,
+                   "digest_fields": [],
                })):
         result = await reflect.run_reflection(
             _fake_config(), pm, MagicMock(), provider="claude-cli",

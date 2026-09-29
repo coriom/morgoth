@@ -255,6 +255,8 @@ async def _run_reflect_with_body(body: Any) -> dict[str, Any]:
     store_mock.count_by_status_and_author = AsyncMock(return_value=0)
     store_mock.submit = AsyncMock(return_value="prop-1")
     store_mock.get = AsyncMock(return_value={"proposal_id": "prop-1"})
+    # post_submission_checks writes the settled status back on the row.
+    store_mock.update_status = AsyncMock()
 
     fake_resp = SimpleNamespace(
         status_code=200,

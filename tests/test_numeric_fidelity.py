@@ -99,13 +99,17 @@ class TestCheckThesisPass:
         # locked at 'no_number_in_detail' for stability.
         assert act.reason == "no_number_in_detail"
 
-    def test_no_tool_output_passes_with_reason(self):
+    def test_no_tool_output_drops_as_unverified_absent(self):
         # Model cites get_fear_greed_index but findings has get_news only.
+        # 2026-09-25: the gate no longer PASSes on missing reference —
+        # a citation without a reference in the current cycle is
+        # unverifiable and gets dropped as unverified_absent_everywhere.
         act = check_thesis(
             _thesis("X", "high", "get_fear_greed_index", "value 63"),
             _findings("get_news", "some text 100"),
         )
-        assert act.action == "pass" and act.reason == "no_tool_output"
+        assert act.action == "drop"
+        assert act.reason == "unverified_absent_everywhere"
 
     def test_no_source_named_passes_with_reason(self):
         # evidence entry missing 'source' field entirely.
@@ -116,13 +120,17 @@ class TestCheckThesisPass:
         act = check_thesis(thesis, _findings("get_x", "63"))
         assert act.action == "pass" and act.reason == "no_tool_named"
 
-    def test_no_candidates_passes_when_tool_output_has_no_numbers(self):
+    def test_no_candidates_drops_when_tool_output_has_no_numbers(self):
+        # 2026-09-25: post-SPLIT, a citation whose named tool produced
+        # a digest with no numeric candidates is UNVERIFIABLE — the
+        # gate drops it (was: pass no_candidates). The old "PASS" gave
+        # a fabricated number a free ride through the pipeline.
         act = check_thesis(
             _thesis("X", "high", "get_x", "value 63"),
             _findings("get_x", "FAILED: DNS error"),
         )
-        # digest exists but has no numeric candidates → PASS with reason.
-        assert act.action == "pass" and act.reason == "no_candidates"
+        assert act.action == "drop"
+        assert act.reason == "unverified_absent_everywhere"
 
 
 class TestCheckThesisRewrite:
@@ -169,14 +177,16 @@ class TestCheckThesisDrop:
     def test_number_present_in_different_tool_is_dropped(self):
         # Model cites get_x but the value 63 only exists in get_y's
         # output. Behaviour LOCKED: gate does NOT cross tool boundaries.
-        # The thesis is attributing the value to the wrong tool — drop.
+        # 2026-09-25: post-SPLIT, when get_x has no digest at all the
+        # gate drops as unverified_absent_everywhere (was pass
+        # no_tool_output). Cross-tool attribution is a fabrication
+        # signal — dropping is the correct enforcement.
         act = check_thesis(
             _thesis("X", "high", "get_x", "value 63"),
             [f"TOOL RESULTS:\n- get_y: {{\"value\": 63}}"],
         )
-        assert act.action == "pass"
-        # get_x has no output at all → PASS with reason (not DROP).
-        assert act.reason == "no_tool_output"
+        assert act.action == "drop"
+        assert act.reason == "unverified_absent_everywhere"
 
 
 class TestUnitScaledBehaviour:

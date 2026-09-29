@@ -157,10 +157,19 @@ async def _read_json_file(path: Path) -> dict[str, Any]:
     return await asyncio.to_thread(_reader)
 
 
-def _load_environment(env_path: Path = ENV_PATH) -> None:
-    """Load environment variables from ``.env`` if present."""
+def _load_environment(env_path: Path | None = None) -> None:
+    """Load environment variables from ``.env`` if present.
 
-    load_dotenv(dotenv_path=env_path, override=False)
+    NOTE: the resolved path is read from the module-level ``ENV_PATH``
+    at CALL TIME (not def-time) so tests that reassign ``ENV_PATH`` in
+    conftest actually redirect subsequent load_config calls. Using a
+    ``Path = ENV_PATH`` default arg here would freeze the production
+    path at import — the swap wouldn't stick and hermetic tests would
+    silently read the production ``.env``.
+    """
+
+    load_dotenv(dotenv_path=(env_path if env_path is not None else ENV_PATH),
+                override=False)
 
 
 async def load_permissions(path: Path = PERMS_PATH) -> MorgothPermissions:

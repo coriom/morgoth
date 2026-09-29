@@ -339,6 +339,9 @@ async def test_reflect_submits_valid_spec_with_proposed_by_morgoth() -> None:
     store_mock.count_by_status_and_author = AsyncMock(return_value=0)
     store_mock.submit = AsyncMock(return_value="prop-1")
     store_mock.get = AsyncMock(return_value={"proposal_id": "prop-1"})
+    # 2026-09-29: post-submission checks now update the row's status
+    # after the liveness/artifact probes settle — mock the writer.
+    store_mock.update_status = AsyncMock()
 
     # Response body carries each digest field as a scalar so the shape
     # gate passes — this is the "clean end-to-end" happy path.

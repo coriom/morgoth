@@ -60,13 +60,18 @@ def test_env_override_propagates_to_both_branches() -> None:
             env["REFLECT_LLM_TIMEOUT_SECONDS"] = override
         else:
             env.pop("REFLECT_LLM_TIMEOUT_SECONDS", None)
+        # 2026-09-29: cwd was hard-coded to /home/corio/Morgoth/morgoth,
+        # which doesn't exist inside the `morgoth test` bwrap sandbox
+        # (repo is copied to a tmp path). Use the CURRENT process's
+        # working directory so the test works in both the developer
+        # shell and the hermetic sandbox.
         result = subprocess.run(
             [sys.executable, "-c",
              "from self_modify import reflect_llm as r; "
              "print(r.REFLECT_LLM_TIMEOUT_SECONDS, "
              "r.CLAUDE_CLI_TIMEOUT_SECS, r.ANTHROPIC_TIMEOUT_SECS)"],
             env=env,
-            cwd="/home/corio/Morgoth/morgoth",
+            cwd=os.getcwd(),
             capture_output=True,
             text=True,
             timeout=15,
