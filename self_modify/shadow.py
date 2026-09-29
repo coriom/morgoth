@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from typing import Any
 
@@ -75,7 +76,7 @@ PROMPT_VERSION = "v2"
 # a miss, it's a caution that landed on the right row. APPROVE-side
 # is strict — the dangerous direction (shadow-APPROVE where operator
 # rejected) must never inflate accord.
-_ENGINE = "claude-cli"
+_ENGINE = "codex-cli"
 _SAMPLE_GAP_SECS = 60
 _SAMPLE_TIMEOUT_SECS = 15.0
 
@@ -532,7 +533,7 @@ async def run_shadow_verdict(
     config: AppConfig,
     pm: PersistentMemory,
     persist: bool = True,
-    engine: str = _ENGINE,
+    engine: str | None = None,
     endpoint_sampler: Any = None,
     llm_caller: Any = None,
 ) -> dict[str, Any]:
@@ -546,6 +547,7 @@ async def run_shadow_verdict(
     agreement without polluting the calibration table with duplicate
     verdicts on already-decided rows.
     """
+    engine = engine or os.environ.get("SHADOW_PROVIDER") or os.environ.get("MORGOTH_LLM_SHADOW") or _ENGINE
     facts = extract_spec_facts(proposal.get("content") or "")
     # 2026-09-29 ONE EXTRACTOR: pass the RAW digest_fields into
     # sample_endpoint. resolve_digest_fields handles both plain

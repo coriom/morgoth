@@ -44,7 +44,7 @@ if _FIXTURE_ENV.exists():
     # every hermetic test path sees them — otherwise reflect's
     # gate-selftest preflight would spawn a real bwrap sandbox on
     # every run_reflection call and hang the test.
-    _TEST_ENV_APPLY = ("MORGOTH_REFLECT_GATE_PREFLIGHT",)
+    _TEST_ENV_APPLY = ("MORGOTH_REFLECT_GATE_PREFLIGHT", "MORGOTH_LLM_THESIS", "MORGOTH_LLM_SYNTHESIS", "REFLECT_PROVIDER", "THESIS_GENERATOR")
     _txt = _FIXTURE_ENV.read_text(encoding="utf-8")
     for _ln in _txt.splitlines():
         _ln = _ln.strip()
@@ -336,14 +336,9 @@ def _stub_embedding_fn(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _guard_claude_subprocess(request, monkeypatch):
-    """Hermetic tests MUST NOT spawn the real `claude` binary. Guard
-    both blocking + async subprocess spawns; a bare `claude` in argv
-    fails loudly. Integration tests (opted-in via the marker) are
-    exempt — they may exercise real dependencies."""
-    if request.node.get_closest_marker("integration"):
-        yield
-        return
-
+    """Never run real Codex (including probes); mock LLM subprocesses.
+    Claude inference is blocked too; legacy non-inference probes remain allowed.
+    """
     import subprocess as _sp
     import asyncio as _aio
     _orig_run = _sp.run
@@ -361,6 +356,10 @@ def _guard_claude_subprocess(request, monkeypatch):
         if not argv:
             return
         head = str(argv[0])
+        if Path(head).name in {"sh", "bash", "dash", "zsh", "env"} and any("codex" in str(a) for a in argv[1:]):
+            raise AssertionError("real codex is forbidden in pytest; mock subprocess")
+        if Path(head).name == "codex" or (isinstance(argv[0], str) and "codex " in argv[0]):
+            raise AssertionError("real codex is forbidden in pytest; mock subprocess")
         if not (head.endswith("/claude") or head == "claude"):
             return
         rest = [str(a) for a in argv[1:]]
@@ -376,6 +375,8 @@ def _guard_claude_subprocess(request, monkeypatch):
     def popen(argv, *a, **kw): _forbid(argv); return _orig_popen(argv, *a, **kw)
     async def cse(*args, **kw): _forbid(list(args)); return await _orig_asubx(*args, **kw)
     async def css(cmd, *a, **kw):
+        if "codex" in cmd:
+            raise AssertionError("real codex is forbidden in pytest; mock subprocess")
         if ("claude " in cmd and "--version" not in cmd and "--help" not in cmd
                 and cmd.strip() != "claude"):
             raise AssertionError(f"hermetic test attempted to shell-spawn `{cmd[:60]}`")

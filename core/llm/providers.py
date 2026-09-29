@@ -155,6 +155,9 @@ def get_provider(
         if ollama_client is None:
             raise ValueError("ollama provider requires an OllamaLLMClient instance")
         return OllamaProvider(ollama_client, model)
+    if name == "codex-cli":
+        from core.llm.codex_cli import CodexCliProvider
+        return CodexCliProvider(model)
     if name == "claude-cli":
         return ClaudeCliProvider(model)
     if name == "api":
@@ -176,6 +179,7 @@ def probe_reachability() -> dict[str, tuple[bool, str]]:
     # ollama: assume reachable if the module can import — the actual
     # /api/tags probe requires the shared client, done at cycle start.
     out["ollama"] = (True, "checked at cycle start via health_check()")
+    out["codex-cli"] = (shutil.which("codex") is not None, "binary presence only; qualification at first call")
     # claude-cli: CLI on PATH?
     if shutil.which("claude") is not None:
         out["claude-cli"] = (True, "on PATH")

@@ -911,6 +911,7 @@ async def _cmd_env(store: P.ProposalStore, args: argparse.Namespace) -> int:
             unavailable = (
                 (cur_p == "ollama" and env.ollama.status == "unavailable")
                 or (cur_p == "claude-cli" and env.claude_cli.status != "ok")
+                or (cur_p == "codex-cli" and env.codex_cli.status != "ok")
                 or (cur_p == "api" and env.api_key.status == "unavailable")
             )
             marker = "BROKEN" if unavailable else "DIFFERS"

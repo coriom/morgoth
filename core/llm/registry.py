@@ -1,12 +1,10 @@
 """Task → (provider, model) resolver.
 
 Env format: MORGOTH_LLM_<TASK>=provider[:model]
-  provider ∈ {ollama, claude-cli, api}
+  provider ∈ {ollama, codex-cli, claude-cli, api}
   model is provider-specific; "default" or omitted → provider chooses.
 
-Unset env → registry falls back to the default in tasks.DEFAULTS. This
-must reproduce pre-refactor behavior byte-identically — grep-locked in
-tests/test_llm_registry.py so a future edit can't silently flip a default.
+Unset env → registry falls back to the default in tasks.DEFAULTS. Defaults are locked in tests/test_llm_registry.py.
 
 Legacy alias: THESIS_GENERATOR (from the earlier experiment script) is
 honored as an alias of MORGOTH_LLM_THESIS. If both are set,
@@ -20,8 +18,8 @@ from typing import Literal
 
 from core.llm import tasks as T
 
-ProviderName = Literal["ollama", "claude-cli", "api"]
-_VALID_PROVIDERS: tuple[str, ...] = ("ollama", "claude-cli", "api")
+ProviderName = Literal["ollama", "codex-cli", "claude-cli", "api"]
+_VALID_PROVIDERS: tuple[str, ...] = ("ollama", "codex-cli", "claude-cli", "api")
 
 
 def _env_key(task: str) -> str:

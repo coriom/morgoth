@@ -237,7 +237,7 @@ async def test_run_shadow_verdict_records_and_returns() -> None:
             endpoint_sampler=sampler, llm_caller=caller,
         )
     assert out["verdict"] == "APPROVE"
-    assert out["engine"] == "claude-cli"
+    assert out["engine"] == "codex-cli"
     assert out["prompt_version"] == S.PROMPT_VERSION
     assert out["verdict_id"] == "verdict-uuid"
     assert len(pm.recorded) == 1

@@ -1699,7 +1699,7 @@ async def run_reflection(
     pm: PersistentMemory,
     llm: OllamaLLMClient,
     *,
-    provider: str = "ollama",
+    provider: str | None = None,
 ) -> dict[str, Any]:
     """Attempt one proposal cycle, with one corrective retry on
     retry-eligible pre-submit rejects.
@@ -1728,6 +1728,7 @@ async def run_reflection(
     is checked once at run-start; a retry can only produce ONE
     pending_approval so the cap can't be violated by the retry itself.
     """
+    provider = resolve_provider(provider)
     log = lambda msg: logger.info("reflect: {}", msg)  # noqa: E731
 
     if not config.permissions.permissions.can_self_modify:
@@ -1867,10 +1868,10 @@ async def _main_async(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--provider",
-        choices=("ollama", "anthropic", "claude-cli"),
+        choices=("ollama", "anthropic", "claude-cli", "codex-cli"),
         default=None,
         help="LLM engine for the reflect prompt. "
-             "Overrides REFLECT_PROVIDER env; default 'ollama'.",
+             "Overrides REFLECT_PROVIDER env; default 'codex-cli'.",
     )
     args = parser.parse_args(_sys.argv[1:] if argv is None else argv)
 

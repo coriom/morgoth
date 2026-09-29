@@ -72,12 +72,11 @@ class TestSynthesisRouting:
         assert '_tasks.SYNTHESIS' in src
         assert 'call_with_fallback' in src or '_fallback' in src
 
-    def test_synthesis_task_declared_default_ollama(self):
-        # Regression: default MUST still be ollama:default so unset env
-        # reproduces pre-refactor behavior byte-identically.
+    def test_synthesis_task_declared_default_codex(self):
+        # Migration: high-quality synthesis defaults to the tool-restricted CLI.
         from core.llm import tasks as T
         assert T.SYNTHESIS == 'synthesis'
-        assert T.DEFAULTS[T.SYNTHESIS] == 'ollama:default'
+        assert T.DEFAULTS[T.SYNTHESIS] == 'codex-cli:default'
 
 
 class TestBrainWiresPmToClient:

@@ -21,7 +21,7 @@ Design constraints
   ``response_len``, ``latency_ms``. That's it.
 
 Provider resolution: ``--provider`` flag > ``REFLECT_PROVIDER`` env >
-default ``ollama``.
+default ``codex-cli``.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ ANTHROPIC_VERSION: str = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS: int = 1024
 
-VALID_PROVIDERS: tuple[str, ...] = ("ollama", "anthropic", "claude-cli")
+VALID_PROVIDERS: tuple[str, ...] = ("ollama", "anthropic", "claude-cli", "codex-cli")
 
 CLAUDE_CLI_BIN: str = "claude"
 
@@ -80,13 +80,15 @@ class ReflectLLMError(RuntimeError):
 
 
 def resolve_provider(cli_flag: str | None) -> str:
-    """CLI flag > REFLECT_PROVIDER env > default 'ollama'.
+    """CLI flag > REFLECT_PROVIDER > MORGOTH_LLM_REFLECT > codex-cli.
 
     Empty CLI flag falls through (argparse default is None). Unknown
     values raise so a typo never silently downgrades to the default.
     """
-    raw = cli_flag or os.environ.get("REFLECT_PROVIDER") or "ollama"
+    raw = cli_flag or os.environ.get("REFLECT_PROVIDER") or os.environ.get("MORGOTH_LLM_REFLECT") or "codex-cli"
     resolved = raw.strip().lower()
+    if resolved.startswith("codex-cli:"):
+        return raw.strip()
     if resolved not in VALID_PROVIDERS:
         raise ReflectLLMError(
             f"unknown provider {resolved!r}; expected one of {VALID_PROVIDERS!r}"
@@ -406,6 +408,14 @@ async def reflect_chat(
     The injectable client factories / runner are for tests only;
     production code passes neither and gets the default construction.
     """
+    if provider == "codex-cli" or provider.startswith("codex-cli:"):
+        from core.llm.codex_cli import CodexCliProvider, CodexCliError
+        model = provider.partition(":")[2] or "default"
+        try:
+            text = await CodexCliProvider(model).complete(prompt)
+        except CodexCliError as exc:
+            raise ReflectLLMError(str(exc)) from None
+        return text, {"provider": "codex-cli", "model": model}
     if provider == "ollama":
         return await _ollama_call(prompt, config, ollama_client)
     if provider == "anthropic":

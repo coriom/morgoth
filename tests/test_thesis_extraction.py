@@ -577,15 +577,15 @@ async def test_extract_theses_returns_empty_on_prose_response() -> None:
 # can't quietly flip the default. Experiment-only; must be reverted after.
 
 
-def test_thesis_generator_default_is_ollama_grep_lock() -> None:
+def test_thesis_generator_default_is_codex_grep_lock() -> None:
     """Grep-lock: THESIS task default in the LLM registry must stay
-    'ollama:default'. Post-refactor, the fallback lives in core/llm/tasks.py.
+    'codex-cli:default'. Post-refactor, the fallback lives in core/llm/tasks.py.
     THESIS_GENERATOR legacy env is still honored (see registry test)."""
     from pathlib import Path
     src = Path("core/llm/tasks.py").read_text()
     # Must contain the exact default line for THESIS.
-    assert 'THESIS: "ollama:default"' in src, (
-        "THESIS default must stay 'ollama:default' — this is a safety lock"
+    assert 'THESIS: "codex-cli:default"' in src, (
+        "THESIS default must stay 'codex-cli:default' — this is a safety lock"
     )
 
 
@@ -632,6 +632,7 @@ async def test_extract_theses_routes_to_claude_cli_when_env_set(monkeypatch) -> 
 async def test_extract_theses_defaults_to_ollama_when_env_unset(monkeypatch) -> None:
     """With THESIS_GENERATOR unset, the ollama chat path is used unchanged."""
     monkeypatch.delenv("THESIS_GENERATOR", raising=False)
+    monkeypatch.setenv("MORGOTH_LLM_THESIS", "ollama:default")
     payload = json.dumps([{
         "subject": "BTC price", "claim": "declining",
         "evidence": [{"source": "get_crypto_price", "detail": "-1%"}],

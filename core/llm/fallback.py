@@ -1,7 +1,7 @@
 """Safe runtime fallback ladder for LLM providers.
 
 Contract:
-  · Ladder is STRICTLY DOWNWARD IN COST: api → claude-cli → ollama.
+  · Ladder is STRICTLY DOWNWARD IN COST: api → codex-cli → ollama.
     NEVER upward. A property test locks this invariant.
   · LLM_FALLBACK_ENABLED env, default TRUE (safe direction only —
     upward fallback isn't reachable regardless of flag).
@@ -24,12 +24,14 @@ from core.llm.providers import Provider, HttpApiKeyMissing, HttpApiError
 # Downward ladder ONLY. Any change here is a policy change — the test
 # suite enforces that the resulting sequence is monotonically weakly-
 # non-increasing in cost.
-_LADDER: list[str] = ["api", "claude-cli", "ollama"]
+_LADDER: list[str] = ["api", "codex-cli", "ollama"]
 
 
 def _rank(provider: str) -> int:
     """Cost rank. Higher = more expensive. Unknown providers return 0
     so they can never be a legal fallback target above a known one."""
+    if provider == "claude-cli":
+        return _rank("codex-cli")
     try:
         return len(_LADDER) - _LADDER.index(provider)
     except ValueError:
@@ -47,6 +49,8 @@ def fallback_enabled() -> bool:
 def _next_provider_down(current: str) -> str | None:
     """Return the next provider one rung DOWN from `current`, or None
     if we're already at the bottom (ollama)."""
+    if current == "claude-cli":  # explicit rollback only, never an automatic target
+        return "ollama"
     if current not in _LADDER:
         return None
     idx = _LADDER.index(current)
@@ -98,7 +102,7 @@ async def call_with_fallback(
     reachable alternative. `build_provider(name)` returns a Provider
     or None if unbuildable (e.g. api without key).
 
-    LADDER STRICTLY DOWNWARD: from api ↓ claude-cli ↓ ollama. NEVER
+    LADDER STRICTLY DOWNWARD: from api ↓ codex-cli ↓ ollama. NEVER
     upward. Enforced by _next_provider_down which only walks forward
     in _LADDER.
 

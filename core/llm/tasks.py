@@ -1,5 +1,4 @@
-"""Enumerated LLM tasks — each with a DEFAULT provider that reproduces
-pre-refactor behavior when the operator sets no override.
+"""Enumerated LLM tasks — with explicit defaults and operator overrides.
 
 Adding a task here means:
   · pick the current provider it uses today (that becomes the default),
@@ -13,23 +12,23 @@ MORGOTH_LLM_THESIS so the earlier experiment script keeps working.
 from __future__ import annotations
 
 # Task name constants — passed to registry.resolve().
-THESIS = "thesis"          # brain._extract_theses  (default: ollama)
-SYNTHESIS = "synthesis"    # brain._synthesize_objective (default: ollama)
+THESIS = "thesis"          # brain._extract_theses  (default: codex-cli)
+SYNTHESIS = "synthesis"    # brain._synthesize_objective (default: codex-cli)
 CHAT = "chat"              # brain.process_message + tool loop (default: ollama)
-REFLECT = "reflect"        # self_modify.reflect (default: claude-cli)
-SHADOW = "shadow"          # self_modify.shadow (default: claude-cli)
-SCOUT = "scout"            # self_modify.scout (default: claude-cli — reserved)
+REFLECT = "reflect"        # self_modify.reflect (default: codex-cli)
+SHADOW = "shadow"          # self_modify.shadow (default: codex-cli)
+SCOUT = "scout"            # self_modify.scout (default: codex-cli — reserved)
 
-# (task → default "provider:model") — pre-refactor behavior.
+# High-quality tasks use Codex; chat remains local. Claude is explicit rollback.
 # "default" as model means "provider picks its own default"
 # (ollama uses config.primary_model; claude-cli/api use their own default).
 DEFAULTS: dict[str, str] = {
-    THESIS: "ollama:default",
-    SYNTHESIS: "ollama:default",
+    THESIS: "codex-cli:default",
+    SYNTHESIS: "codex-cli:default",
     CHAT: "ollama:default",
-    REFLECT: "claude-cli:default",
-    SHADOW: "claude-cli:default",
-    SCOUT: "claude-cli:default",
+    REFLECT: "codex-cli:default",
+    SHADOW: "codex-cli:default",
+    SCOUT: "codex-cli:default",
 }
 
 # Environment aliases the operator may set. Presence of the primary env

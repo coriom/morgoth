@@ -42,12 +42,12 @@ class TestRegistryDefaults:
     @pytest.mark.parametrize(
         "task, expected_provider, expected_model",
         [
-            (tasks.THESIS, "ollama", "default"),
-            (tasks.SYNTHESIS, "ollama", "default"),
+            (tasks.THESIS, "codex-cli", "default"),
+            (tasks.SYNTHESIS, "codex-cli", "default"),
             (tasks.CHAT, "ollama", "default"),
-            (tasks.REFLECT, "claude-cli", "default"),
-            (tasks.SHADOW, "claude-cli", "default"),
-            (tasks.SCOUT, "claude-cli", "default"),
+            (tasks.REFLECT, "codex-cli", "default"),
+            (tasks.SHADOW, "codex-cli", "default"),
+            (tasks.SCOUT, "codex-cli", "default"),
         ],
     )
     def test_defaults_unchanged(self, task, expected_provider, expected_model):
@@ -58,7 +58,7 @@ class TestRegistryDefaults:
     def test_all_tasks_have_a_default(self):
         for task in tasks.all_tasks():
             provider, model = registry.resolve(task)
-            assert provider in ("ollama", "claude-cli", "api")
+            assert provider in ("ollama", "codex-cli", "claude-cli", "api")
             assert model != ""
 
     def test_unknown_task_raises_keyerror(self):
@@ -97,14 +97,15 @@ class TestRegistryOverrides:
     def test_bad_env_falls_back_to_default_without_raising(self, monkeypatch, capsys):
         monkeypatch.setenv("MORGOTH_LLM_THESIS", "banana:garbage")
         provider, model = registry.resolve(tasks.THESIS)
-        # Falls back to ollama:default; a warning is printed for visibility.
-        assert provider == "ollama"
+        # Falls back to codex-cli:default; a warning is printed for visibility.
+        assert provider == "codex-cli"
         captured = capsys.readouterr()
         assert "WARN" in captured.out
 
 
 class TestRoutingTable:
     def test_routing_table_shape(self, monkeypatch):
+        monkeypatch.delenv("MORGOTH_LLM_SYNTHESIS", raising=False)
         monkeypatch.setenv("MORGOTH_LLM_THESIS", "claude-cli:default")
         rows = registry.routing_table()
         by_task = {r["task"]: r for r in rows}
@@ -210,7 +211,7 @@ class TestReachabilityProbe:
         secret = "sk-ant-DO-NOT-LEAK"
         monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
         result = probe_reachability()
-        assert set(result.keys()) == {"ollama", "claude-cli", "api"}
+        assert set(result.keys()) == {"ollama", "codex-cli", "claude-cli", "api"}
         for name, (ok, note) in result.items():
             assert isinstance(ok, bool)
             assert secret not in note

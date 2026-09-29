@@ -59,7 +59,9 @@ class TestDetectionNeverRaises:
         assert cap.facts.get("cpu_cores")
 
     @pytest.mark.asyncio
-    async def test_full_detect_environment_returns_all_slots(self):
+    async def test_full_detect_environment_returns_all_slots(self, monkeypatch):
+        from core.llm import heartbeat
+        monkeypatch.setattr(heartbeat, "probe_codex_cli", lambda: heartbeat.ProbeResult("codex-cli", "ok", "mock"))
         env = await ENV.detect_environment()
         # Every slot present, none None.
         assert env.ollama is not None
@@ -82,7 +84,8 @@ def _mk_env(*, ollama_ok=True, cli_ok=True, key_present=False):
                                               "primary_present": True,
                                               "primary": "llama3.1:8b"}),
         hardware=ENV.Capability("ok", "8 GB · 8 cores · CPU-only", facts={}),
-        claude_cli=ENV.Capability("ok" if cli_ok else "unavailable", "test"),
+        claude_cli=ENV.Capability("unavailable", "rollback only"),
+        codex_cli=ENV.Capability("ok" if cli_ok else "unavailable", "test"),
         api_key=ENV.Capability("ok" if key_present else "unavailable", "test"),
     )
 
@@ -102,25 +105,25 @@ class TestRecommendationRules:
     def test_local_tasks_prefer_ollama_when_available(self):
         env = _mk_env(ollama_ok=True, cli_ok=True)
         for rec in ENV.suggest_routing(env):
-            if rec.task in ("thesis", "synthesis", "chat"):
+            if rec.task == "chat":
                 assert rec.provider == "ollama"
 
     def test_local_tasks_fall_to_cli_when_ollama_absent(self):
         env = _mk_env(ollama_ok=False, cli_ok=True)
         for rec in ENV.suggest_routing(env):
-            if rec.task in ("thesis", "synthesis", "chat"):
-                assert rec.provider == "claude-cli"
+            if rec.task == "chat":
+                assert rec.provider == "codex-cli"
 
     def test_self_mod_tasks_prefer_cli(self):
         env = _mk_env(ollama_ok=True, cli_ok=True)
         for rec in ENV.suggest_routing(env):
-            if rec.task in ("reflect", "shadow", "scout"):
-                assert rec.provider == "claude-cli"
+            if rec.task in ("thesis", "synthesis", "reflect", "shadow", "scout"):
+                assert rec.provider == "codex-cli"
 
     def test_self_mod_recommend_unavailable_when_no_cli(self):
         env = _mk_env(ollama_ok=False, cli_ok=False)
         for rec in ENV.suggest_routing(env):
-            if rec.task in ("reflect", "shadow", "scout"):
+            if rec.task in ("thesis", "synthesis", "reflect", "shadow", "scout"):
                 assert "UNAVAILABLE" in rec.reason
 
 
@@ -150,7 +153,7 @@ class TestLadderDirection:
         assert ranks[0] > ranks[-1]
 
     def test_next_down_from_api_is_cli(self):
-        assert FB._next_provider_down("api") == "claude-cli"
+        assert FB._next_provider_down("api") == "codex-cli"
 
     def test_next_down_from_cli_is_ollama(self):
         assert FB._next_provider_down("claude-cli") == "ollama"

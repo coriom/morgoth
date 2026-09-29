@@ -42,6 +42,7 @@ class Environment:
     hardware: Capability
     claude_cli: Capability
     api_key: Capability
+    codex_cli: Capability = field(default_factory=lambda: Capability("unavailable", "not probed"))
 
     def to_lines(self) -> list[str]:
         lines = [f"PLATFORM: {self.platform}"]
@@ -49,6 +50,7 @@ class Environment:
             ("ollama    ", self.ollama),
             ("hardware  ", self.hardware),
             ("claude-cli", self.claude_cli),
+            ("codex-cli", self.codex_cli),
             ("api key   ", self.api_key),
         ):
             marker = {"ok": "[OK  ]", "degraded": "[WARN]", "unavailable": "[FAIL]"}[cap.status]
@@ -183,11 +185,14 @@ async def detect_environment() -> Environment:
     ollama_task = asyncio.create_task(_probe_ollama())
     hw = _probe_hardware()
     cli = _probe_claude_cli()
+    from core.llm.heartbeat import probe_codex_cli
+    codex = await asyncio.to_thread(probe_codex_cli)
     key = _probe_api_key()
     ollama = await ollama_task
     return Environment(
         platform=_probe_platform(),
         ollama=ollama, hardware=hw, claude_cli=cli, api_key=key,
+        codex_cli=Capability("ok" if codex.status == "ok" else "unavailable", codex.detail),
     )
 
 
@@ -240,12 +245,12 @@ def suggest_routing(env: Environment) -> list[TaskRecommendation]:
     default (paid → operator opt-in only). Rules are explicit strings so
     they're inspectable at review time."""
     ollama_ok = env.ollama.status in ("ok", "degraded")
-    cli_ok = env.claude_cli.status == "ok"
+    cli_ok = env.codex_cli.status == "ok"
     picked = _recommend_ollama_model(env) or "default"
     out: list[TaskRecommendation] = []
-    # LOCAL tasks: thesis, synthesis, chat — prefer ollama; fall to
-    # claude-cli only if ollama is truly unreachable.
-    for task in ("thesis", "synthesis", "chat"):
+    # CHAT stays local; higher-quality tasks prefer Codex. Fall to
+    # codex-cli only if ollama is truly unreachable.
+    for task in ("chat",):
         if ollama_ok:
             out.append(TaskRecommendation(
                 task, "ollama", picked,
@@ -253,29 +258,29 @@ def suggest_routing(env: Environment) -> list[TaskRecommendation]:
             ))
         elif cli_ok:
             out.append(TaskRecommendation(
-                task, "claude-cli", "default",
-                "ollama unavailable; claude-cli present — fallback for local task",
+                task, "codex-cli", "default",
+                "ollama unavailable; codex-cli present — fallback for local task",
             ))
         else:
             out.append(TaskRecommendation(
                 task, "ollama", "default",
-                "no reachable provider — task will fail; install Ollama or Claude Code",
+                "no reachable provider — task will fail; install Ollama or Codex CLI",
             ))
-    # SELF-MOD tasks: reflect, shadow, scout — designed for claude-cli.
-    for task in ("reflect", "shadow", "scout"):
+    # SELF-MOD tasks: reflect, shadow, scout — designed for codex-cli.
+    for task in ("thesis", "synthesis", "reflect", "shadow", "scout"):
         if cli_ok:
             out.append(TaskRecommendation(
-                task, "claude-cli", "default",
-                "claude-cli present — the designed provider for self-modification",
+                task, "codex-cli", "default",
+                "codex-cli present — the designed provider for self-modification",
             ))
         elif ollama_ok:
             out.append(TaskRecommendation(
                 task, "ollama", picked,
-                "claude-cli unavailable; local fallback — self-mod quality degraded",
+                "codex-cli unavailable; local fallback — self-mod quality degraded",
             ))
         else:
             out.append(TaskRecommendation(
-                task, "claude-cli", "default",
-                "UNAVAILABLE — install Claude Code; self-modification disabled",
+                task, "codex-cli", "default",
+                "UNAVAILABLE — install Codex CLI; self-modification disabled",
             ))
     return out

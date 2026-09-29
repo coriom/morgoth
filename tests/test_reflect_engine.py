@@ -30,9 +30,9 @@ from self_modify.reflect_llm import (
 
 # ---------- provider resolution --------------------------------------------
 
-def test_resolve_provider_defaults_to_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_provider_defaults_to_codex(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REFLECT_PROVIDER", raising=False)
-    assert resolve_provider(None) == "ollama"
+    assert resolve_provider(None) == "codex-cli"
 
 
 def test_resolve_provider_env_overrides_default(monkeypatch: pytest.MonkeyPatch) -> None:

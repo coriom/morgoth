@@ -13,6 +13,7 @@ Contract (from the chantier design brief):
 from __future__ import annotations
 
 import os
+import asyncio
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -82,6 +83,23 @@ def probe_claude_cli() -> ProbeResult:
         return ProbeResult("claude-cli", "down", f"{type(exc).__name__}")
 
 
+def probe_codex_cli() -> ProbeResult:
+    """Binary/version only: no auth inspection or inference."""
+    from core.llm.codex_cli import minimal_env
+    import tempfile
+    binary = shutil.which("codex")
+    if not binary:
+        return ProbeResult("codex-cli", "down", "not on PATH")
+    try:
+        with tempfile.TemporaryDirectory(prefix="morgoth-codex-health-", dir="/tmp") as cwd:
+            out = subprocess.run([binary, "--version"], capture_output=True, text=True,
+                                 timeout=3, cwd=cwd, env=minimal_env())
+        return ProbeResult("codex-cli", "ok" if out.returncode == 0 else "down",
+                           "version probe only; inference not tested")
+    except (OSError, subprocess.TimeoutExpired):
+        return ProbeResult("codex-cli", "down", "version probe failed")
+
+
 def probe_api_key() -> ProbeResult:
     """PRESENCE only. Never reads value beyond bool(). Never makes a
     paid call to check if the key still works — that's an operator
@@ -94,7 +112,8 @@ def probe_api_key() -> ProbeResult:
 async def one_heartbeat_round() -> list[ProbeResult]:
     """Probe every provider referenced by the current routing. Order
     doesn't matter — this returns a snapshot, not a state machine."""
-    return [await probe_ollama(), probe_claude_cli(), probe_api_key()]
+    return [await probe_ollama(), await asyncio.to_thread(probe_claude_cli),
+            await asyncio.to_thread(probe_codex_cli), probe_api_key()]
 
 
 async def persist_on_change(
