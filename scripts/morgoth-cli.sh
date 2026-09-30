@@ -376,7 +376,7 @@ Commands:
   provision ID    re-drive a pending_key proposal (checks env-var PRESENCE only)
   audit [--now] [--write] [--since INT]
                   gate-3 auto-approve observability (shipped INERT — never applies)
-  models          show task→provider routing + reachability (env-driven, unset=default)
+  models [use PROFILE|profiles]  Project LLM profiles, routes and readiness
   session-report [--since DURATION] [--full]
                   one-shot dashboard: cycles, theses, abstentions, contradictions,
                   rate-limit hits, LLM usage, pending measurement counters

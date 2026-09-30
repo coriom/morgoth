@@ -179,7 +179,9 @@ def probe_reachability() -> dict[str, tuple[bool, str]]:
     # ollama: assume reachable if the module can import — the actual
     # /api/tags probe requires the shared client, done at cycle start.
     out["ollama"] = (True, "checked at cycle start via health_check()")
-    out["codex-cli"] = (shutil.which("codex") is not None, "binary presence only; qualification at first call")
+    from core.llm.codex_cli import SAFE_FOR_WORKLOADS
+    out["codex-cli"] = (SAFE_FOR_WORKLOADS and shutil.which("codex") is not None,
+                        "NOT_QUALIFIED: workloads blocked" if not SAFE_FOR_WORKLOADS else "binary presence; runtime checks still apply")
     # claude-cli: CLI on PATH?
     if shutil.which("claude") is not None:
         out["claude-cli"] = (True, "on PATH")

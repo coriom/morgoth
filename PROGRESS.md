@@ -398,3 +398,20 @@ Log files:
   unproven. Authenticated observations and unauthenticated config are inconclusive.
 - Canonical suite: 1867 passed (+42), 2 skipped, wall 15.0 s, exit 0; focused 126 passed.
 - Runtime, campaigns, Project/Domain, Deribit measurement and UI untouched.
+
+
+## 2026-09-30 — Project-scoped LLM profiles
+
+- Added immutable data-driven legacy/claude/codex policies and a shared Project
+  manager in core/llm/profiles.py. No API models/endpoints, UI or new dependencies.
+- Atomic 0600 runtime state; managed routes override historical task env; legacy
+  preserves prior behavior. Per-workload reads observe the next selection.
+- models use/profiles and env recommendations use readiness, not presence. Codex
+  remains NOT_QUALIFIED / SAFE_FOR_WORKLOADS=False with no force bypass.
+- Canonical campaign-live SQL + bounded SHARE lock reject live-campaign switches
+  and serialize concurrent campaign starts. No campaign row writes or initialization.
+- Focused 221 passed; dedicated morgoth_test SQL proofs 3 passed (profile guard,
+  Project isolation, campaign lifecycle); canonical 1897 passed (+30), 2 skipped,
+  wall 16.7 s, exit 0. No production profile switch, service operation or market call.
+- docs/LLM_PROFILES.md defines the future Tauri selector contract; Unix lock
+  portability, custom profile authoring and Tauri implementation remain future work.

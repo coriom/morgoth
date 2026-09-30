@@ -80,13 +80,15 @@ class ReflectLLMError(RuntimeError):
 
 
 def resolve_provider(cli_flag: str | None) -> str:
-    """CLI flag > REFLECT_PROVIDER > MORGOTH_LLM_REFLECT > codex-cli.
+    """Managed profile first; otherwise preserve the historical CLI/env order.
 
     Empty CLI flag falls through (argparse default is None). Unknown
     values raise so a typo never silently downgrades to the default.
     """
     from core.project import current_project
-    raw = cli_flag or os.environ.get("REFLECT_PROVIDER") or os.environ.get("MORGOTH_LLM_REFLECT") or current_project().llm_overrides.get("reflect") or "codex-cli"
+    from core.llm.profiles import current_profile
+    managed = current_profile(current_project()).routes.get("reflect")
+    raw = managed or cli_flag or os.environ.get("REFLECT_PROVIDER") or os.environ.get("MORGOTH_LLM_REFLECT") or current_project().llm_overrides.get("reflect") or "codex-cli"
     if ":" in raw:
         from core.llm.registry import _parse_spec
         try:
@@ -406,6 +408,7 @@ async def reflect_chat(
     ollama_client: OllamaLLMClient | None = None,
     httpx_client_factory: Callable[[], httpx.AsyncClient] | None = None,
     claude_cli_runner: Callable[[list[str], str], subprocess.CompletedProcess[str]] | None = None,
+    task: str = "reflect",
 ) -> tuple[str, dict[str, Any]]:
     """Send ``prompt`` to the selected engine; return (text, meta).
 
@@ -416,6 +419,9 @@ async def reflect_chat(
     The injectable client factories / runner are for tests only;
     production code passes neither and gets the default construction.
     """
+    from core.project import current_project
+    from core.llm.profiles import current_profile
+    provider = current_profile(current_project()).routes.get(task) or provider
     if ":" in provider and not provider.startswith("codex-cli:"):
         from core.llm.registry import _parse_spec
         from core.llm.providers import get_provider

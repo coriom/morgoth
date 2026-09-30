@@ -868,10 +868,8 @@ async def _cmd_audit(store: P.ProposalStore, args: argparse.Namespace) -> int:
 async def _cmd_env(store: P.ProposalStore, args: argparse.Namespace) -> int:
     """Print the environment snapshot + current routing vs recommended.
 
-    Read-only. NEVER writes .env. NEVER auto-selects a paid provider —
-    api appears in the RECOMMENDED column only when ANTHROPIC_API_KEY
-    is present, and only with an explicit 'requires operator opt-in
-    (cost)' marker (see suggest_routing).
+    Read-only. Never writes .env or recommends paid, blocked or unavailable
+    providers. Managed changes go through the campaign-aware profile manager.
     """
     from core.llm.environment import detect_environment, suggest_routing
     from core.llm import registry as _reg, tasks as _tasks
@@ -917,12 +915,10 @@ async def _cmd_env(store: P.ProposalStore, args: argparse.Namespace) -> int:
             marker = "BROKEN" if unavailable else "DIFFERS"
             diffs.append((task, cur, rec_str))
         print(f"  {task:<10}  {cur:<26}  {rec_str:<26}  {marker}")
-    if diffs:
-        print("\n═══ To apply the recommendation, add to .env (or export): ═══")
-        for task, _cur, rec_str in diffs:
-            env_key = f"MORGOTH_LLM_{task.upper()}"
-            print(f"  {env_key}={rec_str}")
-        print("\n  (System does NOT write .env for you — operator's decision.)")
+    from core.project import current_project
+    from core.llm.profiles import recommended_profile
+    recommendation = recommended_profile(current_project(), env)
+    print("\nManaged recommendation: " + (f"morgoth models use {recommendation}" if recommendation else "none ready"))
     return 0
 
 
@@ -1056,23 +1052,33 @@ def timedelta_from_uptime():
 
 
 async def _cmd_models(store: P.ProposalStore, args: argparse.Namespace) -> int:
-    """Print the live task→provider routing table and reachability of each
-    provider. NEVER prints the ANTHROPIC_API_KEY value — presence only."""
-    from core.llm import registry as _reg
-    from core.llm.providers import probe_reachability
-    print(f"{'TASK':<10}  {'PROVIDER':<12}  {'MODEL':<24}  SOURCE")
-    print("-" * 70)
-    for row in _reg.routing_table():
-        default_note = "" if row["source"] == "env" else "(default)"
-        print(
-            f"  {row['task']:<8}  {row['provider']:<12}  "
-            f"{row['model']:<24}  {row['source']:<7} {default_note}"
-        )
-    print("\nProvider reachability:")
-    for name, (ok, note) in probe_reachability().items():
-        mark = "OK  " if ok else "FAIL"
-        print(f"  [{mark}] {name:<12}  {note}")
-    return 0
+    """Thin CLI adapter to the Project profile service; no database initialization."""
+    from core.project import current_project
+    from core.llm import registry, profiles
+    from core.llm.environment import detect_environment
+    project = current_project()
+    try:
+        if getattr(args, 'model_action', None) == 'use':
+            selected = await profiles.switch_profile(project, args.profile)
+            print(f"Project {project.id}: profile={selected.id}")
+            return 0
+        selected = profiles.current_profile(project)
+        env = await detect_environment()
+        print(f"Project {project.id}: profile={selected.id}; source=" + ('managed profile' if selected.routes else 'legacy environment'))
+        for row in registry.routing_table():
+            print(f"{row['task']:<10} {row['provider']}:{row['model']} [{row['source']}]")
+        for name in ('ollama', 'claude-cli', 'codex-cli', 'api'):
+            status, reason = profiles.provider_status(name, env)
+            print(f"{name}: {status} ({reason})")
+        for profile in profiles.list_profiles(project):
+            status, _ = profiles.profile_status(project, profile, env)
+            print(f"profile {profile.id}: {status}")
+        print('Managed recommendation: ' + (profiles.recommended_profile(project, env) or 'none ready'))
+        print('Shadowed override names: ' + (', '.join(profiles.shadowed_overrides(project)) or 'none'))
+        return 0
+    except profiles.ProfileError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 async def _main(argv: list[str]) -> int:
@@ -1198,8 +1204,10 @@ async def _main(argv: list[str]) -> int:
     p_provision.set_defaults(_fn=_cmd_provision)
 
     p_models = subparsers.add_parser(
-        "models", help="print task→provider routing table + provider reachability",
+        "models", help="inspect or select a Project LLM profile; show routes and readiness",
     )
+    p_models.add_argument('model_action', nargs='?', choices=('use', 'profiles'))
+    p_models.add_argument('profile', nargs='?')
     p_models.set_defaults(_fn=_cmd_models)
 
     p_env = subparsers.add_parser(
@@ -1254,6 +1262,14 @@ async def _main(argv: list[str]) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.cmd in {'models', 'env'}:
+        if args.cmd == 'models' and ((args.model_action == 'use') != bool(args.profile)):
+            parser.error('models use requires one profile; other models commands accept none')
+        from core.config import _load_environment
+        from core.project import current_project
+        if current_project().is_legacy:
+            await asyncio.to_thread(_load_environment)
+        return await args._fn(None, args)
     config = await load_config()
     pm = PersistentMemory(config)
     await pm.initialize()

@@ -548,7 +548,8 @@ async def run_shadow_verdict(
     verdicts on already-decided rows.
     """
     from core.project import current_project
-    engine = engine or os.environ.get("SHADOW_PROVIDER") or os.environ.get("MORGOTH_LLM_SHADOW") or current_project().llm_overrides.get("shadow") or _ENGINE
+    from core.llm.profiles import current_profile
+    engine = current_profile(current_project()).routes.get("shadow") or engine or os.environ.get("SHADOW_PROVIDER") or os.environ.get("MORGOTH_LLM_SHADOW") or current_project().llm_overrides.get("shadow") or _ENGINE
     facts = extract_spec_facts(proposal.get("content") or "")
     # 2026-09-29 ONE EXTRACTOR: pass the RAW digest_fields into
     # sample_endpoint. resolve_digest_fields handles both plain
@@ -622,7 +623,7 @@ async def run_shadow_verdict(
 async def _default_llm_caller(
     prompt: str, config: AppConfig, engine: str,
 ) -> tuple[str, dict[str, Any]]:
-    return await reflect_llm.reflect_chat(prompt, config, engine)
+    return await reflect_llm.reflect_chat(prompt, config, engine, task="shadow")
 
 
 # ---------------------------------------------------------------------------

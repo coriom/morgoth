@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-CapabilityStatus = Literal["ok", "unavailable", "degraded"]
+CapabilityStatus = Literal["ok", "unavailable", "degraded", "blocked"]
 
 
 @dataclass
@@ -53,7 +53,7 @@ class Environment:
             ("codex-cli", self.codex_cli),
             ("api key   ", self.api_key),
         ):
-            marker = {"ok": "[OK  ]", "degraded": "[WARN]", "unavailable": "[FAIL]"}[cap.status]
+            marker = {"ok": "[OK  ]", "degraded": "[WARN]", "unavailable": "[FAIL]", "blocked": "[BLOCK]"}[cap.status]
             lines.append(f"  {marker} {name}  {cap.detail}")
         return lines
 
@@ -186,13 +186,14 @@ async def detect_environment() -> Environment:
     hw = _probe_hardware()
     cli = _probe_claude_cli()
     from core.llm.heartbeat import probe_codex_cli
-    codex = await asyncio.to_thread(probe_codex_cli)
+    from core.llm.codex_cli import SAFE_FOR_WORKLOADS
+    codex = await asyncio.to_thread(probe_codex_cli) if SAFE_FOR_WORKLOADS else None
     key = _probe_api_key()
     ollama = await ollama_task
     return Environment(
         platform=_probe_platform(),
         ollama=ollama, hardware=hw, claude_cli=cli, api_key=key,
-        codex_cli=Capability("ok" if codex.status == "ok" else "unavailable", codex.detail),
+        codex_cli=Capability("ok" if codex.status == "ok" else "unavailable", codex.detail) if codex else Capability("blocked", "NOT_QUALIFIED; binary presence is insufficient", facts={"binary_present": shutil.which("codex") is not None}),
     )
 
 
@@ -244,43 +245,14 @@ def suggest_routing(env: Environment) -> list[TaskRecommendation]:
     """Per-task provider recommendation. NEVER recommends 'api' as a
     default (paid → operator opt-in only). Rules are explicit strings so
     they're inspectable at review time."""
-    ollama_ok = env.ollama.status in ("ok", "degraded")
-    cli_ok = env.codex_cli.status == "ok"
+    from core.llm.profiles import provider_status
+    from core.llm.tasks import all_tasks
+    ready = {p for p in ("ollama", "claude-cli", "codex-cli") if provider_status(p, env)[0] == "READY"}
     picked = _recommend_ollama_model(env) or "default"
-    out: list[TaskRecommendation] = []
-    # CHAT stays local; higher-quality tasks prefer Codex. Fall to
-    # codex-cli only if ollama is truly unreachable.
-    for task in ("chat",):
-        if ollama_ok:
-            out.append(TaskRecommendation(
-                task, "ollama", picked,
-                f"local reasoning; ollama reachable ({env.ollama.detail})",
-            ))
-        elif cli_ok:
-            out.append(TaskRecommendation(
-                task, "codex-cli", "default",
-                "ollama unavailable; codex-cli present — fallback for local task",
-            ))
-        else:
-            out.append(TaskRecommendation(
-                task, "ollama", "default",
-                "no reachable provider — task will fail; install Ollama or Codex CLI",
-            ))
-    # SELF-MOD tasks: reflect, shadow, scout — designed for codex-cli.
-    for task in ("thesis", "synthesis", "reflect", "shadow", "scout"):
-        if cli_ok:
-            out.append(TaskRecommendation(
-                task, "codex-cli", "default",
-                "codex-cli present — the designed provider for self-modification",
-            ))
-        elif ollama_ok:
-            out.append(TaskRecommendation(
-                task, "ollama", picked,
-                "codex-cli unavailable; local fallback — self-mod quality degraded",
-            ))
-        else:
-            out.append(TaskRecommendation(
-                task, "codex-cli", "default",
-                "UNAVAILABLE — install Codex CLI; self-modification disabled",
-            ))
+    out = []
+    for task in all_tasks():
+        preference = ("ollama", "claude-cli", "codex-cli") if task == "chat" else ("claude-cli", "codex-cli", "ollama")
+        provider = next((p for p in preference if p in ready), None)
+        if provider is not None:
+            out.append(TaskRecommendation(task, provider, picked if provider == "ollama" else "default", "ready non-inference preconditions; operator selection required"))
     return out

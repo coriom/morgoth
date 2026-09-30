@@ -84,7 +84,7 @@ def _mk_env(*, ollama_ok=True, cli_ok=True, key_present=False):
                                               "primary_present": True,
                                               "primary": "llama3.1:8b"}),
         hardware=ENV.Capability("ok", "8 GB · 8 cores · CPU-only", facts={}),
-        claude_cli=ENV.Capability("unavailable", "rollback only"),
+        claude_cli=ENV.Capability("ok" if cli_ok else "unavailable", "test"),
         codex_cli=ENV.Capability("ok" if cli_ok else "unavailable", "test"),
         api_key=ENV.Capability("ok" if key_present else "unavailable", "test"),
     )
@@ -112,19 +112,17 @@ class TestRecommendationRules:
         env = _mk_env(ollama_ok=False, cli_ok=True)
         for rec in ENV.suggest_routing(env):
             if rec.task == "chat":
-                assert rec.provider == "codex-cli"
+                assert rec.provider == "claude-cli"
 
     def test_self_mod_tasks_prefer_cli(self):
         env = _mk_env(ollama_ok=True, cli_ok=True)
         for rec in ENV.suggest_routing(env):
             if rec.task in ("thesis", "synthesis", "reflect", "shadow", "scout"):
-                assert rec.provider == "codex-cli"
+                assert rec.provider == "claude-cli"
 
     def test_self_mod_recommend_unavailable_when_no_cli(self):
         env = _mk_env(ollama_ok=False, cli_ok=False)
-        for rec in ENV.suggest_routing(env):
-            if rec.task in ("thesis", "synthesis", "reflect", "shadow", "scout"):
-                assert "UNAVAILABLE" in rec.reason
+        assert ENV.suggest_routing(env) == []
 
 
 def test_grep_lock_no_paid_default_in_suggest_routing():

@@ -4,7 +4,8 @@ Env format: MORGOTH_LLM_<TASK>=provider[:model]
   provider ∈ {ollama, codex-cli, claude-cli, api}
   model is provider-specific; "default" or omitted → provider chooses.
 
-Unset env → Project.llm_overrides → tasks.DEFAULTS. Defaults are locked in tests/test_llm_registry.py.
+Managed Project profile is authoritative. Otherwise the legacy resolver below
+is unchanged: unset env → Project.llm_overrides → tasks.DEFAULTS.
 
 Legacy alias: THESIS_GENERATOR (from the earlier experiment script) is
 honored as an alias of MORGOTH_LLM_THESIS. If both are set,
@@ -58,14 +59,14 @@ def _parse_spec(spec: str) -> tuple[str, str]:
     return provider, model
 
 
-def resolve(task: str) -> tuple[ProviderName, str]:
+def resolve_legacy(task: str, project=None) -> tuple[ProviderName, str]:
     """Resolve a task to (provider, model). Never raises: bad env falls
     back to the default with a printed warning (so a typo doesn't crash
     the cycle — it just logs and stays on the pre-refactor path)."""
     if task not in T.DEFAULTS:
         raise KeyError(f"unknown task {task!r}; add it to tasks.DEFAULTS")
     from core.project import current_project
-    override = _read_env_for(task) or current_project().llm_overrides.get(task)
+    override = _read_env_for(task) or (project or current_project()).llm_overrides.get(task)
     if override is None:
         return _parse_spec(T.DEFAULTS[task])  # type: ignore[return-value]
     try:
@@ -77,17 +78,26 @@ def resolve(task: str) -> tuple[ProviderName, str]:
         return _parse_spec(T.DEFAULTS[task])  # type: ignore[return-value]
 
 
+def resolve(task: str) -> tuple[ProviderName, str]:
+    """Resolve the selected Project's current policy on every workload."""
+    from core.project import current_project
+    from core.llm.profiles import resolve_task_route
+    return resolve_task_route(current_project(), task)
+
+
 def routing_table() -> list[dict[str, str]]:
     """Snapshot of every task's current routing. For `morgoth models`."""
     from core.project import current_project
     project = current_project()
+    from core.llm.profiles import current_profile, resolve_task_route
+    profile = current_profile(project)
     out = []
     for task in T.all_tasks():
         override = _read_env_for(task)
-        provider, model = resolve(task)
+        provider, model = resolve_task_route(project, task, profile=profile)
         out.append({
             "task": task, "provider": provider, "model": model,
-            "source": "env" if override is not None else ("project" if task in project.llm_overrides else "default"),
+            "source": "managed profile" if task in profile.routes else ("env" if override is not None else ("project" if task in project.llm_overrides else "default")),
             "default": T.DEFAULTS[task],
         })
     return out

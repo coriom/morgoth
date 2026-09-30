@@ -1,5 +1,9 @@
 # Internal LLM migration
 
+For whole-lane selection use the [Project profile manager](LLM_PROFILES.md).
+The environment assignments below describe legacy mode only. `models use codex`
+is refused while NOT_QUALIFIED; a ready Claude profile can be explicitly selected.
+
 **NOT_QUALIFIED — inference remains blocked.** `SAFE_FOR_WORKLOADS=False`
 rejects workloads before spawning Codex; no environment variable can override it.
 The 2026-09-30 replay of CLI 0.159.0 found `item.completed` / `item.type=error`
