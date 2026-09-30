@@ -384,3 +384,16 @@ Log files:
 - Canonical hermetic suite: 0 failed, 1678 passed (+37), 2 skipped, wall 23.6 s, exit 0. Existing crypto price/cache/rate-limit/history and thesis/backtest tests included; no live crypto/DB test.
 - No production .env read/edit, service restart, reflect/shadow workload, proposal approval/application or campaign e6563e60 operation. Human gate 3 unchanged.
 - Operator migration and explicit rollback assignments are documented; production runtime overrides were not inspected.
+
+## 2026-09-30 — Codex structural qualification: NOT_QUALIFIED
+
+- Initial backend 0d29efc, clean, origin/main matched. Only provider diagnostics,
+  synthetic security probes/tests and documentation changed; no dependencies.
+- Distinguished structured error diagnostics from tool authority without allowing
+  either through the provider. SAFE_FOR_WORKLOADS remains False; no env bypass.
+- Seven independent synthetic probe kinds; event allowlist redaction, outside
+  read/write witnesses, fake repo and credential-free HOME/MCP configuration.
+- No forbidden effect observed; host-read confinement remains structurally
+  unproven. Authenticated observations and unauthenticated config are inconclusive.
+- Canonical suite: 1867 passed (+42), 2 skipped, wall 15.0 s, exit 0; focused 126 passed.
+- Runtime, campaigns, Project/Domain, Deribit measurement and UI untouched.

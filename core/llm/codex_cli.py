@@ -16,8 +16,9 @@ import tempfile
 import uuid
 
 VERSION = "codex-cli 0.159.0"
-# Both direct probes emitted tool activity on 2026-09-29. Flags alone are
-# insufficient. No environment override may bypass this deployment gate.
+# The old tool_activity verdict included diagnostic error items. Neither
+# flags nor synthetic observations prove host read confinement. No environment
+# override may bypass this deployment gate; see docs/CODEX_PROVIDER.md.
 # Enable only after a structural tool-surface audit and successful canary.
 SAFE_FOR_WORKLOADS = False
 DISABLED = (
@@ -129,6 +130,8 @@ def _validate_events(stdout: str) -> None:
             event = json.loads(line)
             kind = event["type"]
             if kind in ("item.started", "item.updated", "item.completed"):
+                if event["item"]["type"] == "error":
+                    raise CodexCliError("cli_diagnostic")
                 if event["item"]["type"] not in ("agent_message", "reasoning"):
                     raise CodexCliError("tool_activity")
             elif kind == "turn.completed":
@@ -199,7 +202,7 @@ def _complete(prompt: str, model: str, timeout: float) -> str:
     try:
         return invoke(binary, model, env, prompt, timeout)
     except CodexCliError as exc:
-        if exc.code in ("tool_activity", "unexpected_event", "invalid_events"):
+        if exc.code in ("tool_activity", "unexpected_event", "invalid_events", "cli_diagnostic"):
             _QUALIFIED.discard(key)
             _REJECTED.add(key)
         raise

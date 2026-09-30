@@ -270,3 +270,24 @@ async def test_disabled_fallback_preserves_failure(monkeypatch):
     with pytest.raises(C.CodexCliError, match="capability_restrictions_unqualified"):
         await fallback.call_with_fallback(lambda _: C.CodexCliProvider("default"),
                                          "thesis", "codex-cli", call)
+
+
+def test_structured_error_is_diagnostic_not_tool_authority(monkeypatch):
+    def run(*args):
+        result = fake_run(*args)
+        result.stdout = events('error')
+        return result
+    monkeypatch.setattr(C, '_run', run)
+    with pytest.raises(C.CodexCliError, match='cli_diagnostic'):
+        C.invoke('codex', 'default', {}, 'synthetic', 2)
+
+
+@pytest.mark.parametrize('key', ['SAFE_FOR_WORKLOADS','CODEX_SAFE_FOR_WORKLOADS',
+                               'MORGOTH_CODEX_QUALIFIED','CODEX_PROVIDER_UNSAFE_OVERRIDE'])
+def test_no_environment_activation(monkeypatch, key):
+    monkeypatch.setenv(key, 'true')
+    run = MagicMock()
+    monkeypatch.setattr(C, '_run', run)
+    with pytest.raises(C.CodexCliError, match='capability_restrictions_unqualified'):
+        C._complete('synthetic', 'default', 2)
+    run.assert_not_called()

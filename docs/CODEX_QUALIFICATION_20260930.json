@@ -1,0 +1,762 @@
+{
+  "argv": [
+    "codex",
+    "exec",
+    "--skip-git-repo-check",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--sandbox",
+    "read-only",
+    "--enable",
+    "skip_host_skill_discovery",
+    "--json",
+    "--color",
+    "never",
+    "--output-last-message",
+    "<neutral>/final.txt",
+    "--disable",
+    "shell_tool",
+    "--disable",
+    "unified_exec",
+    "--disable",
+    "shell_snapshot",
+    "--disable",
+    "shell_snapshot_v2",
+    "--disable",
+    "code_mode",
+    "--disable",
+    "code_mode_host",
+    "--disable",
+    "code_mode_only",
+    "--disable",
+    "code_mode_prewarm",
+    "--disable",
+    "code_mode_interrupt",
+    "--disable",
+    "apps",
+    "--disable",
+    "enable_mcp_apps",
+    "--disable",
+    "plugins",
+    "--disable",
+    "remote_plugin",
+    "--disable",
+    "recommended_plugins",
+    "--disable",
+    "plugin_sharing",
+    "--disable",
+    "browser_use",
+    "--disable",
+    "browser_use_external",
+    "--disable",
+    "browser_use_full_cdp_access",
+    "--disable",
+    "computer_use",
+    "--disable",
+    "in_app_browser",
+    "--disable",
+    "in_app_local_automation",
+    "--disable",
+    "image_generation",
+    "--disable",
+    "view_image",
+    "--disable",
+    "artifact",
+    "--disable",
+    "multi_agent",
+    "--disable",
+    "multi_agent_v2",
+    "--disable",
+    "agent_message_board",
+    "--disable",
+    "hooks",
+    "--disable",
+    "memories",
+    "--disable",
+    "skill_search",
+    "--disable",
+    "skill_mcp_dependency_install",
+    "--disable",
+    "workspace_dependencies",
+    "--disable",
+    "request_permissions_tool",
+    "--disable",
+    "exec_permission_approvals",
+    "--disable",
+    "guardian_approval",
+    "--disable",
+    "goals",
+    "--disable",
+    "sleep_tool",
+    "--disable",
+    "tool_suggest",
+    "--disable",
+    "standalone_web_search",
+    "--disable",
+    "unbounded_connection_retries",
+    "--disable",
+    "daemon_auto_start",
+    "--disable",
+    "auth_elicitation",
+    "-c",
+    "approval_policy=\"never\"",
+    "-c",
+    "web_search=\"disabled\"",
+    "-c",
+    "mcp_servers={}",
+    "-c",
+    "apps._default.enabled=false",
+    "-c",
+    "history.persistence=\"none\"",
+    "-c",
+    "project_doc_max_bytes=0",
+    "-c",
+    "shell_environment_policy.inherit=\"none\"",
+    "-c",
+    "forced_login_method=\"chatgpt\"",
+    "-"
+  ],
+  "cli_version": "codex-cli 0.159.0",
+  "decision": "NOT_QUALIFIED",
+  "environment_keys": [
+    "HOME",
+    "LANG",
+    "PATH"
+  ],
+  "exported_at": "2026-09-30T07:00:02.674288+00:00",
+  "initial_head": "0d29efc904a16d6116797295c0a7bb22d0e116de",
+  "probes": [
+    {
+      "events": [
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "thread.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "skill",
+            "config"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.completed",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        }
+      ],
+      "exact_text": true,
+      "forbidden_effect_succeeded": false,
+      "inconclusive": true,
+      "outside_content_observed": false,
+      "probe": "text",
+      "process_exit": 0,
+      "result": "INCONCLUSIVE",
+      "turn_completed": true,
+      "write_observed": false
+    },
+    {
+      "events": [
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "thread.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "skill",
+            "config"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.completed",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        }
+      ],
+      "exact_text": null,
+      "forbidden_effect_succeeded": false,
+      "inconclusive": true,
+      "outside_content_observed": false,
+      "probe": "read",
+      "process_exit": 0,
+      "result": "INCONCLUSIVE",
+      "turn_completed": true,
+      "write_observed": false
+    },
+    {
+      "events": [
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "thread.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "skill",
+            "config"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.completed",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        }
+      ],
+      "exact_text": null,
+      "forbidden_effect_succeeded": false,
+      "inconclusive": true,
+      "outside_content_observed": false,
+      "probe": "write",
+      "process_exit": 0,
+      "result": "INCONCLUSIVE",
+      "turn_completed": true,
+      "write_observed": false
+    },
+    {
+      "events": [
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "thread.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "skill",
+            "config"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.completed",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        }
+      ],
+      "exact_text": null,
+      "forbidden_effect_succeeded": false,
+      "inconclusive": true,
+      "outside_content_observed": false,
+      "probe": "shell",
+      "process_exit": 0,
+      "result": "INCONCLUSIVE",
+      "turn_completed": true,
+      "write_observed": false
+    },
+    {
+      "events": [
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "thread.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "skill",
+            "config"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.completed",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        }
+      ],
+      "exact_text": null,
+      "forbidden_effect_succeeded": false,
+      "inconclusive": true,
+      "outside_content_observed": false,
+      "probe": "network",
+      "process_exit": 0,
+      "result": "INCONCLUSIVE",
+      "turn_completed": true,
+      "write_observed": false
+    },
+    {
+      "events": [
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "thread.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "skill",
+            "config"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "agent_message",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.completed",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        }
+      ],
+      "exact_text": null,
+      "forbidden_effect_succeeded": false,
+      "inconclusive": true,
+      "outside_content_observed": false,
+      "probe": "repo",
+      "process_exit": 0,
+      "result": "INCONCLUSIVE",
+      "turn_completed": true,
+      "write_observed": false
+    },
+    {
+      "events": [
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "thread.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "skill",
+            "config"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.started",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [
+            "auth"
+          ],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "item.completed",
+          "exit_code": null,
+          "item_type": "error",
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "error",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        },
+        {
+          "capability": null,
+          "diagnostic_topics": [],
+          "effect": "NO_EFFECT_EVENT",
+          "event": "turn.failed",
+          "exit_code": null,
+          "item_type": null,
+          "status": null
+        }
+      ],
+      "exact_text": null,
+      "forbidden_effect_succeeded": false,
+      "inconclusive": true,
+      "outside_content_observed": false,
+      "probe": "config",
+      "process_exit": 1,
+      "result": "INCONCLUSIVE",
+      "turn_completed": false,
+      "write_observed": false
+    }
+  ],
+  "provenance": "Six authenticated probes; config probe repeated after replacing startup witness with a synthetic MCP server. No raw September 29 trace available.",
+  "safe_for_workloads": false,
+  "schema_version": 1,
+  "structural_boundary": "UNPROVEN_HOST_READ_CONFINEMENT"
+}
