@@ -21,7 +21,7 @@ Sequence (each step logs to loguru and updates the DB ``status_reason``):
   5. Restart: ``sudo -n /usr/bin/systemctl restart morgoth.service``
      (covered by the NOPASSWD whitelist installed for the CLI).
   6. Health check ≤ 90s: ``/api/brain/status`` returns ``ready=true``
-     AND ``/api/tools`` contains the new tool's ``name``. On failure:
+     AND ``/api/tools/catalog`` contains the installed tool's ``name``. On failure:
      ``git reset --hard HEAD~1`` to drop the local apply commit, restart
      again to bring service back to the pre-apply state, and record
      ``apply_failed_rolled_back``.
@@ -123,9 +123,10 @@ def _extract_tool_name(content: str) -> str | None:
 # --- health check -----------------------------------------------------------
 
 async def _wait_for_ready_and_tool(tool_name: str | None) -> bool:
-    """Poll /api/brain/status ready=true AND /api/tools contains tool_name.
+    """Poll ready=true and the installed catalog, without Domain activation.
 
-    If tool_name is None (couldn't parse it), only ready=true is required.
+    None requests ready-only for the rollback health probe; successful apply
+    requires a parsed name before this helper is called.
     """
     async with httpx.AsyncClient(timeout=5.0) as client:
         for _ in range(_HEALTH_WAIT_SECS):
@@ -134,7 +135,7 @@ async def _wait_for_ready_and_tool(tool_name: str | None) -> bool:
                 if brain.status_code == 200 and brain.json().get("ready") is True:
                     if tool_name is None:
                         return True
-                    tools_resp = await client.get(f"{_API_BASE}/api/tools")
+                    tools_resp = await client.get(f"{_API_BASE}/api/tools/catalog")
                     if tools_resp.status_code == 200:
                         names = {t["name"] for t in tools_resp.json()}
                         if tool_name in names:
@@ -439,8 +440,8 @@ async def apply_proposal(
 
     # ---- 6. health check ---------------------------------------------------
     tool_name = _extract_tool_name(row["content"])
-    _log("health", f"waiting for ready=true and tool={tool_name!r} in /api/tools")
-    healthy = await _health_check(tool_name)
+    _log("health", f"waiting for ready=true and installed tool={tool_name!r} in /api/tools/catalog")
+    healthy = bool(tool_name) and await _health_check(tool_name)
     if not healthy:
         _log("health", "TIMEOUT — rolling back")
         _git_reset_hard(repo_root, "HEAD~1")
@@ -459,12 +460,12 @@ async def apply_proposal(
         _log("health", reason)
         await store.update_status(proposal_id, STATUS_APPLY_FAILED_ROLLED_BACK, reason)
         return STATUS_APPLY_FAILED_ROLLED_BACK
-    _log("health", "OK — ready=true and tool present")
+    _log("health", "OK — ready=true and implementation installed")
 
     # ---- 7. success --------------------------------------------------------
     await store.update_status(
         proposal_id,
         STATUS_APPLIED,
-        f"applied and verified live (tool={tool_name!r})",
+        f"applied and verified installed (tool={tool_name!r}; Domain activation separate)",
     )
     return STATUS_APPLIED

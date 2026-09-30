@@ -52,6 +52,8 @@ def cache_enabled() -> bool:
 # The per-tool cadence rationale (rate-limit margins vs upstream
 # ceilings) lives in the YAML as comments alongside each entry.
 from core.domain import current_domain as _current_domain  # noqa: E402
+from core.tool_rail import ToolRailError, effective_tool_rail
+_ACTIVE_RAIL = effective_tool_rail(_current_domain())
 SOURCE_CACHE_CONFIG: dict[str, tuple[int, int]] = dict(
     _current_domain().source_cache_config,
 )
@@ -61,7 +63,7 @@ SOURCE_DEFAULT_ARGS: dict[str, dict[str, Any]] = dict(
 
 
 def is_cached_source(name: str) -> bool:
-    return name in SOURCE_CACHE_CONFIG
+    return _ACTIVE_RAIL.is_allowed(name) and name in SOURCE_CACHE_CONFIG
 
 
 def max_stale_secs(name: str) -> int:
@@ -268,6 +270,8 @@ async def collect_due_sources(
         return []
     collected: list[str] = []
     for source in SOURCE_CACHE_CONFIG:
+        if not _ACTIVE_RAIL.is_allowed(source):
+            raise ToolRailError(f"inactive cache collector: {source}")
         if not state.due(source):
             continue
         ok = await collect_one(persistent_memory, tool_router, source)

@@ -24,7 +24,7 @@ def _clear_env(monkeypatch):
 
 class TestConfig:
     def test_scope_lists_slow_moving_sources(self):
-        # In-scope (d647524 + phase-A extension): 5 originals + 3 new.
+        # Current pack includes the later Deribit collector as well.
         assert set(sc.SOURCE_CACHE_CONFIG.keys()) == {
             "get_fear_greed_index",
             "get_bitcoin_onchain",
@@ -34,6 +34,7 @@ class TestConfig:
             "get_coinbase_btc_stats",
             "get_ethereum_network_stats",
             "get_news",
+            "get_deribit_btc_perpetual",
         }
 
     def test_live_sources_not_cached(self):

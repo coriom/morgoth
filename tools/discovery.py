@@ -2,9 +2,8 @@
 
 Enumerates every ``BaseTool`` subclass declared under ``tools.data_feeds``
 so that ``core.brain`` and ``api.server`` don't have to hand-list them.
-This is the structural prerequisite for step 2 of the self-modify
-sequence: a green-zone new file under ``tools/data_feeds/`` becomes
-active on restart without editing any red-zone file.
+Discovery establishes installation only. A green-zone file becomes active
+only after a separate Domain rail declaration selects it.
 
 Discovery scope
 ---------------

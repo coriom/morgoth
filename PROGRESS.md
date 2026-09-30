@@ -1,5 +1,25 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-09-30 — Declarative Domain tool rail
+
+- Added one `rail.tools` allowlist to Domain and a canonical installed/global/
+  active resolver in core/tool_rail.py. Crypto declares its prior 15 research
+  tools explicitly; source/chat/registered sets match the pre-change baseline.
+- API registration, Brain schemas, ToolRouter lookup/execution, `/api/tools`,
+  source/metric collectors, measurement diagnostics and wiki fallback now use
+  effective Domain authority. Installed inactive tools return a distinct denial.
+- Apply's post-restart proof checks `/api/tools/catalog` for installation;
+  Domain activation remains a separate human-reviewed declaration.
+- Synthetic two-Project/two-tool subprocess tests prove installed != active,
+  including schema/API invisibility and direct execution rejection.
+- Validation: 1923 canonical passed (+14), 2 skipped, wall 39.4s, exit 0;
+  336 focused regressions passed; 58 dedicated morgoth_test cache/Project/
+  profile/campaign integration tests passed. Historical Deribit 31/16 intact.
+- No production service, campaign, Project or Profile action; no reflect,
+  live rail call, .env change, database schema/dependency or Codex activation.
+  The UI repository only mirrors the new catalog/active endpoint DTOs.
+  Weather tools and activation UX remain deferred; see docs/TOOL_RAIL_CONTRACT.md.
+
 ## 2026-09-30 — Generic Domain runtime contract
 
 - Moved crypto subject entities, semantic contradiction windows, metric collector

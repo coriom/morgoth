@@ -7,6 +7,15 @@ from typing import Any
 from loguru import logger
 
 from tools.base_tool import BaseTool
+from core.tool_rail import EffectiveToolRail, effective_tool_rail
+
+
+class ToolAccessError(KeyError):
+    """A tool is unknown or installed but inactive for this Domain."""
+
+    def __init__(self, name: str, code: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {name}")
 
 
 def _validate_arguments(tool: "BaseTool", arguments: dict[str, Any]) -> str | None:
@@ -45,7 +54,8 @@ def _validate_arguments(tool: "BaseTool", arguments: dict[str, Any]) -> str | No
 class ToolRouter:
     """Registry and execution router for tools."""
 
-    def __init__(self, persistent_memory: Any = None) -> None:
+    def __init__(self, persistent_memory: Any = None,
+                 policy: EffectiveToolRail | None = None) -> None:
         """Initialize an empty tool registry.
 
         ``persistent_memory`` is optional; when provided, execute_tool
@@ -56,34 +66,42 @@ class ToolRouter:
         """
         self._tools: dict[str, BaseTool] = {}
         self._persistent_memory = persistent_memory
+        if policy is None:
+            from core.domain import current_domain
+            policy = effective_tool_rail(current_domain())
+        self.policy = policy
 
     def register(self, tool: BaseTool) -> None:
         """Register a tool by its unique name."""
-
+        if not self.policy.is_allowed(tool.name):
+            raise ToolAccessError(tool.name, self.policy.denial_code(tool.name))
+        if tool.name in self._tools:
+            raise ValueError(f"duplicate active tool: {tool.name}")
         self._tools[tool.name] = tool
         logger.debug("Registered tool '{}'", tool.name)
 
     def has_tool(self, name: str) -> bool:
         """Return True if the tool name is registered."""
 
-        return name in self._tools
+        return self.policy.is_allowed(name) and name in self._tools
 
     def list_names(self) -> list[str]:
         """Return all registered tool names."""
-
-        return list(self._tools.keys())
+        return [name for name in self._tools if self.policy.is_allowed(name)]
 
     def get_tool(self, name: str) -> BaseTool:
         """Return a tool by name."""
-
+        if not self.policy.is_allowed(name):
+            raise ToolAccessError(name, self.policy.denial_code(name))
         if name not in self._tools:
-            raise KeyError(f"Unknown tool: {name}")
+            raise ToolAccessError(name, "UNKNOWN_TOOL")
         return self._tools[name]
 
     def get_schemas(self, allowed_tools: list[str] | None = None) -> list[dict[str, Any]]:
         """Return Ollama schemas for all or a subset of tools."""
 
-        tools = self._tools.values() if allowed_tools is None else [self.get_tool(name) for name in allowed_tools]
+        tools = ([tool for name, tool in self._tools.items() if self.policy.is_allowed(name)]
+                 if allowed_tools is None else [self.get_tool(name) for name in allowed_tools])
         return [tool.to_ollama_schema() for tool in tools]
 
     async def execute_tool(
@@ -112,7 +130,11 @@ class ToolRouter:
         # structured failure that names what's wrong + the allowed
         # parameter names so the model can retry on the next turn.
         # Never invents defaults — that's the model's error to fix.
-        tool = self.get_tool(name)
+        try:
+            tool = self.get_tool(name)
+        except ToolAccessError as exc:
+            return {"success": False, "result": None, "error": exc.code,
+                    "metadata": {"tool_error": exc.code}}
         _val_err = _validate_arguments(tool, arguments)
         if _val_err is not None:
             logger.warning("tool-arg reject: {} — {}", name, _val_err)

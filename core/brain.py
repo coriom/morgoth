@@ -82,52 +82,11 @@ def _resolve_stale_days() -> float:
         return OBJECTIVE_STALE_DAYS
     return value
 
-# Non-data_feeds source-classified tools: they don't live under
-# tools/data_feeds/ so auto-discovery doesn't find them, but they ARE
-# valid sources in the multi-source rail. Kept as an explicit constant.
-_STATIC_DATA_SOURCES: frozenset[str] = frozenset({
-    "web_search",
-    # FRED joins the source rail (07-25). Live-verified against CPIAUCSL
-    # before the join — the reddit_search precedent (source rail slot
-    # burned for months on a dead API) is the reason for that gate.
-    "fred_series_observations",
-})
-
-# Non-data_feeds chat-schema tools: the LLM sees these on every turn.
-# Same rationale as above — they aren't discovered because they don't
-# live under tools/data_feeds/.
-_STATIC_CHAT_TOOL_NAMES: tuple[str, ...] = (
-    "web_search",
-    "fred_series_observations",
-    # Symbol discovery for the FRED source: observations without search
-    # forces the model to guess series IDs.
-    "fred_series_search",
-    "technical_analysis",
-    "remember",
-    "recall",
-    "create_objective",
-    "update_objective",
-)
-
-
 def _compute_tool_sets() -> tuple[frozenset[str], list[str]]:
-    """Merge STATIC_* with tools discovered under tools/data_feeds/.
-
-    Computed once at module import time. A new file under
-    tools/data_feeds/ that declares ``is_data_source = True`` joins the
-    source rail on the next process start; ``is_chat_tool = True``
-    (the BaseTool default) puts it in the chat schema.
-    """
-    from tools.discovery import discover_data_feed_tools
-
-    discovered = discover_data_feed_tools()
-    data_sources = _STATIC_DATA_SOURCES | frozenset(
-        cls.name for cls in discovered if cls.is_data_source
-    )
-    chat_names = list(_STATIC_CHAT_TOOL_NAMES) + [
-        cls.name for cls in discovered if cls.is_chat_tool
-    ]
-    return data_sources, chat_names
+    """Project Domain rail, never raw discovered installation metadata."""
+    from core.tool_rail import effective_tool_rail
+    rail = effective_tool_rail(current_domain())
+    return rail.sources, list(rail.chat)
 
 
 DATA_SOURCE_TOOLS, CHAT_TOOL_NAMES = _compute_tool_sets()

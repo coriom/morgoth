@@ -11,6 +11,27 @@
 name: crypto
 tagline: "crypto and finance research"
 
+# Installed implementations become active only through this Domain rail.
+# get_crypto_history remains callable for bootstrap tests but is neither
+# an autonomous source nor a chat-schema tool, as before.
+rail:
+  tools:
+    - web_search
+    - fred_series_observations
+    - fred_series_search
+    - technical_analysis
+    - get_bitcoin_futures_funding
+    - get_bitcoin_long_short_ratio
+    - get_bitcoin_onchain
+    - get_coinbase_btc_stats
+    - get_crypto_global_market
+    - get_crypto_history
+    - get_crypto_price
+    - get_deribit_btc_perpetual
+    - get_ethereum_network_stats
+    - get_fear_greed_index
+    - get_news
+
 # ---------------------------------------------------------------------
 # Subject / prompt vocab
 # ---------------------------------------------------------------------

@@ -12,6 +12,8 @@ Tools ── data acquisition; selected by the Domain's declared tool IDs
 
 Project owns instance selection, workspace and isolated storage/runtime state, including its LLM profile. Domain owns vocabulary, entity/subject interpretation, semantic windows, metric series collection, source roles and scorer declarations. A scorer/backtest implementation owns its specialist inference and market reference data. Adding a normal data/research domain should not require editing generic core modules. A new tool or genuinely new scorer implementation still needs code and explicit trusted registration; YAML cannot name arbitrary Python imports.
 
+The second-Domain isolation proof required a generic correction: installed tool discovery is separate from Domain-authorized research membership. See [TOOL_RAIL_CONTRACT.md](TOOL_RAIL_CONTRACT.md). Tool acquisition declarations cannot activate a tool implicitly; `rail.tools` is the sole Domain authority.
+
 ## Coupling audit and migration boundary
 
 | Location (pre-change) | Crypto assumption | Runtime critical? | Owner after change |

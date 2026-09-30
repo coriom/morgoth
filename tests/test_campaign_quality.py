@@ -517,10 +517,7 @@ class TestLengthControl:
 
 
 class TestLearnedServedPhrases:
-    """Phase 4 lock: an applied tool's digest names + description
-    register in the served-concept vocabulary AUTOMATICALLY. Otherwise
-    the next campaign scorer classifies angles the tool CAN serve as
-    unservable, defeating the whole feedback loop."""
+    """Only active tools contribute learned served-concept vocabulary."""
 
     def test_discovered_tool_digest_fields_are_learned(self):
         from analysis.campaign_quality import learned_served_phrases
@@ -545,24 +542,29 @@ class TestLearnedServedPhrases:
         assert "learned_served_phrases" in src
 
     def test_new_tool_shape_registers_automatically(self, monkeypatch):
-        # Simulate a newly-applied get_defillama_stablecoins tool:
-        # its digest_fields are usdt_supply, usdc_supply, total_supply,
-        # asset_count. After registration, a title angle citing any of
-        # these must classify as SERVICEABLE.
+        # Apply makes a tool installed, not served, until Domain activation.
         from analysis import campaign_quality as cq
+        from dataclasses import replace
+        from tools.discovery import discover_data_feed_tools
 
         class _FakeTool:
             name = "get_defillama_stablecoins"
+            is_data_source = True
+            is_chat_tool = True
             digest_fields = ("usdt_supply", "usdc_supply", "total_supply", "asset_count")
             description = "Fetch DefiLlama stablecoin total supply per pegged asset."
 
+        installed = discover_data_feed_tools()
         def _fake_discover():
-            return [_FakeTool]
+            return [*installed, _FakeTool]
 
         monkeypatch.setattr(
             "tools.discovery.discover_data_feed_tools", _fake_discover,
         )
-        # Rebuild the ordered list picking up the fake tool.
+        assert "usdt_supply" not in cq._all_served_phrases()
+        active_domain = replace(cq._current_domain(),
+                                rail_tools=(*cq._current_domain().rail_tools, _FakeTool.name))
+        monkeypatch.setattr(cq, "_current_domain", lambda: active_domain)
         rebuilt = cq._all_served_phrases()
         assert "usdt_supply" in rebuilt or "usdt supply" in rebuilt
         assert "asset_count" in rebuilt or "asset count" in rebuilt

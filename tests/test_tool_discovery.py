@@ -1,9 +1,7 @@
 """Non-regression tests for the auto-discovery refactor.
 
-The computed sets from ``tools.discovery`` + brain.py's static merge MUST
-equal the OLD hand-written literals byte-for-byte (as sets). If a change
-under tools/data_feeds/ ever silently widens or narrows the source rail
-or the chat schema, this suite fails so it can't slip through.
+The current crypto Domain's effective sets retain their historical floor.
+Discovery may grow without granting a new tool to any Domain automatically.
 """
 
 from __future__ import annotations
@@ -14,7 +12,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import MagicMock
 
 # Superset baselines — the live rail's floor. Silent shrinkage below this
-# floor fails the suite; growth is allowed.
+# floor fails the suite; growth requires explicit Domain activation.
 #
 # POLICY CHANGE (retirement of reddit_search): reddit_search was removed
 # from the source rail after Reddit's 2023 API closure produced 403 across
@@ -146,6 +144,9 @@ def test_api_tools_endpoint_returns_registered_inventory() -> None:
 
     class _FakeRouter:
         def __init__(self) -> None:
+            from core.domain import current_domain
+            from core.tool_rail import effective_tool_rail
+            self.policy = effective_tool_rail(current_domain())
             self._tools = {
                 "get_news": _FakeTool("get_news", True, True),
                 "get_crypto_history": _FakeTool("get_crypto_history", False, False),

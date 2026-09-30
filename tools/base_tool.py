@@ -27,8 +27,7 @@ class BaseTool(ABC):
 
     # Auto-discovery flags. Tools under tools/data_feeds/ are enumerated by
     # tools.discovery.discover_data_feed_tools; these two class attributes let
-    # brain.py compute DATA_SOURCE_TOOLS and CHAT_TOOL_NAMES without touching
-    # the RED zone every time a green-zone tool is added.
+    # the canonical Domain rail resolver compute effective source/chat sets.
     is_data_source: ClassVar[bool] = False
     is_chat_tool: ClassVar[bool] = True
 

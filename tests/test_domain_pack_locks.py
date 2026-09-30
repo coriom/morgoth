@@ -272,6 +272,7 @@ def test_unknown_domain_refuses_to_start(tmp_path, monkeypatch) -> None:
 def _minimal_valid_body() -> str:
     return (
         "name: test_pack\n"
+        "rail: {tools: [t]}\n"
         "generic_subject_tokens: [x]\n"
         "price_class_tokens: [x]\n"
         "subject_prefix_stopwords: [x]\n"
@@ -325,6 +326,11 @@ def test_strict_type_validation_rejects_coerced_scalars(
     (on/off/yes/no/null and bare numerics) MUST NOT survive the
     validator. The error names the field and the offending value."""
     m = _fresh_loader(tmp_path, monkeypatch)
+    from core import tool_rail
+    installed = tool_rail.installed_catalog()
+    monkeypatch.setattr(tool_rail, "installed_catalog", lambda: {
+        **installed, "t": tool_rail.ToolKind(False, True, True),
+    })
     body = _minimal_valid_body()
     # Replace the field being mutated so the injected mutation is the
     # only source of that field.

@@ -114,6 +114,9 @@ async def snapshot_once(persistent_memory, tool_router, *, due_tools: tuple[str,
     specs = pack.metric_collections
     selected = due_tools if due_tools is not None else tuple(specs)
     for tool in selected:
+        if tool not in pack.rail_tools:
+            from core.tool_rail import ToolRailError
+            raise ToolRailError(f"inactive metric collector: {tool}")
         spec = specs[tool]
         try:
             tr = await tool_router.execute_tool(tool, dict(spec.args))

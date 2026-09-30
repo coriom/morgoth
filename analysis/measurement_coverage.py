@@ -19,13 +19,18 @@ def measurement_blind_spots(
     Exemption values must be nonempty reasons. Nothing is executed or persisted.
     """
     domain = domain or current_domain()
+    from core.tool_rail import effective_tool_rail
+    active_sources = effective_tool_rail(domain).sources
     if tool_fields is None:
         from tools.discovery import discover_data_feed_tools
         from self_modify.digest_path import digest_field_names
         tool_fields = {
             cls.name: tuple(digest_field_names(getattr(cls, "digest_fields", ())))
-            for cls in discover_data_feed_tools() if getattr(cls, "is_data_source", False)
+            for cls in discover_data_feed_tools()
+            if cls.name in active_sources and getattr(cls, "is_data_source", False)
         }
+    else:
+        tool_fields = {tool: fields for tool, fields in tool_fields.items() if tool in active_sources}
     exemptions = getattr(domain, "coverage_exemptions", {})
     out = []
     for map_name in FIELD_MAPS + TOOL_MAPS:

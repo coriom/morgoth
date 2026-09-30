@@ -469,21 +469,23 @@ def _split_camel_or_snake(s: str) -> list[str]:
 
 
 def learned_served_phrases() -> list[str]:
-    """Phrases learned automatically from every currently-discovered
-    data_feed tool's digest_fields + description. A newly-applied
-    tool (e.g. get_defillama_stablecoins with digest names like
-    total_supply, usdt_supply, asset_count) registers at import time
-    — no manual edit to TOOL_SERVED_PHRASES needed, so the next
-    campaign scorer no longer calls its angles unservable.
+    """Phrases from active Domain tools' digest fields and descriptions.
+
+    Installed but inactive tools cannot make an angle look serviceable.
+    Activation requires a separate Domain rail declaration.
 
     Best-effort: any discovery error is silently swallowed so the
     scorer keeps working on hosts where tools import differently.
     """
     out: list[str] = []
     try:
+        from core.tool_rail import effective_tool_rail
+        active = effective_tool_rail(_current_domain()).allowed
         from tools.discovery import discover_data_feed_tools
         from self_modify.digest_path import digest_field_names as _dnames
         for cls in discover_data_feed_tools():
+            if cls.name not in active:
+                continue
             # Class attribute stays a tuple of NAMES (2026-09-29 contract)
             # but we route through digest_field_names to survive any legacy
             # tool that still carries {name,path} dicts on the class.

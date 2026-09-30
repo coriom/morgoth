@@ -67,6 +67,9 @@ class _FakeTool:
 def _app_with_tools(*names: str) -> FastAPI:
     class _FakeRouter:
         def __init__(self) -> None:
+            from core.domain import current_domain
+            from core.tool_rail import effective_tool_rail
+            self.policy = effective_tool_rail(current_domain())
             self._tools = {n: _FakeTool(n, class_flag=False) for n in names}
 
     app = FastAPI()

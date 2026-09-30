@@ -23,6 +23,7 @@ from analysis.scorer_registry import resolve_scorer
 
 PACK = """\
 name: neutral
+rail: {tools: [synthetic_probe]}
 entities:
   alpha: [alpha]
   beta: [beta]
@@ -48,6 +49,11 @@ metric_collections:
 
 @pytest.fixture
 def neutral_pack(tmp_path, monkeypatch):
+    from core import tool_rail
+    installed = tool_rail.installed_catalog()
+    monkeypatch.setattr(tool_rail, "installed_catalog", lambda: {
+        **installed, "synthetic_probe": tool_rail.ToolKind(False, True, True),
+    })
     directory = tmp_path / "domains" / "neutral"
     directory.mkdir(parents=True)
     (directory / "domain.yaml").write_text(PACK, encoding="utf-8")
@@ -102,6 +108,9 @@ import sys
 from pathlib import Path
 from core import domain
 domain._DOMAINS_ROOT = Path(sys.argv[1])
+from core import tool_rail
+installed = tool_rail.installed_catalog()
+tool_rail.installed_catalog = lambda: {**installed, 'synthetic_probe': tool_rail.ToolKind(False, True, True)}
 from core.project import current_project, current_namespace
 from core.storage_namespace import collection_names
 p = current_project()
@@ -170,6 +179,11 @@ def test_collectors_keep_independent_intervals(neutral_pack):
     "scorers:\n  descriptive: unknown_scorer",
 ])
 def test_malformed_neutral_pack_fails_closed(tmp_path, monkeypatch, replacement):
+    from core import tool_rail
+    installed = tool_rail.installed_catalog()
+    monkeypatch.setattr(tool_rail, "installed_catalog", lambda: {
+        **installed, "synthetic_probe": tool_rail.ToolKind(False, True, True),
+    })
     text = PACK
     if replacement.startswith("semantic_windows_hours:"):
         text = re.sub(r"semantic_windows_hours:\n  default: 4\n  fast: 1\n  slow: 12", replacement, text)

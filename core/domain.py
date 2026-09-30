@@ -130,6 +130,7 @@ class Domain:
     bootstrap_recurring_task: dict[str, str] = field(default_factory=dict)
     thesis_phantom_example: str = ""
     thesis_subject_example: str = ""
+    rail_tools: tuple[str, ...] = ()
 
 
 
@@ -353,6 +354,34 @@ def _load(name: str) -> Domain:
     recurring = _str_map(raw.get("bootstrap_recurring_task"), "bootstrap_recurring_task")
     if recurring and (set(recurring) != {"description", "cron"} or not all(recurring.values())):
         raise DomainPackError("bootstrap_recurring_task requires description and cron")
+    source_cache_config = _int_pair_map(raw.get("source_cache_config"), "source_cache_config")
+    source_cache_default_args = _any_map_map(raw.get("source_cache_default_args"), "source_cache_default_args")
+    bootstrap_defaults = _any_map_map(raw.get("test_bootstrap_tool_defaults"), "test_bootstrap_tool_defaults")
+    scope_source_tool = _str_or_empty(raw.get("scope_source_tool"), "scope_source_tool")
+    legacy_metric_tool = _str_or_empty(raw.get("metric_source_tool"), "metric_source_tool")
+    rail = raw.get("rail", {"tools": []})
+    if not isinstance(rail, dict) or set(rail) != {"tools"}:
+        raise DomainPackError("rail must contain only an explicit tools list")
+    rail_tools = _str_list(rail["tools"], "rail.tools")
+    from core.tool_rail import ToolRailError, installed_catalog, validate_declared_rail
+    try:
+        validate_declared_rail(rail_tools, installed_catalog())
+    except ToolRailError as exc:
+        raise DomainPackError(str(exc)) from None
+    acquisition_maps = {
+        "source_cache_config": source_cache_config,
+        "source_cache_default_args": source_cache_default_args,
+        "metric_collections": collections,
+        "test_bootstrap_tool_defaults": bootstrap_defaults,
+    }
+    for map_name, refs in acquisition_maps.items():
+        inactive = set(refs) - set(rail_tools)
+        if inactive:
+            raise DomainPackError(f"{map_name} references inactive tools: {sorted(inactive)}")
+    if scope_source_tool and scope_source_tool not in rail_tools:
+        raise DomainPackError("scope_source_tool references inactive tool")
+    if legacy_metric_tool and legacy_metric_tool not in rail_tools:
+        raise DomainPackError("metric_source_tool references inactive tool")
     return Domain(
         name=_str(raw.get("name") or name, "name"),
         tagline=_str_or_empty(raw.get("tagline"), "tagline"),
@@ -375,19 +404,19 @@ def _load(name: str) -> Domain:
         scope_asset_metric_tokens=_str_list(raw.get("scope_asset_metric_tokens"), "scope_asset_metric_tokens"),
         scope_asset_subject_tokens=_str_list(raw.get("scope_asset_subject_tokens"), "scope_asset_subject_tokens"),
         scope_dominance_exception_tokens=_str_list(raw.get("scope_dominance_exception_tokens"), "scope_dominance_exception_tokens"),
-        scope_source_tool=_str_or_empty(raw.get("scope_source_tool"), "scope_source_tool"),
+        scope_source_tool=scope_source_tool,
         field_phrases=_str_list_map_map(raw.get("field_phrases"), "field_phrases"),
         ambiguous_phrases=_str_list(raw.get("ambiguous_phrases"), "ambiguous_phrases"),
         single_numeric_field=_str_map(raw.get("single_numeric_field"), "single_numeric_field"),
         timestamp_like_fields=_str_list(raw.get("timestamp_like_fields"), "timestamp_like_fields"),
         metric_names=metric_names,
         metric_field_map=metric_field_map,
-        metric_source_tool=next(iter(collections), "") if len(collections) == 1 else _str_or_empty(raw.get("metric_source_tool"), "metric_source_tool"),
+        metric_source_tool=next(iter(collections), "") if len(collections) == 1 else legacy_metric_tool,
         backtest_subject_markers=_str_list_map(raw.get("backtest_subject_markers"), "backtest_subject_markers"),
         prompt_bootstrap_snippet=_str_or_empty(raw.get("prompt_bootstrap_snippet"), "prompt_bootstrap_snippet"),
-        test_bootstrap_tool_defaults=_any_map_map(raw.get("test_bootstrap_tool_defaults"), "test_bootstrap_tool_defaults"),
-        source_cache_config=_int_pair_map(raw.get("source_cache_config"), "source_cache_config"),
-        source_cache_default_args=_any_map_map(raw.get("source_cache_default_args"), "source_cache_default_args"),
+        test_bootstrap_tool_defaults=bootstrap_defaults,
+        source_cache_config=source_cache_config,
+        source_cache_default_args=source_cache_default_args,
         postgres_schema=_str(raw.get("postgres_schema", "public"), "postgres_schema"),
         chroma_prefix=_str_or_empty(raw.get("chroma_prefix"), "chroma_prefix"),
         vault_dir=_str(raw.get("vault_dir") or str(Path.home() / "Morgoth" / "vault"), "vault_dir"),
@@ -402,6 +431,7 @@ def _load(name: str) -> Domain:
         bootstrap_recurring_task=recurring,
         thesis_phantom_example=_str_or_empty(raw.get("thesis_phantom_example"), "thesis_phantom_example"),
         thesis_subject_example=_str_or_empty(raw.get("thesis_subject_example"), "thesis_subject_example"),
+        rail_tools=rail_tools,
     )
 
 

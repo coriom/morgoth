@@ -55,29 +55,38 @@ def build_tool_router(
     """Register all Layer 1 tools and return the router."""
 
     router = ToolRouter(persistent_memory=persistent_memory)
-    router.register(WebSearchTool(config))
-    router.register(ExecutePythonTool(config))
-    router.register(ReadFileTool(config))
-    router.register(WriteFileTool(config))
+    def register_active(cls, *args) -> None:
+        if router.policy.is_allowed(cls.name):
+            router.register(cls(*args))
+
+    register_active(WebSearchTool, config)
+    register_active(ExecutePythonTool, config)
+    register_active(ReadFileTool, config)
+    register_active(WriteFileTool, config)
     # Auto-discovery: replaces the previous hand-registration of the four
     # data_feeds tools. A new file under tools/data_feeds/ is picked up at
     # process start; no red-zone edit required.
     for cls in discover_data_feed_tools():
-        router.register(instantiate_tool(cls, config, persistent_memory))
-    router.register(FredSeriesSearchTool(config))
-    router.register(FredSeriesObservationsTool(config))
+        if router.policy.is_allowed(cls.name):
+            router.register(instantiate_tool(cls, config, persistent_memory))
+    register_active(FredSeriesSearchTool, config)
+    register_active(FredSeriesObservationsTool, config)
     # reddit_search / reddit_subreddit_posts retired: Reddit closed anonymous
     # JSON in 2023 (403 across every host + UA); the tool produced 0
     # objectives and 0 theses over its life. Social-sentiment coverage is
     # left as reflect-pipeline territory (Bluesky's searchPosts is the
     # natural free/no-key candidate).
-    router.register(TechnicalAnalysisTool())
-    router.register(CreateAgentTool(config, agent_manager))
-    router.register(NotifyTool(config, notifier))
-    router.register(RememberTool(episodic_memory))
-    router.register(RecallTool(episodic_memory))
-    router.register(CreateObjectiveTool(persistent_memory))
-    router.register(UpdateObjectiveTool(persistent_memory))
+    register_active(TechnicalAnalysisTool)
+    register_active(CreateAgentTool, config, agent_manager)
+    register_active(NotifyTool, config, notifier)
+    register_active(RememberTool, episodic_memory)
+    register_active(RecallTool, episodic_memory)
+    register_active(CreateObjectiveTool, persistent_memory)
+    register_active(UpdateObjectiveTool, persistent_memory)
+    missing = router.policy.allowed - set(router.list_names())
+    if missing:
+        from core.tool_rail import ToolRailError
+        raise ToolRailError(f"active tools failed registration: {sorted(missing)}")
     return router
 
 

@@ -411,8 +411,11 @@ def _registered_tools_offline(config: Any, pm: Any) -> list[Any]:
             exc,
         )
         from tools.discovery import discover_data_feed_tools, instantiate_tool
-
-        return [instantiate_tool(cls, config, pm) for cls in discover_data_feed_tools()]
+        from core.domain import current_domain
+        from core.tool_rail import effective_tool_rail
+        active = effective_tool_rail(current_domain()).allowed
+        return [instantiate_tool(cls, config, pm) for cls in discover_data_feed_tools()
+                if cls.name in active]
 
 
 async def _load_applied_provenance(pm: Any) -> dict[str, dict[str, Any]]:
