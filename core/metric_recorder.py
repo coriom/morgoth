@@ -14,12 +14,11 @@ truth series for the three metrics; that's the ceiling of what we can
 promise.
 
 Design:
-  · One snapshot per interval (default 15 min → 96 snapshots/day per
-    metric, 288 CoinPaprika calls/day total). CoinPaprika's free tier
-    is generous; the 15-min cadence is comfortably below any published
-    ceiling and matches the granularity at which dominance moves.
-  · Reuses the EXISTING get_crypto_global_market tool via the tool
-    router — no new HTTP client, inherits retries and rate accounting.
+  · Each Domain-declared collector has its own cadence and maps one
+    registered tool payload to logical metric fields and a source label.
+    The built-in crypto pack retains its historical 15-minute interval.
+  · Calls tools through the existing router, inheriting retries and rate
+    accounting without another HTTP client.
   · Skipped entirely when the connectivity probe says offline (no
     point recording into an outage). Non-fatal on any error.
   · Writes to metric_series (metric, value, observed_at, source).
@@ -31,15 +30,12 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 
-# Env-tunable snapshot interval. 15 min default = 96 samples/day/metric.
-# CoinPaprika free tier documents ~25k requests/day — three metrics per
-# snapshot × 96 snapshots = 288 upstream calls/day, well under 2 % of the
-# free ceiling. Setting the interval to 1 min would still fit (4320/day),
-# but dominance moves slower than that; 15 min is honest sampling.
-def snapshot_interval_secs() -> int:
+# Optional operator-wide cadence override; each Domain collector otherwise
+# uses its declared interval. The minimum protects upstream rate budgets.
+def _interval_override() -> int | None:
     raw = os.environ.get("METRIC_RECORDER_INTERVAL_SECS", "").strip()
     if raw:
         try:
@@ -48,17 +44,23 @@ def snapshot_interval_secs() -> int:
                 return v
         except ValueError:
             pass
-    return 15 * 60
+    return None
+
+
+def snapshot_interval_secs(domain=None) -> int:
+    """Return the shortest configured cadence, or zero without collectors."""
+    collections = (domain or _current_domain()).metric_collections
+    if not collections:
+        return 0
+    return _interval_override() or min(item.interval_secs for item in collections.values())
 
 
 def recorder_enabled() -> bool:
     raw = os.environ.get("METRIC_RECORDER_ENABLED", "true").strip().lower()
-    return raw not in ("false", "0", "no", "off")
+    return bool(_current_domain().metric_collections) and raw not in ("false", "0", "no", "off")
 
 
-# Metric names — stable identifiers that the descriptive-backtest scorer
-# maps into MetricKind. Kept as module-level constants so tests and the
-# backtest reader agree on the exact spellings.
+# Historical metric identifiers stay import-stable for the crypto scorer.
 # 2026-09-30 chantier-1: metric names + field map + source tool
 # sourced from the active domain pack. Module-level names stay for
 # import stability (analysis/thesis_backtest_descriptive.py and tests
@@ -69,11 +71,12 @@ METRIC_BTC_DOMINANCE = _names.get("btc_dominance", "btc_dominance")
 METRIC_GLOBAL_MARKET_CAP = _names.get("global_market_cap", "global_market_cap")
 METRIC_GLOBAL_VOLUME_24H = _names.get("global_volume_24h", "global_volume_24h")
 _FIELD_MAP = dict(_current_domain().metric_field_map)
-_METRIC_SOURCE_TOOL = _current_domain().metric_source_tool or "get_crypto_global_market"
+_COLLECTIONS = _current_domain().metric_collections
 
 
-def extract_metrics(tool_result: dict[str, Any]) -> list[tuple[str, float]]:
-    """Pull the three tracked metrics from a get_crypto_global_market result.
+def extract_metrics(tool_result: dict[str, Any], *, fields: tuple[str, ...] | None = None,
+                    field_map: Mapping[str, str] | None = None) -> list[tuple[str, float]]:
+    """Pull Domain-declared metric fields from a tool result.
 
     Accepts either a raw tool payload (dict of digest fields) or the
     wrapping success envelope {"success": True, "result": {...}}. Missing
@@ -85,7 +88,10 @@ def extract_metrics(tool_result: dict[str, Any]) -> list[tuple[str, float]]:
     if "result" in tool_result and isinstance(tool_result["result"], dict):
         payload = tool_result["result"]
     out: list[tuple[str, float]] = []
-    for source_field, metric in _FIELD_MAP.items():
+    mapping = field_map if field_map is not None else _FIELD_MAP
+    selected = fields if fields is not None else tuple(mapping)
+    for source_field in selected:
+        metric = mapping[source_field]
         if source_field in payload:
             try:
                 out.append((metric, float(payload[source_field])))
@@ -94,35 +100,35 @@ def extract_metrics(tool_result: dict[str, Any]) -> list[tuple[str, float]]:
     return out
 
 
-async def snapshot_once(persistent_memory, tool_router) -> int:
-    """Take one snapshot: call get_crypto_global_market, write metric rows.
+async def snapshot_once(persistent_memory, tool_router, *, due_tools: tuple[str, ...] | None = None,
+                        domain=None) -> int:
+    """Take due Domain-declared snapshots and write metric rows.
 
     Returns the number of rows written (0 on any failure). Non-fatal —
     every error is logged and swallowed so the calling loop never dies
     on a recorder issue.
     """
     from loguru import logger
-    try:
-        tr = await tool_router.execute_tool(_METRIC_SOURCE_TOOL, {})
-    except Exception as exc:
-        logger.warning("metric recorder: tool call raised {}: {}",
-                       type(exc).__name__, exc)
-        return 0
-    if not isinstance(tr, dict) or not tr.get("success"):
-        return 0
-    metrics = extract_metrics(tr)
-    if not metrics:
-        return 0
-    now = datetime.now(timezone.utc)
     written = 0
-    for name, value in metrics:
+    pack = domain or _current_domain()
+    specs = pack.metric_collections
+    selected = due_tools if due_tools is not None else tuple(specs)
+    for tool in selected:
+        spec = specs[tool]
         try:
-            await persistent_memory.record_metric_sample(
-                name, value, now, "coinpaprika_global",
-            )
-            written += 1
+            tr = await tool_router.execute_tool(tool, dict(spec.args))
         except Exception as exc:
-            logger.warning("metric_series insert failed for {}: {}", name, exc)
+            logger.warning("metric recorder: tool call raised {}: {}", type(exc).__name__, exc)
+            continue
+        if not isinstance(tr, dict) or not tr.get("success"):
+            continue
+        now = datetime.now(timezone.utc)
+        for name, value in extract_metrics(tr, fields=spec.fields, field_map=pack.metric_field_map):
+            try:
+                await persistent_memory.record_metric_sample(name, value, now, spec.source)
+                written += 1
+            except Exception as exc:
+                logger.warning("metric_series insert failed for {}: {}", name, exc)
     return written
 
 
@@ -130,14 +136,24 @@ class ScheduleState:
     """Rolling monotonic timestamp of the last snapshot. One instance per
     running cycle loop; snapshot_due() drives when to call snapshot_once."""
 
-    __slots__ = ("last_snapshot_ts",)
+    __slots__ = ("last_snapshot_ts", "_last_by_tool", "_collections")
 
-    def __init__(self) -> None:
+    def __init__(self, collections: Mapping[str, Any] | None = None) -> None:
         self.last_snapshot_ts: float = 0.0
+        self._last_by_tool: dict[str, float] = {}
+        self._collections = collections if collections is not None else _COLLECTIONS
+
+    def due_tools(self, now_ts: float | None = None) -> tuple[str, ...]:
+        """Return each configured collector whose interval has elapsed."""
+        now_ts = now_ts if now_ts is not None else time.monotonic()
+        override = _interval_override()
+        return tuple(tool for tool, spec in self._collections.items()
+                     if now_ts - self._last_by_tool.get(tool, 0.0) >= (override or spec.interval_secs))
 
     def snapshot_due(self, now_ts: float | None = None) -> bool:
-        now_ts = now_ts if now_ts is not None else time.monotonic()
-        return (now_ts - self.last_snapshot_ts) >= snapshot_interval_secs()
+        return bool(self.due_tools(now_ts))
 
-    def mark_snapshot(self, now_ts: float | None = None) -> None:
+    def mark_snapshot(self, now_ts: float | None = None, *, tools: tuple[str, ...] | None = None) -> None:
         self.last_snapshot_ts = now_ts if now_ts is not None else time.monotonic()
+        for tool in tools if tools is not None else self._collections:
+            self._last_by_tool[tool] = self.last_snapshot_ts

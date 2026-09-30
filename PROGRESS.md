@@ -1,5 +1,23 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-09-30 — Generic Domain runtime contract
+
+- Moved crypto subject entities, semantic contradiction windows, metric collector
+  specs/cadence/source, bootstrap task and prompt examples into the declarative
+  crypto pack. Generic core now consumes typed, fail-closed Domain declarations.
+- Added trusted lazy scorer registry; crypto scoring remains specialised and
+  explicitly selected by its Domain. Project namespaces and LLM profiles unchanged.
+- Added test-only neutral Domain/Project subprocess proof, independent metric
+  schedules, malformed-pack tests and curated core hardcode regression.
+- Crypto before/after subject, window and recorder fixture identical; historical
+  0.0001 control remains 31 genuine / 16 confused. Canonical hermetic suite:
+  1909 passed (+12), 2 skipped, wall 16.3s, exit 0; focused regressions 469
+  passed; dedicated morgoth_test Project/profile/campaign SQL proofs 3 passed.
+- No production service, campaign, Project or profile mutation; no live market
+  commands, reflect, .env access, dependency/schema/UI change or Codex activation.
+  Offline crypto report/backtest scripts and the shared numeric parser import
+  remain documented in docs/DOMAIN_CONTRACT.md for a separate chantier.
+
 ## 2026-09-30 — Canonical campaign archive and lifecycle-aware recovery
 
 - Added analysis/campaign_archive.py and CLI `morgoth campaign --archive UUID

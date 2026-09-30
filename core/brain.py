@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from agents.agent_manager import AgentManager
 from api.ws.handler import OutboundWebSocketMessage, WebSocketManager
 from core.config import AppConfig
+from core.domain import current_domain
 from core.contradictions import (
     CONTRADICTION_WINDOW_HOURS,
     claims_oppose,
@@ -380,8 +381,7 @@ class Brain:
             "execute_python": {"code": "print('ok')", "timeout_seconds": 5},
             "read_file": {"path": "SPEC.md"},
             "write_file": {"path": "data/tool_test.txt", "content": "ok"},
-            "get_crypto_price": {"symbol": "bitcoin"},
-            "get_crypto_history": {"symbol": "bitcoin", "days": 1},
+            **current_domain().test_bootstrap_tool_defaults,
             "get_news": {"topic": "general", "limit": 1},
             "notify": {"level": "INFO", "content": "Phase 1 self-test"},
             "remember": {"collection": "decisions", "content": "tool self test", "category": "self_test"},
@@ -402,12 +402,15 @@ class Brain:
         recurring = [row for row in existing if row["type"] == TaskType.RECURRING.value]
         if recurring:
             return
+        recurring_spec = current_domain().bootstrap_recurring_task
+        if not recurring_spec:
+            return
         task = Task(
             type=TaskType.RECURRING,
             priority=TaskPriority.BACKGROUND,
-            description="Monitor BTC price every day",
+            description=recurring_spec["description"],
             created_by="morgoth",
-            recurrence_cron="0 8 * * *",
+            recurrence_cron=recurring_spec["cron"],
         )
         await self._scheduler.schedule(task)
 
@@ -600,14 +603,16 @@ class Brain:
                 # Scheduled independent of cycle cadence; skipped when the
                 # connectivity probe says offline (no point recording into
                 # an outage). Non-fatal.
+                _due_metric_tools = _metric_state.due_tools(now_ts)
                 if (_mr_enabled()
-                        and _metric_state.snapshot_due(now_ts)
+                        and _due_metric_tools
                         and _connectivity.is_online):
                     try:
                         written = await _mr_snapshot(
                             self._persistent_memory, self._tool_router,
+                            due_tools=_due_metric_tools,
                         )
-                        _metric_state.mark_snapshot(now_ts)
+                        _metric_state.mark_snapshot(now_ts, tools=_due_metric_tools)
                         if written:
                             logger.debug("metric_series: wrote {} rows", written)
                     except Exception as _mr_exc:
@@ -1058,13 +1063,9 @@ class Brain:
                         # (empty DB) or builder failure. Kept
                         # byte-identical to the pre-context prompt so
                         # first-run behavior is preserved.
-                        prompt = (
+                        prompt = current_domain().prompt_bootstrap_snippet.rstrip("\n") or (
                             "NO ACTIVE OBJECTIVES.\n\n"
-                            "STEP 1: Call get_crypto_price with symbol='bitcoin' to scan markets.\n"
-                            "STEP 2: After receiving the price, IMMEDIATELY call create_objective "
-                            "with a title and description based on what you observed. "
-                            "Pick a specific topic to investigate next "
-                            "(e.g., on-chain metrics, sentiment shift, news event, technical pattern).\n\n"
+                            "Pick a specific investigable subject using the registered tools.\n\n"
                             "MANDATORY: end this cycle by calling create_objective. "
                             "Do not narrate. Tool calls only."
                         )
@@ -1470,7 +1471,7 @@ class Brain:
             "- Every thesis MUST be about a metric/entity that the "
             "synthesis actually discusses with a concrete value or "
             "observation. Do NOT describe metrics no tool reported this "
-            "cycle (past incident: theses about 'Ethereum hash rate' when "
+            f"cycle (past incident: theses about '{current_domain().thesis_phantom_example or 'an unmeasured field'}' when "
             "no hashrate tool ran — a PHANTOM CLAIM asserted from "
             "training rather than observed from findings; strictly "
             "prohibited).\n"
@@ -1481,8 +1482,7 @@ class Brain:
             "observation from the synthesis in its evidence. If you "
             "cannot cite a specific datum, do NOT emit the thesis.\n"
             "- subject must be a SHORT normalized noun phrase — a topic "
-            "(e.g. 'BTC short-term price', 'BTC hashrate' if hashrate "
-            "was actually measured this cycle). NOT a full sentence, "
+            f"(e.g. {current_domain().thesis_subject_example or 'a measured subject'}). NOT a full sentence, "
             "NOT a news headline.\n"
             "- Never emit claims like 'unclear', 'mixed', 'unknown', "
             "'complex', 'unrelated', 'no correlation', 'inaccurate' — "

@@ -30,6 +30,8 @@ runtime toggle. Locked by
 from __future__ import annotations
 
 import os
+import math
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -48,6 +50,16 @@ class DomainPackError(ValueError):
 
     Distinct from generic ValueError so the process-entry code can
     catch it and print a helpful message before exiting."""
+
+
+@dataclass(frozen=True)
+class MetricCollection:
+    """One validated tool poll and its logical metric field references."""
+
+    source: str
+    interval_secs: int
+    fields: tuple[str, ...]
+    args: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -107,6 +119,17 @@ class Domain:
     field_units: dict[str, dict[str, str]] = field(default_factory=dict)
     field_contexts: dict[str, dict[str, str]] = field(default_factory=dict)
     coverage_exemptions: dict[str, dict[str, str]] = field(default_factory=dict)
+    entities: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    entity_required_phrases: tuple[str, ...] = ()
+    entity_excluded_phrases: tuple[str, ...] = ()
+    semantic_classes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    semantic_windows_hours: dict[str, float] = field(default_factory=dict)
+    semantic_window_env: dict[str, str] = field(default_factory=dict)
+    metric_collections: dict[str, MetricCollection] = field(default_factory=dict)
+    scorers: dict[str, str] = field(default_factory=dict)
+    bootstrap_recurring_task: dict[str, str] = field(default_factory=dict)
+    thesis_phantom_example: str = ""
+    thesis_subject_example: str = ""
 
 
 
@@ -225,6 +248,48 @@ def _any_map_map(x: Any, path: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _positive_float_map(x: Any, path: str) -> dict[str, float]:
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail(path, "dict[str, positive hours]", x)
+    out = {}
+    for key, value in x.items():
+        name = _str(key, f"{path}.<key>")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            _fail(f"{path}.{name}", "positive finite hours", value)
+        out[name] = float(value)
+    return out
+
+
+def _metric_collections(x: Any, field_map: dict[str, str],
+                        metric_names: dict[str, str]) -> dict[str, MetricCollection]:
+    if x is None:
+        return {}
+    if not isinstance(x, dict):
+        _fail("metric_collections", "mapping of tool specifications", x)
+    result: dict[str, MetricCollection] = {}
+    assigned: set[str] = set()
+    for key, item in x.items():
+        tool = _str(key, "metric_collections.<tool>")
+        if not tool or not isinstance(item, dict) or set(item) != {"source", "interval_secs", "fields", "args"}:
+            _fail(f"metric_collections.{tool}", "{source, interval_secs, fields, args}", item)
+        source = _str(item["source"], f"metric_collections.{tool}.source")
+        interval = item["interval_secs"]
+        fields = _str_list(item["fields"], f"metric_collections.{tool}.fields")
+        args = _any_map_map({tool: item["args"]}, "metric_collections.args")[tool]
+        if not source or type(interval) is not int or interval < 60 or not fields or len(set(fields)) != len(fields):
+            _fail(f"metric_collections.{tool}", "nonempty source, interval >= 60, unique fields", item)
+        for name in fields:
+            if name not in field_map or field_map[name] not in metric_names or name in assigned:
+                raise DomainPackError(f"metric_collections.{tool}: unknown or duplicate metric field {name!r}")
+            assigned.add(name)
+        result[tool] = MetricCollection(source, interval, fields, args)
+    if set(field_map) != assigned:
+        raise DomainPackError("metric_collections must assign every metric_field_map field once")
+    return result
+
+
 def _load(name: str) -> Domain:
     from core.storage_namespace import validate_identifier
     try:
@@ -248,11 +313,51 @@ def _load(name: str) -> Domain:
         validate_namespace(raw.get("postgres_schema", "public"), raw.get("chroma_prefix") or "", legacy=True)
     except ValueError as exc:
         raise DomainPackError(str(exc)) from None
+    price_tokens = _str_list(raw.get("price_class_tokens"), "price_class_tokens")
+    semantic_classes = _str_list_map(raw.get("semantic_classes"), "semantic_classes")
+    if price_tokens and "price" in semantic_classes:
+        raise DomainPackError("price_class_tokens and semantic_classes.price duplicate authority")
+    if price_tokens:
+        semantic_classes["price"] = price_tokens  # old-pack input adapter only
+    windows = _positive_float_map(raw.get("semantic_windows_hours"), "semantic_windows_hours")
+    window_env = _str_map(raw.get("semantic_window_env"), "semantic_window_env")
+    if raw.get("semantic_classes") is not None or windows or window_env:
+        if "default" not in windows or "default" in semantic_classes:
+            raise DomainPackError("semantic_windows_hours.default is required; default is not a class")
+        if set(semantic_classes) - set(windows) or set(window_env) - set(windows):
+            raise DomainPackError("each semantic class/environment override needs a declared window")
+        for key, value in window_env.items():
+            if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", value):
+                raise DomainPackError(f"semantic_window_env.{key}: invalid environment name")
+    entities = _str_list_map(raw.get("entities"), "entities")
+    seen_aliases: set[str] = set()
+    for entity, aliases in entities.items():
+        if not entity or not aliases or any(not alias.strip() for alias in aliases):
+            raise DomainPackError("entities need nonempty names and aliases")
+        for alias in aliases:
+            if alias.lower() in seen_aliases:
+                raise DomainPackError("duplicate entity alias")
+            seen_aliases.add(alias.lower())
+    metric_names = _str_map(raw.get("metric_names"), "metric_names")
+    metric_field_map = _str_map(raw.get("metric_field_map"), "metric_field_map")
+    collections = _metric_collections(raw.get("metric_collections"), metric_field_map, metric_names)
+    if collections and raw.get("metric_source_tool"):
+        raise DomainPackError("metric_source_tool and metric_collections duplicate authority")
+    scorers = _str_map(raw.get("scorers"), "scorers")
+    if scorers:
+        from analysis.scorer_registry import registered_scorers
+        if not set(scorers) <= {"descriptive", "directional", "campaign_quality"}:
+            raise DomainPackError("unknown scorer role")
+        if not set(scorers.values()) <= registered_scorers():
+            raise DomainPackError("unknown scorer implementation")
+    recurring = _str_map(raw.get("bootstrap_recurring_task"), "bootstrap_recurring_task")
+    if recurring and (set(recurring) != {"description", "cron"} or not all(recurring.values())):
+        raise DomainPackError("bootstrap_recurring_task requires description and cron")
     return Domain(
         name=_str(raw.get("name") or name, "name"),
         tagline=_str_or_empty(raw.get("tagline"), "tagline"),
         generic_subject_tokens=_str_list(raw.get("generic_subject_tokens"), "generic_subject_tokens"),
-        price_class_tokens=_str_list(raw.get("price_class_tokens"), "price_class_tokens"),
+        price_class_tokens=semantic_classes.get("price", ()),
         subject_prefix_stopwords=_str_list(raw.get("subject_prefix_stopwords"), "subject_prefix_stopwords"),
         name_stopwords=_str_list(raw.get("name_stopwords"), "name_stopwords"),
         phrase_stopwords=_str_list(raw.get("phrase_stopwords"), "phrase_stopwords"),
@@ -275,9 +380,9 @@ def _load(name: str) -> Domain:
         ambiguous_phrases=_str_list(raw.get("ambiguous_phrases"), "ambiguous_phrases"),
         single_numeric_field=_str_map(raw.get("single_numeric_field"), "single_numeric_field"),
         timestamp_like_fields=_str_list(raw.get("timestamp_like_fields"), "timestamp_like_fields"),
-        metric_names=_str_map(raw.get("metric_names"), "metric_names"),
-        metric_field_map=_str_map(raw.get("metric_field_map"), "metric_field_map"),
-        metric_source_tool=_str_or_empty(raw.get("metric_source_tool"), "metric_source_tool"),
+        metric_names=metric_names,
+        metric_field_map=metric_field_map,
+        metric_source_tool=next(iter(collections), "") if len(collections) == 1 else _str_or_empty(raw.get("metric_source_tool"), "metric_source_tool"),
         backtest_subject_markers=_str_list_map(raw.get("backtest_subject_markers"), "backtest_subject_markers"),
         prompt_bootstrap_snippet=_str_or_empty(raw.get("prompt_bootstrap_snippet"), "prompt_bootstrap_snippet"),
         test_bootstrap_tool_defaults=_any_map_map(raw.get("test_bootstrap_tool_defaults"), "test_bootstrap_tool_defaults"),
@@ -286,6 +391,17 @@ def _load(name: str) -> Domain:
         postgres_schema=_str(raw.get("postgres_schema", "public"), "postgres_schema"),
         chroma_prefix=_str_or_empty(raw.get("chroma_prefix"), "chroma_prefix"),
         vault_dir=_str(raw.get("vault_dir") or str(Path.home() / "Morgoth" / "vault"), "vault_dir"),
+        entities=entities,
+        entity_required_phrases=_str_list(raw.get("entity_required_phrases"), "entity_required_phrases"),
+        entity_excluded_phrases=_str_list(raw.get("entity_excluded_phrases"), "entity_excluded_phrases"),
+        semantic_classes=semantic_classes,
+        semantic_windows_hours=windows,
+        semantic_window_env=window_env,
+        metric_collections=collections,
+        scorers=scorers,
+        bootstrap_recurring_task=recurring,
+        thesis_phantom_example=_str_or_empty(raw.get("thesis_phantom_example"), "thesis_phantom_example"),
+        thesis_subject_example=_str_or_empty(raw.get("thesis_subject_example"), "thesis_subject_example"),
     )
 
 
@@ -314,3 +430,44 @@ def reset_domain_cache() -> None:
     captured the pack at import (see the ONE-DOMAIN-PER-PROCESS
     invariant in the module docstring)."""
     current_domain.cache_clear()
+
+
+def resolve_subject_entity(subject: str, domain: Domain | None = None) -> str | None:
+    """Resolve a Domain-declared entity; no entity declaration means no match."""
+    pack = domain or current_domain()
+    if not isinstance(subject, str) or not subject:
+        return None
+    low = subject.lower()
+    if (pack.entity_required_phrases and not any(p in low for p in pack.entity_required_phrases)):
+        return None
+    if any(p in low for p in pack.entity_excluded_phrases):
+        return None
+    return next((entity for entity, aliases in pack.entities.items()
+                 if any(alias.lower() in low for alias in aliases)), None)
+
+
+def subject_semantic_class(subject: str, domain: Domain | None = None) -> str:
+    """Classify a subject by declared tokens, falling to declared default."""
+    pack = domain or current_domain()
+    low = subject.lower() if isinstance(subject, str) else ""
+    return next((name for name, tokens in pack.semantic_classes.items()
+                 if low and any(token.lower() in low for token in tokens)), "default")
+
+
+def semantic_window_hours(semantic_class: str, domain: Domain | None = None) -> float:
+    """Return a declared window; invalid class or override fails closed."""
+    pack = domain or current_domain()
+    try:
+        base = pack.semantic_windows_hours[semantic_class]
+    except KeyError:
+        raise DomainPackError(f"undeclared semantic window {semantic_class!r}") from None
+    env_name = pack.semantic_window_env.get(semantic_class)
+    if not env_name or not os.environ.get(env_name):
+        return base
+    try:
+        value = float(os.environ[env_name])
+        if math.isfinite(value) and value > 0:
+            return value
+    except ValueError:
+        pass
+    raise DomainPackError(f"invalid semantic window override {env_name}") from None

@@ -4,8 +4,8 @@ The operator now runs in short bursts. Nothing in the loop KNOWS a gap
 happened, so a thesis stamped right after resume is compared against a
 pre-gap belief state as if the last observation were still current.
 
-Signal chosen: metric_series.observed_at. The recorder writes every 15
-min while alive; a gap larger than one snapshot interval is bounded by
+Signal chosen: metric_series.observed_at. The Domain-declared recorder writes
+on its configured cadence; a gap larger than one snapshot interval is bounded by
 the two adjacent observed_at values. Alternatives rejected:
   · last cycle log — logs are gossipy; a cycle that dies mid-flight
     still leaves partial entries. Timestamp reliability is per-log-line,
@@ -43,6 +43,10 @@ async def compute_and_record_gap(persistent_memory) -> dict[str, Any] | None:
     if it exceeds the threshold, insert a session_gaps row. Returns the
     inserted row (dict) or None. Non-fatal on any error — startup MUST
     NOT die because a gap detector failed."""
+    from core.metric_recorder import snapshot_interval_secs
+    interval = snapshot_interval_secs()
+    if not interval:
+        return None  # no Domain-declared recorder heartbeat to interpret
     try:
         pool = persistent_memory._require_pool()
         async with pool.acquire() as conn:
@@ -57,10 +61,8 @@ async def compute_and_record_gap(persistent_memory) -> dict[str, Any] | None:
         return None
     now = datetime.now(timezone.utc)
     last = row["observed_at"]
-    # Subtract one interval — the recorder writes at 15 min cadence, so
-    # a gap smaller than one interval is normal waiting, not downtime.
-    from core.metric_recorder import snapshot_interval_secs
-    delta = (now - last).total_seconds() - float(snapshot_interval_secs())
+    # Subtract one configured interval — normal recorder waiting is not downtime.
+    delta = (now - last).total_seconds() - float(interval)
     if delta < gap_threshold_secs():
         return None
     try:

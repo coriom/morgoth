@@ -22,7 +22,22 @@ generic_subject_tokens:
 
 # core/contradictions.py::PRICE_CLASS_TOKENS — substring markers that
 # flip the contradiction window from long (8h) to short (2h).
-price_class_tokens: [price, change, trend, volume]
+semantic_classes:
+  price: [price, change, trend, volume]
+semantic_windows_hours:
+  default: 6.0
+  price: 2.0
+semantic_window_env:
+  default: CONTRADICTION_WINDOW_HOURS
+  price: CONTRADICTION_WINDOW_HOURS_PRICE
+
+# Directional price scorer's entity vocabulary and exclusions.
+entities:
+  bitcoin: [btc, bitcoin]
+  ethereum: [eth, ethereum]
+entity_required_phrases: [price]
+entity_excluded_phrases:
+  [gas, long-term, long term, hash rate, network congestion, funding, dominance]
 
 # core/contradictions.py::_SUBJECT_PREFIX_STOPWORDS — prefixes stripped
 # for contradiction GROUPING ONLY. Stored subjects are NOT rewritten.
@@ -581,7 +596,17 @@ metric_field_map:
   market_cap_usd: global_market_cap
   volume_24h_usd: global_volume_24h
 
-metric_source_tool: get_crypto_global_market
+metric_collections:
+  get_crypto_global_market:
+    source: coinpaprika_global
+    interval_secs: 900
+    fields: [bitcoin_dominance_percentage, market_cap_usd, volume_24h_usd]
+    args: {}
+
+scorers:
+  descriptive: crypto_descriptive
+  directional: crypto_directional
+  campaign_quality: crypto_campaign_quality
 
 # ---------------------------------------------------------------------
 # analysis/thesis_backtest_descriptive.py — subject-marker tables
@@ -628,6 +653,13 @@ prompt_bootstrap_snippet: |
   MANDATORY: end this cycle by calling create_objective. Do not narrate. Tool calls only.
 
 # core/brain.py objectives_test_bootstrap defaults.
+bootstrap_recurring_task:
+  description: "Monitor BTC price every day"
+  cron: "0 8 * * *"
+
+thesis_phantom_example: Ethereum hash rate
+thesis_subject_example: "'BTC short-term price', 'BTC hashrate' if hashrate was actually measured this cycle"
+
 test_bootstrap_tool_defaults:
   get_crypto_price:
     symbol: bitcoin

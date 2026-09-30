@@ -18,7 +18,6 @@ positive).
 from __future__ import annotations
 
 import math
-import os
 import re
 from typing import Any, Callable
 
@@ -44,9 +43,11 @@ SUBJECT_SIMILARITY_THRESHOLD: float = 0.75
 #
 # Env override lets the runtime tune without a code change:
 #   CONTRADICTION_WINDOW_HOURS=6.0
-CONTRADICTION_WINDOW_HOURS: float = float(
-    os.environ.get("CONTRADICTION_WINDOW_HOURS", "6.0")
-)
+from core.domain import (current_domain as _current_domain,
+                         semantic_window_hours as _semantic_window_hours,
+                         subject_semantic_class as _semantic_class)
+
+CONTRADICTION_WINDOW_HOURS: float = _semantic_window_hours("default")
 
 
 # Per-class window for price-direction subjects.
@@ -61,8 +62,8 @@ CONTRADICTION_WINDOW_HOURS: float = float(
 #
 # Same env-override pattern as the flat constant:
 #   CONTRADICTION_WINDOW_HOURS_PRICE=2.0
-CONTRADICTION_WINDOW_HOURS_PRICE: float = float(
-    os.environ.get("CONTRADICTION_WINDOW_HOURS_PRICE", "2.0")
+CONTRADICTION_WINDOW_HOURS_PRICE: float | None = (
+    _semantic_window_hours("price") if "price" in _current_domain().semantic_windows_hours else None
 )
 
 
@@ -75,7 +76,6 @@ CONTRADICTION_WINDOW_HOURS_PRICE: float = float(
 # does not need to re-check that.
 # 2026-09-30 chantier-1: sourced from the active domain pack
 # (domains/<name>/domain.yaml). See core/domain.py.
-from core.domain import current_domain as _current_domain  # noqa: E402
 PRICE_CLASS_TOKENS: frozenset[str] = frozenset(_current_domain().price_class_tokens)
 
 
@@ -88,8 +88,7 @@ def subject_is_price_class(subject: str) -> bool:
     """
     if not isinstance(subject, str) or not subject:
         return False
-    low = subject.lower()
-    return any(tok in low for tok in PRICE_CLASS_TOKENS)
+    return _semantic_class(subject) == "price"
 
 
 # Prefix-stopwords stripped for CONTRADICTION GROUPING ONLY. The 8B
@@ -127,9 +126,8 @@ def window_for(subject_a: str, subject_b: str) -> float:
     TIGHTER window (2h). Extraction variance on the price-class side
     would otherwise leak through the wider window.
     """
-    if subject_is_price_class(subject_a) or subject_is_price_class(subject_b):
-        return CONTRADICTION_WINDOW_HOURS_PRICE
-    return CONTRADICTION_WINDOW_HOURS
+    return min(_semantic_window_hours(_semantic_class(subject_a)),
+               _semantic_window_hours(_semantic_class(subject_b)))
 
 
 # Timeframe qualifiers that make two subjects NON-COMPARABLE regardless of

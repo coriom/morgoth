@@ -258,7 +258,9 @@ def format_campaign_report(
     # (b) SCORABILITY — triage the campaign's theses via the backtest
     # classifier (canonical_subject preferred, falls back to raw).
     # Do NOT re-implement the classifier here.
-    from analysis.thesis_backtest_descriptive import triage as _triage
+    from analysis.scorer_registry import resolve_scorer
+    from core.domain import current_domain
+    _triage = resolve_scorer(current_domain(), "descriptive")
     rows_for_triage = [
         {
             "subject": t.get("canonical_subject") or t.get("subject", ""),
@@ -266,7 +268,7 @@ def format_campaign_report(
         }
         for t in theses
     ]
-    counts, _mrs, _un, _subj = _triage(rows_for_triage) if rows_for_triage else (
+    counts, _mrs, _un, _subj = _triage(rows_for_triage) if rows_for_triage and _triage else (
         {"input": 0, "metric": 0, "relation": 0, "unreachable": 0, "subjective": 0},
         [], [], [],
     )

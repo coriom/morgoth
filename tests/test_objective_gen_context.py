@@ -316,7 +316,9 @@ def test_brain_source_carries_bootstrap_fallback_markers() -> None:
     # New builder is invoked.
     assert "build_generation_context" in src
     # Bootstrap path preserved verbatim.
-    assert "STEP 1: Call get_crypto_price with symbol='bitcoin' to scan markets." in src
+    from core.domain import current_domain
+    assert "STEP 1: Call get_crypto_price with symbol='bitcoin' to scan markets." in current_domain().prompt_bootstrap_snippet
+    assert "current_domain().prompt_bootstrap_snippet" in src
     # Knowledge-grounded path has the DIVERGE instruction.
     assert "DIVERGE from the recent titles above" in src
     # Mandatory ending preserved in BOTH branches. String is split
@@ -335,7 +337,7 @@ def test_brain_source_context_branch_is_free_of_hardcoded_price_scan() -> None:
     src = Path("core/brain.py").read_text(encoding="utf-8")
     # Split at the bootstrap fallback marker; the "if generation_ctx"
     # branch sits BEFORE the else with STEP 1.
-    marker = "STEP 1: Call get_crypto_price"
+    marker = "current_domain().prompt_bootstrap_snippet"
     idx = src.find(marker)
     assert idx > 0
     ctx_branch = src[: idx].rsplit("if generation_ctx:", 1)[-1]

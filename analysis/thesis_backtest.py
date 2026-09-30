@@ -163,22 +163,9 @@ def subject_asset(subject: str) -> Asset | None:
       - "trend" without a direction word in the subject is fine —
         the direction still has to come from the claim.
     """
-    if not subject:
-        return None
-    s = subject.lower()
-    if "gas" in s:  # gas price is in gwei, not USD spot
-        return None
-    if "long-term" in s or "long term" in s:
-        return None
-    if "hash rate" in s or "network congestion" in s or "funding" in s or "dominance" in s:
-        return None
-    if "price" not in s:
-        return None
-    if "btc" in s or "bitcoin" in s:
-        return "bitcoin"
-    if "eth" in s or "ethereum" in s:
-        return "ethereum"
-    return None
+    from typing import cast
+    from core.domain import resolve_subject_entity
+    return cast(Asset | None, resolve_subject_entity(subject))
 
 
 def bucket_actual(p0: float, p1: float, flat_band: float) -> Direction:
