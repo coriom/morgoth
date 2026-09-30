@@ -12,6 +12,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from core.config import AppConfig
+from core.campaign_lifecycle import CAMPAIGN_LIVE_SQL, OBJECTIVE_RESEARCH_SQL
 
 
 CREATE_EXTENSION_SQL = 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
@@ -968,15 +969,18 @@ class PersistentMemory:
 
         Priority order matches get_objectives(status='pending'):
         priority ASC, created_at ASC.
+        Campaign-bound work additionally requires the canonical live predicate;
+        expired/closed/missing campaigns never re-enter current research.
         """
         pool = self._require_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
                 rows = await conn.fetch(
                     "SELECT * FROM objectives "
-                    "WHERE status = 'pending' "
+                    "WHERE (status = 'pending' "
                     "   OR (status = 'in_progress' "
-                    "       AND updated_at > NOW() - ($1::int * INTERVAL '1 minute')) "
+                    "       AND updated_at > NOW() - ($1::int * INTERVAL '1 minute'))) "
+                    f"AND {OBJECTIVE_RESEARCH_SQL} "
                     "ORDER BY priority ASC, created_at ASC "
                     "FOR UPDATE SKIP LOCKED LIMIT $2",
                     int(active_threshold_minutes), int(limit),
@@ -1004,6 +1008,10 @@ class PersistentMemory:
         into the ``stale_timeout`` terminal status. Returns the
         terminated rows' identifying fields for a logging pass.
 
+        Closed/expired campaign objectives are forensic records: leave their
+        status, contents and timestamps intact, using the same eligibility guard
+        as orphan recovery and claiming.
+
         MAX_CYCLES bounds an objective's active lifetime to <1h of
         cycling, so any non-terminal row days old is by construction
         abandoned — no updated_at column exists (see schema); the
@@ -1021,6 +1029,7 @@ class PersistentMemory:
                 "UPDATE objectives SET status = 'stale_timeout' "
                 "WHERE status IN ('pending', 'in_progress') "
                 "AND created_at < NOW() - ($1::float * INTERVAL '1 day') "
+                f"AND {OBJECTIVE_RESEARCH_SQL} "
                 "RETURNING objective_id, title, created_at, cycle_count",
                 float(max_age_days),
             )
@@ -1458,6 +1467,8 @@ class PersistentMemory:
             objective in this process being reclaimed).
 
         Returns the reclaimed rows for logging.
+        Campaign eligibility is checked here even before startup expiry runs;
+        excluded forensic rows are left entirely unchanged.
         """
         pool = self._require_pool()
         params: list[Any] = [int(threshold_minutes)]
@@ -1474,6 +1485,7 @@ class PersistentMemory:
                 f"UPDATE objectives SET status = 'pending', updated_at = NOW() "
                 f"WHERE status = 'in_progress' "
                 f"AND updated_at < NOW() - ($1::int * INTERVAL '1 minute') "
+                f"AND {OBJECTIVE_RESEARCH_SQL} "
                 f"{exclusion} "
                 f"RETURNING objective_id, title, cycle_count, updated_at",
                 *params,
@@ -1769,7 +1781,7 @@ class PersistentMemory:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT campaign_id, subject, started_at, ends_at, status "
-                "FROM campaigns WHERE status='active' "
+                f"FROM campaigns WHERE {CAMPAIGN_LIVE_SQL} "
                 "ORDER BY started_at DESC LIMIT 1"
             )
         return dict(row) if row else None
@@ -1802,7 +1814,7 @@ class PersistentMemory:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "UPDATE campaigns SET status='completed', ended_at=NOW() "
-                "WHERE status='active' AND ends_at <= NOW() "
+                f"WHERE status='active' AND NOT ({CAMPAIGN_LIVE_SQL}) "
                 "RETURNING campaign_id, subject, started_at, ends_at, ended_at"
             )
         return dict(row) if row else None

@@ -328,6 +328,7 @@ cmd_campaign() {
     #   morgoth campaign --end        → end active
     #   morgoth campaign --report [ID]→ print report
     #   morgoth campaign --quality ID → six-class quality scorer
+    #   morgoth campaign --archive ID --output PATH → read-only forensic export
     if [[ $# -eq 0 || "$1" == "--status" ]]; then
         (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py status)
     elif [[ "$1" == "--end" ]]; then
@@ -335,6 +336,9 @@ cmd_campaign() {
     elif [[ "$1" == "--report" ]]; then
         shift
         (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py report "$@")
+    elif [[ "$1" == "--archive" ]]; then
+        shift
+        (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py archive "$@")
     elif [[ "$1" == "--quality" ]]; then
         shift
         (cd "$REPO_DIR" && "$VENV_PY" scripts/campaign_cli.py quality "$@")
@@ -385,6 +389,8 @@ Commands:
                         (docs-page liveness only; reflect gates still guard specs)
   focus [TEXT|--clear]  set / show / clear the operator focus directive
                         (steers objective-generation topic choice only)
+  campaign --archive UUID --output PATH [--validity PARTIAL] [--forensic-only]
+                        export owned campaign evidence read-only with SHA-256
   ui [--port N] [--no-backend]  launch morgoth_ui dev server; ensures backend first
                         (foreground; Ctrl+C stops dev server, backend keeps running)
   help            print this message

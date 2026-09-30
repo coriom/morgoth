@@ -144,6 +144,11 @@ async def _cmd_quality(pm: PersistentMemory, args: argparse.Namespace) -> int:
 async def _main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="campaign", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
+    pa = sub.add_parser("archive", help="export campaign-owned evidence, strictly read-only")
+    pa.add_argument("campaign_id")
+    pa.add_argument("--output", type=Path, required=True)
+    pa.add_argument("--validity", choices=("COMPLETE", "PARTIAL", "EMPTY/FAILED"), default="NOT_ASSESSED")
+    pa.add_argument("--forensic-only", action="store_true")
     ps = sub.add_parser("start", help="start a new campaign (auto-closes any active)")
     ps.add_argument("subject"); ps.add_argument("--days", type=int, default=7)
     ps.set_defaults(_fn=_cmd_start)
@@ -165,6 +170,21 @@ async def _main(argv: list[str]) -> int:
                           "different lengths)")
     pq.set_defaults(_fn=_cmd_quality)
     args = p.parse_args(argv)
+    if args.cmd == "archive":
+        # Bypass both config directory creation and PM schema initialization.
+        from analysis.campaign_archive import ArchiveError, archive_command
+        try:
+            digest = await archive_command(args.campaign_id, args.output,
+                                           validity=args.validity, forensic_only=args.forensic_only)
+        except ArchiveError as exc:
+            print(f"campaign archive: {exc}", file=sys.stderr)
+            return 1
+        except Exception:
+            # Database/OS exception strings can contain credentials or payloads.
+            print("campaign archive failed; no database changes requested", file=sys.stderr)
+            return 1
+        print(f"campaign archive written; sha256={digest}")
+        return 0
     config = await load_config()
     pm = PersistentMemory(config); await pm.initialize()
     try:

@@ -1,5 +1,31 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-09-30 — Canonical campaign archive and lifecycle-aware recovery
+
+- Added analysis/campaign_archive.py and CLI `morgoth campaign --archive UUID
+  --output PATH`: direct repeatable-read/read-only PostgreSQL snapshot; no runtime
+  initialization, DDL, Chroma or inference. Only campaign-owned evidence is included;
+  unreconstructible/global classes are declared, producer versions never inferred.
+- Deterministic JSON + exact-byte SHA-256, 0600 files, fsync and atomic no-overwrite
+  Linux rename. Sensitive-looking content refuses export without exposing values.
+- Added core/campaign_lifecycle.py: one SQL eligibility predicate shared by claiming,
+  orphan recovery, stale sweep, active selection and expiry. Closed/expired/missing
+  campaign objectives remain untouched/nonclaimable; live and ordinary recovery
+  retain the existing deadlines and statuses. No general timeout override.
+- Added docs/DERIBIT_RERUN.md with ownership audit, archival limits and exact future
+  rerun sequence: preserve PARTIAL artifact, normal restart, prove old objectives
+  unchanged, health/rail checks, new campaign + full SHA/Project/start/end manifest.
+- Validation: canonical 1825 passed (+23), 2 skipped, wall 16.9s, exit 0; focused
+  archive/lifecycle/Project/Deribit 154 passed; real SQL proof in a disposable schema
+  of morgoth_test 1 passed (0.29s), no production DB access in tests.
+- Historical 31 genuine / 16 confused control green. Project/Domain, Deribit logic,
+  thesis semantics and Codex SAFE_FOR_WORKLOADS=False unchanged; UI untouched.
+- No production archive/state mutation, service lifecycle action, .env edit, reflect,
+  proposal approval/application or systemd workaround. Autostart remains disabled.
+- No dependencies or schema changes. Deferred read-only Chroma/global telemetry
+  reconstruction and non-Linux atomic-publication portability.
+
+
 ## 2026-09-29 — Deribit measurement coverage and source/unit audit
 
 - Completed declarative Deribit served/rail/phrase/source/unit/context/cache metadata;
