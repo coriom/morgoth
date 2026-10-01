@@ -1,0 +1,58 @@
+{
+  "geometry": {
+    "coordinates": [
+      -77.0402,
+      38.8512,
+      3
+    ],
+    "type": "Point"
+  },
+  "properties": {
+    "meta": {
+      "units": {
+        "air_temperature": "celsius",
+        "precipitation_amount": "mm",
+        "wind_from_direction": "degrees",
+        "wind_speed": "m/s"
+      },
+      "updated_at": "2026-09-30T19:17:42Z"
+    },
+    "timeseries": [
+      {
+        "data": {
+          "instant": {
+            "details": {
+              "air_temperature": 18.4,
+              "wind_from_direction": 175.8,
+              "wind_speed": 2.9
+            }
+          },
+          "next_1_hours": {
+            "details": {
+              "precipitation_amount": 0.0
+            }
+          }
+        },
+        "time": "2026-10-01T04:00:00Z"
+      },
+      {
+        "data": {
+          "instant": {
+            "details": {
+              "air_temperature": 18.3,
+              "wind_from_direction": 176.5,
+              "wind_speed": 3.2
+            }
+          },
+          "next_1_hours": {
+            "details": {
+              "precipitation_amount": 0.0
+            }
+          }
+        },
+        "time": "2026-10-01T05:00:00Z"
+      }
+    ]
+  },
+  "type": "Feature"
+}

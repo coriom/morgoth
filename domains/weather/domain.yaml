@@ -1,0 +1,94 @@
+# Weather is a semantic pack; Project manifests own all storage namespaces.
+name: weather
+tagline: "location-based forecast and observed weather research"
+
+rail:
+  tools:
+    - get_weather_forecast_met
+    - find_nws_observation_stations
+    - get_nws_weather_observation
+
+entities:
+  location: [location, coordinates, latitude, longitude, station]
+semantic_classes:
+  temperature: [temperature, heat, cold, celsius]
+  precipitation: [precipitation, rainfall, rain, snow]
+  wind: [wind, gust, direction]
+  general_weather: [weather, forecast, conditions]
+semantic_windows_hours:
+  default: 6
+  temperature: 3
+  precipitation: 6
+  wind: 3
+  general_weather: 6
+
+generic_subject_tokens: [weather, forecast, conditions]
+tool_served_phrases:
+  get_weather_forecast_met: [weather forecast, forecast temperature, forecast wind, forecast precipitation, rainfall forecast, met norway]
+  find_nws_observation_stations: [observation stations, nws stations, station identifier]
+  get_nws_weather_observation: [observed temperature, observed wind, current station conditions, nws observation]
+
+tool_sources:
+  get_weather_forecast_met: MET Norway
+  get_nws_weather_observation: NWS
+source_aliases:
+  MET Norway: [MET Norway, Norwegian Meteorological Institute]
+  NWS: [NWS, National Weather Service]
+
+rail_tool_fields:
+  get_weather_forecast_met: [air_temperature_celsius, wind_speed_mps, wind_from_direction_degrees, precipitation_amount_mm]
+  get_nws_weather_observation: [temperature_celsius, wind_speed_mps, wind_from_direction_degrees]
+field_phrases:
+  get_weather_forecast_met:
+    air_temperature_celsius: [forecast temperature, air temperature, temperature]
+    wind_speed_mps: [forecast wind speed, wind speed]
+    wind_from_direction_degrees: [forecast wind direction, wind direction]
+    precipitation_amount_mm: [next-hour precipitation, precipitation amount, rainfall amount]
+  get_nws_weather_observation:
+    temperature_celsius: [observed temperature, air temperature, temperature]
+    wind_speed_mps: [observed wind speed, wind speed]
+    wind_from_direction_degrees: [observed wind direction, wind direction]
+field_units:
+  get_weather_forecast_met:
+    air_temperature_celsius: celsius
+    wind_speed_mps: mps
+    wind_from_direction_degrees: degrees
+    precipitation_amount_mm: millimeter
+  get_nws_weather_observation:
+    temperature_celsius: celsius
+    wind_speed_mps: mps
+    wind_from_direction_degrees: degrees
+field_contexts:
+  get_weather_forecast_met:
+    air_temperature_celsius: air_temperature
+    wind_speed_mps: wind_speed
+    wind_from_direction_degrees: wind_direction
+    precipitation_amount_mm: precipitation_next_1h
+  get_nws_weather_observation:
+    temperature_celsius: air_temperature
+    wind_speed_mps: wind_speed
+    wind_from_direction_degrees: wind_direction
+
+# The existing tool-level source cache is not argument-keyed. Weather tools
+# instead honor HTTP Expires/Last-Modified in a bounded URL-keyed cache.
+coverage_exemptions:
+  source_cache_config:
+    get_weather_forecast_met: parameterized coordinates require URL-keyed HTTP caching
+    get_nws_weather_observation: parameterized station requires URL-keyed HTTP caching
+
+# A single US benchmark station is declarative acquisition configuration,
+# never Project identity. Observation timestamps remain in owned tool evidence;
+# metric_series uses recorder time and is not a forecast-verification record.
+metric_names:
+  observed_temperature_celsius: observed_temperature_celsius
+metric_field_map:
+  temperature_celsius: observed_temperature_celsius
+metric_collections:
+  get_nws_weather_observation:
+    source: nws_station_kdca
+    interval_secs: 3600
+    fields: [temperature_celsius]
+    args: {station_id: KDCA}
+
+# No Weather scorer is selected until forecast-vs-observation rules land.
+scorers: {}

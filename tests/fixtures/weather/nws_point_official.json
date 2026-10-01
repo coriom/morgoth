@@ -1,0 +1,6 @@
+{
+  "properties": {
+    "observationStations": "https://api.weather.gov/gridpoints/LWX/97,69/stations"
+  },
+  "type": "Feature"
+}

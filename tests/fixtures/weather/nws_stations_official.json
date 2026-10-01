@@ -1,0 +1,19 @@
+{
+  "features": [
+    {
+      "geometry": {
+        "coordinates": [
+          -77.03417,
+          38.84833
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "name": "Washington/Reagan National Airport, DC",
+        "stationIdentifier": "KDCA"
+      },
+      "type": "Feature"
+    }
+  ],
+  "type": "FeatureCollection"
+}

@@ -1,5 +1,26 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-01 — First production non-crypto Domain: Weather
+
+- Added declarative `domains/weather/domain.yaml` with its own three-tool rail,
+  neutral location entity, temperature/precipitation/wind/general windows,
+  MET/NWS source and unit metadata, and one hourly NWS benchmark metric.
+- Added MET compact forecast, NWS linked station discovery and latest actual
+  observation tools under the existing catalog. Shared non-secret User-Agent,
+  bounded URL-keyed HTTP cache, strict coordinates/station IDs and source-unit
+  validation; no generic core, crypto pack, Project or LLM-profile change.
+- Official MET/NWS documentation verified 2026-10-01. Open-Meteo Free and MET
+  Frost excluded. One MET and three linked NWS public smoke requests returned
+  HTTP 200 and were minimized into hermetic parser fixtures.
+- Fresh crypto/Weather subprocesses prove opposite effective rails; Weather
+  `morgoth_test` storage proof passed. Coverage blind spots: 0. Validation:
+  1942 canonical passed (+19), 2 skipped, wall 22.9s, exit 0; 59 dedicated
+  morgoth_test integration tests passed. Crypto pack hash unchanged, historical
+  31/16 control and Codex SAFE_FOR_WORKLOADS=False retained. No service,
+  campaign, production Project/Profile, UI or production database action.
+- Scorer/calibration, geocoding, global observations and precipitation
+  verification deferred; see docs/WEATHER_DOMAIN.md.
+
 ## 2026-09-30 — Declarative Domain tool rail
 
 - Added one `rail.tools` allowlist to Domain and a canonical installed/global/
