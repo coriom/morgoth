@@ -1,5 +1,29 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-03 — Offline Project Manager V1 (feature branch)
+
+- Added a Project Manager service over the existing RuntimeHome,
+  ProjectConfig, Domain loader and namespace validators. It lists, shows,
+  validates and creates isolated Project configurations without rebinding the
+  process-bound current Project or initializing PostgreSQL/Chroma/engine state.
+- The thin `morgoth projects` / `python -m scripts.projects_cli` entry points
+  expose structured JSON. Creation uses a cooperative catalog lock, owned
+  private directories, a staged manifest and a non-overwriting atomic link.
+  Existing/symlinked paths, malformed neighbours and collisions fail closed.
+  New Projects have no managed LLM profile state, retaining legacy routing.
+- Disposable-home tests cover two Projects with the same Crypto Domain, a
+  Weather Project, fresh-process resolution, concurrency, read-only commands,
+  pre-publication failure and bounded cleanup. No production Project, service,
+  profile, DB, UI, live provider or Codex change; no new dependency.
+- Final worktree-root canonical suite: 2002 passed, 2 existing nested-sandbox
+  skips, 209 integration-marker deselections, wall 37.7 s, exit 0. Focused
+  manager/profile: 57 passed; affected morgoth_test SQL: 5 passed, 5
+  deselected; broader guarded SQL: 101 passed, 11 deselected. Historical
+  Deribit 31/16 control passed. The production checkout remains on main.
+- Platform-tested boundary is Linux local cooperative locking. Engine start,
+  database/Chroma provisioning, deletion and Tauri/API remain deferred; see
+  `docs/PROJECT_MANAGER.md`.
+
 ## 2026-10-03 — Weather temperature provider-forecast verifier (feature branch)
 
 - Weather selects a trusted, pure `verification` scorer. V1 compares only

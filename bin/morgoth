@@ -221,6 +221,10 @@ cmd_models() {
     (cd "$REPO_DIR" && "$VENV_PY" -m self_modify.cli models "$@")
 }
 
+cmd_projects() {
+    (cd "$REPO_DIR" && "$VENV_PY" -m scripts.projects_cli "$@")
+}
+
 cmd_session_report() {
     # One-shot dashboard for a short cycling window (--since '7 days'/'24h'/
     # '30m'; default: since service restart). --full also computes the
@@ -412,6 +416,7 @@ Commands:
   audit [--now] [--write] [--since INT]
                   gate-3 auto-approve observability (shipped INERT — never applies)
   models          show task→provider routing + reachability (env-driven, unset=default)
+  projects        offline Project catalog: list | show ID | create ID --name NAME --domain DOMAIN | validate ID
   session-report [--since DURATION] [--full]
                   one-shot dashboard: cycles, theses, abstentions, contradictions,
                   rate-limit hits, LLM usage, pending measurement counters
@@ -448,6 +453,7 @@ case "${1:-help}" in
     provision) shift; cmd_provision "$@";;
     audit)     shift; cmd_audit "$@";;
     models)    shift; cmd_models "$@";;
+    projects)  shift; cmd_projects "$@";;
     session-report) shift; cmd_session_report "$@";;
     rail-check) shift; cmd_rail_check "$@";;
     env) shift; cmd_env "$@";;
