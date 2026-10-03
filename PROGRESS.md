@@ -1,5 +1,22 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-03 — Independent local Management API V1 (feature branch)
+
+- Added a separate authenticated FastAPI factory over the offline ProjectManager:
+  versioned status, Domain listing, Project list/show/validate/create, typed
+  responses, stable operation IDs and generated OpenAPI. Engine API/startup is
+  not imported; no Project is rebound and no storage/provider is initialized.
+- Explicit private-token launcher binds only 127.0.0.1, one worker, no reload
+  or proxy headers. Host and Origin checks, constant-time header comparison,
+  strict bounded JSON and safe errors guard every route; no browser CORS.
+- The manager remains the sole publication/validation implementation. This
+  branch does not add supervision, profile endpoints, Tauri or UI code.
+- Verification: canonical worktree-root hermetic suite 2014 passed (+12),
+  2 existing skips, exit 0; focused API/manager/profile 69 passed; five
+  guarded `morgoth_test` SQL regressions passed. See docs/MANAGEMENT_API.md.
+- No new dependencies, production database/service/Project/profile or Codex
+  activation; production checkout and UI remain untouched.
+
 ## 2026-10-03 — Offline Project Manager V1 (feature branch)
 
 - Added a Project Manager service over the existing RuntimeHome,
