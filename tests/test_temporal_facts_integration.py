@@ -50,10 +50,9 @@ async def test_weather_fixture_capture_and_crypto_project_isolation(tmp_path):
                                   timeout=60, check=False)
             assert proc.returncode == 0, proc.stderr[-600:]
             results.append(json.loads(proc.stdout))
-        assert results[0]["predictions"] == 1 and results[0]["observations"] == 1
-        assert results[0]["count_by_filter"] == 1
-        assert results[0]["met_updated_semantics"] and results[0]["nws_valid_semantics"]
-        assert results[0]["retrospective_ineligible"] and results[0]["no_scorer_run"]
+        assert results[0]["predictions"] == 5 and results[0]["observations"] == 1
+        assert results[0]["prospective_eligible"] and results[0]["bulk_overflow_checked"]
+        assert all(row["own_isolation"] and row["no_scorer_run"] for row in results)
         assert all(row["predictions"] == row["observations"] == 0 for row in results[1:])
     finally:
         for project_id, _ in projects:

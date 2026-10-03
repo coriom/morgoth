@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 import json
 from typing import Any
@@ -13,9 +14,14 @@ from pydantic import BaseModel
 
 from core.config import AppConfig
 from core.campaign_lifecycle import CAMPAIGN_LIVE_SQL, OBJECTIVE_RESEARCH_SQL
+from core.temporal_facts import TemporalFact
 
 
 CREATE_EXTENSION_SQL = 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
+
+
+class TemporalFactQueryOverflow(ValueError):
+    """The requested temporal-fact corpus exceeds the complete-read limit."""
 
 TABLE_STATEMENTS = (
     """
@@ -1337,8 +1343,8 @@ class PersistentMemory:
             values.append(float(r["value"]))
         return sorted_ms, values
 
-    async def insert_temporal_fact(self, fact) -> dict[str, Any]:
-        """Insert a semantic fact once; PostgreSQL stamps first acquisition time.
+    async def insert_temporal_facts(self, facts: Sequence[TemporalFact]) -> list[dict[str, Any]]:
+        """Commit one validated tool-result batch, or none of its new facts.
 
         Caller-supplied acquired_at is never sent to SQL, so a later provider
         request cannot backdate a prediction. Project search_path is fixed by
@@ -1346,27 +1352,44 @@ class PersistentMemory:
         """
         from core.project import current_project
         from core.domain import current_domain
-        if fact.project_id != current_project().id or fact.domain_id != current_domain().name:
+        if not isinstance(facts, Sequence) or len(facts) > 256:
+            raise ValueError("invalid temporal fact batch")
+        batch = tuple(facts)
+        project_id, domain_id = current_project().id, current_domain().name
+        if any(not isinstance(fact, TemporalFact) or fact.project_id != project_id
+               or fact.domain_id != domain_id for fact in batch):
             raise ValueError("temporal fact belongs to another Project or Domain")
+        if not batch:
+            return []
         pool = self._require_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "INSERT INTO temporal_facts (semantic_key, project_id, domain_id, kind, source, tool, "
-                "metric, value, unit, entity, dimensions, valid_at, source_updated_at, "
-                "source_record_id, code_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15) "
-                "ON CONFLICT (semantic_key) DO NOTHING RETURNING *",
-                fact.semantic_key, fact.project_id, fact.domain_id, fact.kind, fact.source,
-                fact.tool, fact.metric, fact.value, fact.unit, fact.entity,
-                json.dumps(dict(fact.dimensions), sort_keys=True, separators=(",", ":")),
-                fact.valid_at, fact.source_updated_at, fact.source_record_id, fact.code_version,
-            )
-            if row is None:
-                row = await conn.fetchrow("SELECT * FROM temporal_facts WHERE semantic_key = $1", fact.semantic_key)
-        result = dict(row)
-        result["prospective_eligible"] = (
-            result["kind"] == "prediction" and result["acquired_at"] <= result["valid_at"]
-        )
-        return result
+            async with conn.transaction():
+                results = []
+                for fact in batch:
+                    row = await conn.fetchrow(
+                        "INSERT INTO temporal_facts (semantic_key, project_id, domain_id, kind, source, tool, "
+                        "metric, value, unit, entity, dimensions, valid_at, source_updated_at, "
+                        "source_record_id, code_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15) "
+                        "ON CONFLICT (semantic_key) DO NOTHING RETURNING *",
+                        fact.semantic_key, fact.project_id, fact.domain_id, fact.kind, fact.source,
+                        fact.tool, fact.metric, fact.value, fact.unit, fact.entity,
+                        json.dumps(dict(fact.dimensions), sort_keys=True, separators=(",", ":")),
+                        fact.valid_at, fact.source_updated_at, fact.source_record_id, fact.code_version,
+                    )
+                    if row is None:
+                        row = await conn.fetchrow(
+                            "SELECT * FROM temporal_facts WHERE semantic_key = $1", fact.semantic_key,
+                        )
+                    result = dict(row)
+                    result["prospective_eligible"] = (
+                        result["kind"] == "prediction" and result["acquired_at"] <= result["valid_at"]
+                    )
+                    results.append(result)
+        return results
+
+    async def insert_temporal_fact(self, fact: TemporalFact) -> dict[str, Any]:
+        """Compatibility wrapper for one fact with first-insertion timestamp."""
+        return (await self.insert_temporal_facts((fact,)))[0]
 
     async def list_temporal_facts(self, *, kind: str | None = None, metric: str | None = None,
                                   source: str | None = None, entity: str | None = None,
@@ -1374,7 +1397,11 @@ class PersistentMemory:
                                   valid_from: datetime | None = None, valid_to: datetime | None = None,
                                   acquired_from: datetime | None = None,
                                   acquired_to: datetime | None = None) -> list[dict[str, Any]]:
-        """Query only this Project's facts using bounded typed predicates."""
+        """Return a complete bounded corpus or raise TemporalFactQueryOverflow.
+
+        One SELECT sees one PostgreSQL statement snapshot. Separate calls do
+        not share a snapshot; callers must narrow filters for larger corpora.
+        """
         if kind is not None and kind not in {"prediction", "observation"}:
             raise ValueError("invalid temporal fact kind")
         if dimensions is not None:
@@ -1392,10 +1419,12 @@ class PersistentMemory:
                 "AND ($7::timestamptz IS NULL OR valid_at <= $7) "
                 "AND ($8::timestamptz IS NULL OR acquired_at >= $8) "
                 "AND ($9::timestamptz IS NULL OR acquired_at <= $9) "
-                "ORDER BY valid_at, acquired_at, semantic_key LIMIT 10000",
+                "ORDER BY valid_at, acquired_at, semantic_key LIMIT 10001",
                 kind, metric, source, entity, json.dumps(dimensions) if dimensions is not None else None,
                 valid_from, valid_to, acquired_from, acquired_to,
             )
+        if len(rows) > 10000:
+            raise TemporalFactQueryOverflow("temporal fact query exceeds 10000 rows; narrow filters")
         return [dict(row) for row in rows]
 
     async def record_numeric_fidelity_event(

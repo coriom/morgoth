@@ -1,0 +1,31 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_tool_template_renders_api_endpoints_classvar _______________
+
+    def test_tool_template_renders_api_endpoints_classvar() -> None:
+        """Every future morgoth-born tool self-declares its endpoint."""
+        endpoint = reflect._normalize_endpoint(
+            "https://api.example.com", "/v1/thing",
+        )
+        rendered = reflect.TOOL_TEMPLATE.format(
+            tool_name="get_ok",
+            class_name="GetOkTool",
+            tool_name_repr=repr("get_ok"),
+            base_url_repr=repr("https://api.example.com"),
+            endpoint_path_repr=repr("/v1/thing"),
+            digest_fields_repr=repr(["a", "b", "c"]),
+            description_repr=repr("Fetch OK."),
+            source_label_repr=repr("api.example.com"),
+            endpoint_declaration_repr=repr(endpoint),
+            requires_key_env_repr=repr(None),
+            key_in_repr=repr(None),
+            key_param_repr=repr(None),
+        )
+        assert "api_endpoints = ('api.example.com/v1/thing',)" in rendered
+>       assert "digest_fields = tuple(_DIGEST_FIELDS)" in rendered
+E       assert 'digest_fields = tuple(_DIGEST_FIELDS)' in '"""Morgoth-authored data-feed tool: get_ok.\n\nAuto-generated from a spec via self_modify.reflect. See\nself_modify_p....success(\n            record, source=_SOURCE_LABEL, fetched_at=fetched_at,\n            missing=missing,\n        )\n'
+
+tests/test_reflect_endpoint_gate.py:296: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_reflect_endpoint_gate.py::test_tool_template_renders_api_endpoints_classvar
+1 failed in 0.50s

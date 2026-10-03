@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites name="pytest tests">
+  <testsuite name="pytest" errors="0" failures="0" skipped="2" tests="2" time="0.305" timestamp="2026-10-03T11:05:54.531778+08:00">
+    <testcase classname="tests.test_post_submission_checks" name="test_artifact_integration_ok_on_rendered_defillama" time="0.000">
+      <skipped type="pytest.skip" message="sandbox (bwrap+unshare+systemd-run) not available">/tmp/morgoth-temporal-hardening/tests/test_post_submission_checks.py:489: sandbox (bwrap+unshare+systemd-run) not available</skipped>
+    </testcase>
+    <testcase classname="tests.test_post_submission_checks" name="test_artifact_integration_canary_dot_env_unreachable" time="0.000">
+      <skipped type="pytest.skip" message="sandbox (bwrap+unshare+systemd-run) not available">/tmp/morgoth-temporal-hardening/tests/test_post_submission_checks.py:511: sandbox (bwrap+unshare+systemd-run) not available</skipped>
+    </testcase>
+  </testsuite>
+</testsuites>

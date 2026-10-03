@@ -1,0 +1,105 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites name="pytest tests">
+  <testsuite name="pytest" errors="0" failures="0" skipped="0" tests="100" time="19.107" timestamp="2026-10-03T11:09:33.274715+08:00">
+    <testcase classname="tests.test_temporal_facts_integration" name="test_weather_fixture_capture_and_crypto_project_isolation" time="5.497" />
+    <testcase classname="tests.test_weather_domain" name="test_weather_project_persists_only_in_morgoth_test" time="2.887" />
+    <testcase classname="tests.test_project_runtime_integration" name="test_two_processes_same_domain_isolated_sql" time="8.481" />
+    <testcase classname="tests.test_campaign_lifecycle_integration" name="test_expired_campaign_restart_and_readonly_archive" time="0.282" />
+    <testcase classname="tests.test_llm_profiles_integration" name="test_profile_campaign_guard_real_sql" time="0.249" />
+    <testcase classname="tests.test_source_cache.TestConfig" name="test_scope_lists_slow_moving_sources" time="0.001" />
+    <testcase classname="tests.test_source_cache.TestConfig" name="test_live_sources_not_cached" time="0.001" />
+    <testcase classname="tests.test_source_cache.TestConfig" name="test_all_intervals_have_room_below_stale_threshold" time="0.001" />
+    <testcase classname="tests.test_source_cache.TestConfig" name="test_total_req_per_hour_stays_under_ceilings" time="0.001" />
+    <testcase classname="tests.test_source_cache.TestSchedulerState" name="test_first_poll_is_due" time="0.001" />
+    <testcase classname="tests.test_source_cache.TestSchedulerState" name="test_not_due_within_interval" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestSchedulerState" name="test_due_after_interval" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestKillSwitch" name="test_cache_enabled_default" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestKillSwitch" name="test_cache_disabled_by_env[false]" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestKillSwitch" name="test_cache_disabled_by_env[0]" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestKillSwitch" name="test_cache_disabled_by_env[no]" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestKillSwitch" name="test_cache_disabled_by_env[off]" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestCollectOne" name="test_success_writes_snapshot" time="0.005" />
+    <testcase classname="tests.test_source_cache.TestCollectOne" name="test_tool_failure_is_non_fatal" time="0.004" />
+    <testcase classname="tests.test_source_cache.TestCollectOne" name="test_tool_raises_is_non_fatal" time="0.003" />
+    <testcase classname="tests.test_source_cache.TestCollectDueSources" name="test_one_dead_source_does_not_block_others" time="0.004" />
+    <testcase classname="tests.test_source_cache.TestCollectDueSources" name="test_kill_switch_short_circuits" time="0.003" />
+    <testcase classname="tests.test_source_cache.TestServeFromCache" name="test_serves_stored_payload_with_age" time="0.005" />
+    <testcase classname="tests.test_source_cache.TestServeFromCache" name="test_stale_flag_flips_past_threshold" time="0.002" />
+    <testcase classname="tests.test_source_cache.TestServeFromCache" name="test_no_snapshot_returns_none" time="0.003" />
+    <testcase classname="tests.test_source_cache.TestServeFromCache" name="test_json_string_payload_parsed" time="0.004" />
+    <testcase classname="tests.test_source_cache.TestRouterInterception" name="test_execute_tool_serves_from_cache_when_available" time="0.005" />
+    <testcase classname="tests.test_source_cache.TestRouterInterception" name="test_bypass_cache_kwarg_forces_live_call" time="0.005" />
+    <testcase classname="tests.test_source_cache.TestRouterInterception" name="test_non_cached_source_hits_live_tool" time="0.007" />
+    <testcase classname="tests.test_source_cache.TestRouterInterception" name="test_no_pm_means_no_cache_lookup" time="0.004" />
+    <testcase classname="tests.test_source_cache.TestBrainWiresCollector" name="test_brain_imports_and_calls_collector" time="0.015" />
+    <testcase classname="tests.test_source_cache_ext.TestExtendedScope" name="test_three_new_sources_in_scope" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestExtendedScope" name="test_crypto_price_stays_live" time="0.001" />
+    <testcase classname="tests.test_source_cache_ext.TestExtendedScope" name="test_new_intervals_have_room_below_stale" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestExtendedScope" name="test_aggregate_req_per_day_still_negligible" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestNewsListPayload" name="test_list_payload_round_trip" time="0.004" />
+    <testcase classname="tests.test_source_cache_ext.TestNewsListPayload" name="test_list_payload_json_string_decoded" time="0.004" />
+    <testcase classname="tests.test_source_cache_ext.TestQueryNormalisation" name="test_lowercase_strip_collapse" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestQueryNormalisation" name="test_no_stopword_removal" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestQueryNormalisation" name="test_non_string_returns_empty" time="0.006" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_recency_words_bypass[latest bitcoin news]" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_recency_words_bypass[current fear greed index]" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_recency_words_bypass[today's crypto market]" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_recency_words_bypass[breaking crypto news]" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_recency_words_bypass[bitcoin now]" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_recency_words_bypass[recent fed announcements]" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_recency_words_bypass[tonight's macroeconomic outlook]" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_non_recency_queries_pass[bitcoin fear greed sentiment]" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_non_recency_queries_pass[ethereum gas price history]" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_non_recency_queries_pass[cpi and crypto]" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestRecencyBypass" name="test_non_recency_queries_pass[fed funds rate impact on btc]" time="0.002" />
+    <testcase classname="tests.test_source_cache_ext.TestServeWebSearch" name="test_hit_within_ttl_returns_envelope" time="0.004" />
+    <testcase classname="tests.test_source_cache_ext.TestServeWebSearch" name="test_ttl_expiry_returns_none" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestServeWebSearch" name="test_recency_query_bypasses" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestServeWebSearch" name="test_miss_returns_none" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestServeWebSearch" name="test_kill_switch_short_circuits" time="0.003" />
+    <testcase classname="tests.test_source_cache_ext.TestServeWebSearch" name="test_empty_query_returns_none" time="0.004" />
+    <testcase classname="tests.test_source_cache_ext.TestRouterWebSearchHook" name="test_hit_short_circuits_live_call" time="0.007" />
+    <testcase classname="tests.test_source_cache_ext.TestRouterWebSearchHook" name="test_miss_persists_after_live_call" time="0.006" />
+    <testcase classname="tests.test_source_cache_ext.TestRouterWebSearchHook" name="test_recency_query_does_not_persist" time="0.005" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_sweep_uses_strict_inequality_and_correct_status_set" time="0.003" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_sweep_returns_terminated_rows" time="0.003" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_sweep_empty_result_when_nothing_stale" time="0.006" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_sweep_accepts_fractional_days" time="0.004" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_stale_days_default" time="0.002" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_stale_days_env_override" time="0.003" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_stale_days_invalid_env_falls_back" time="0.003" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_stale_days_non_positive_env_falls_back" time="0.003" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_sweep_query_is_strict_less_than_not_leq" time="0.004" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_initialize_swallows_sweep_failure" time="0.005" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_initialize_terminates_49_day_row_the_may_fixture" time="0.006" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_initialize_no_stale_rows_still_completes" time="0.004" />
+    <testcase classname="tests.test_stale_objective_sweep" name="test_sweep_only_touches_non_terminal_rows_by_query" time="0.006" />
+    <testcase classname="tests.test_backup_watchdog.TestKnobs" name="test_default_max_age_is_24_hours" time="0.002" />
+    <testcase classname="tests.test_backup_watchdog.TestKnobs" name="test_env_override" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestKnobs" name="test_invalid_env_falls_back" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestParseTsDir" name="test_valid_timestamp_parses_as_local" time="0.006" />
+    <testcase classname="tests.test_backup_watchdog.TestParseTsDir" name="test_invalid_dirname_returns_none" time="0.002" />
+    <testcase classname="tests.test_backup_watchdog.TestParseTsDir" name="test_age_matches_wall_clock" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestLatestBackupInfo" name="test_empty_root_returns_none" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestLatestBackupInfo" name="test_picks_newest_by_timestamp" time="0.004" />
+    <testcase classname="tests.test_backup_watchdog.TestLatestBackupInfo" name="test_age_is_non_negative_and_grows" time="0.002" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_age[30-30s]" time="0.001" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_age[120-2m]" time="0.001" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_age[7200-2.0h]" time="0.002" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_age[86400-1.0d]" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_age[172800-2.0d]" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_size[500-500B]" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_size[5120-5.0K]" time="0.003" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_size[5242880-5.0M]" time="0.002" />
+    <testcase classname="tests.test_backup_watchdog.TestFormatters" name="test_format_size[5368709120-5.0G]" time="0.001" />
+    <testcase classname="tests.test_backup_watchdog.TestCatchUpIfStale" name="test_skip_when_recent_backup_exists" time="0.081" />
+    <testcase classname="tests.test_backup_watchdog.TestCatchUpIfStale" name="test_spawn_when_backup_missing" time="0.064" />
+    <testcase classname="tests.test_backup_watchdog.TestCatchUpIfStale" name="test_spawn_when_stale" time="0.077" />
+    <testcase classname="tests.test_backup_watchdog.TestCatchUpIfStale" name="test_missing_script_returns_none_non_fatal" time="0.074" />
+    <testcase classname="tests.test_backup_watchdog.TestCatchUpIfStale" name="test_spawn_failure_is_non_fatal" time="0.071" />
+    <testcase classname="tests.test_backup_watchdog.TestSessionReportWiring" name="test_report_renders_backup_line_when_populated" time="0.061" />
+    <testcase classname="tests.test_backup_watchdog.TestSessionReportWiring" name="test_report_warns_when_backup_older_than_48h" time="0.002" />
+    <testcase classname="tests.test_backup_watchdog.TestSessionReportWiring" name="test_report_flags_no_backup" time="0.002" />
+    <testcase classname="tests.test_backup_watchdog.TestBrainWiring" name="test_brain_calls_catch_up_at_startup" time="0.009" />
+  </testsuite>
+</testsuites>

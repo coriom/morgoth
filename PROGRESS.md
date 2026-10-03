@@ -1,5 +1,28 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-03 — Temporal-fact capture/retrieval hardening
+
+- One active-rail tool result now persists its declared facts in one validated
+  PostgreSQL transaction. Capture status is explicit in result metadata;
+  extraction/SQL failure leaves no partial new batch and never changes the
+  tool's success/result. Duplicate facts retain the first DB insertion time.
+- `acquired_at` means first database insertion, not HTTP receipt or external
+  timestamp attestation. Cache replays do not backdate it. Query results are
+  complete up to 10,000 rows or raise `TemporalFactQueryOverflow`; separate
+  calls do not share a snapshot. MET still needs explicit tool invocation for
+  prospective capture; only NWS observation collection is scheduled.
+- The pre-existing reflect-template assertion failed identically at 4c8f364
+  and e395243; its test now verifies rendered field-name normalization without
+  running reflect. Baseline/current logs, sanitized JUnit, selection audit and
+  final verification: `docs/verification/temporal_facts_20261003/`.
+- Final canonical hermetic launcher: 1960 passed, 2 nested-sandbox skips,
+  208 integration-marker deselections (collection audit), exit 0, 33.8 s.
+  Five scoped morgoth_test SQL tests passed, 5 deselected, 13.92 s; broader
+  guarded integration: 100 passed, 11 deselected, 19.11 s. Historical 31/16
+  control and Codex safety lock remain green/unchanged. No new dependencies,
+  scorer, production writes, service action, live HTTP, LLM call or UI change.
+
+
 ## 2026-10-03 — Generic prospective temporal facts
 
 - Domain scorer roles are validated identifiers rather than a hardcoded list;

@@ -11,6 +11,7 @@ weak-signal field-overlap advisory, and the retry wiring.
 
 from __future__ import annotations
 
+import ast
 import json as _json
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -284,7 +285,8 @@ def test_tool_template_renders_api_endpoints_classvar() -> None:
         tool_name_repr=repr("get_ok"),
         base_url_repr=repr("https://api.example.com"),
         endpoint_path_repr=repr("/v1/thing"),
-        digest_fields_repr=repr(["a", "b", "c"]),
+        digest_fields_repr=repr([{"name": "a", "path": "details.a"},
+                                 {"name": "b", "path": "details.b"}, "c"]),
         description_repr=repr("Fetch OK."),
         source_label_repr=repr("api.example.com"),
         endpoint_declaration_repr=repr(endpoint),
@@ -293,7 +295,17 @@ def test_tool_template_renders_api_endpoints_classvar() -> None:
         key_param_repr=repr(None),
     )
     assert "api_endpoints = ('api.example.com/v1/thing',)" in rendered
-    assert "digest_fields = tuple(_DIGEST_FIELDS)" in rendered
+    tree = ast.parse(rendered)
+    tool_class = next(node for node in tree.body
+                      if isinstance(node, ast.ClassDef) and node.name == "GetOkTool")
+    fields_assignment = next(node for node in tool_class.body
+                             if isinstance(node, ast.Assign)
+                             and any(isinstance(target, ast.Name) and target.id == "digest_fields"
+                                     for target in node.targets))
+    fields = eval(compile(ast.Expression(fields_assignment.value), "<tool-template>", "eval"),
+                  {"_DIGEST_FIELDS": [{"name": "a", "path": "details.a"},
+                                      {"name": "b", "path": "details.b"}, "c"]})
+    assert fields == ("a", "b", "c")
 
 
 # ---------- rejected_endpoint is a first-class terminal status -----------

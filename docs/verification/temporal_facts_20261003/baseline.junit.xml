@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites name="pytest tests">
+  <testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.504" timestamp="2026-10-03T10:49:24.723060+08:00">
+    <testcase classname="tests.test_reflect_endpoint_gate" name="test_tool_template_renders_api_endpoints_classvar" time="0.014">
+      <failure message="stale digest_fields tuple literal assertion">tests/test_reflect_endpoint_gate.py:296: AssertionError: expected digest_fields = tuple(_DIGEST_FIELDS); template instead normalizes name/path entries to a tuple of names</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

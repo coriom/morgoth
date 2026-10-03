@@ -200,12 +200,16 @@ class ToolRouter:
                         domain, current_project(), name, result.get("result"),
                         datetime.now(timezone.utc), get_code_version(),
                     )
-                    for fact in facts:
-                        await self._persistent_memory.insert_temporal_fact(fact)
+                    await self._persistent_memory.insert_temporal_facts(facts)
+                    capture = {"status": "captured", "facts_processed": len(facts)}
                 except Exception as exc:
                     # Evidence capture is explicit, but cannot rewrite the
                     # acquisition tool's success/failure semantics.
                     logger.warning("temporal fact capture failed for {}: {}", name, type(exc).__name__)
+                    capture = {"status": "failed", "facts_processed": 0}
+                metadata = result.get("metadata")
+                result["metadata"] = {**(metadata if isinstance(metadata, dict) else {}),
+                                      "temporal_fact_capture": capture}
         return result
 
     async def close(self) -> None:

@@ -119,20 +119,68 @@ async def test_router_capture_is_rail_gated_and_does_not_change_tool_result(monk
     monkeypatch.setattr(project_mod, "current_project", lambda: SimpleNamespace(id="weather_test"))
     payload = parse_nws_observation(json.loads((FIXTURES / "nws_observation.json").read_text()), "KDCA")
     result = {"success": True, "result": payload}
-    pm = SimpleNamespace(insert_temporal_fact=AsyncMock())
+    pm = SimpleNamespace(insert_temporal_facts=AsyncMock())
     router = ToolRouter(pm, effective_tool_rail(domain))
     tool = SimpleNamespace(name="get_nws_weather_observation",
                            parameters={"type": "object", "properties": {"station_id": {}}, "required": ["station_id"]},
                            execute=AsyncMock(return_value=result))
     router.register(tool)
     assert await router.execute_tool(tool.name, {"station_id": "KDCA"}) is result
-    assert pm.insert_temporal_fact.await_count == 1
-    pm.insert_temporal_fact.side_effect = ValueError("synthetic failure")
+    assert pm.insert_temporal_facts.await_count == 1
+    assert result["metadata"]["temporal_fact_capture"] == {"status": "captured", "facts_processed": 1}
+    pm.insert_temporal_facts.side_effect = ValueError("synthetic failure")
     assert await router.execute_tool(tool.name, {"station_id": "KDCA"}) is result
+    assert result["metadata"]["temporal_fact_capture"] == {"status": "failed", "facts_processed": 0}
     malformed = {"success": True, "result": {**payload, "observed_at": None}}
     tool.execute.return_value = malformed
     assert await router.execute_tool(tool.name, {"station_id": "KDCA"}) is malformed
+    assert malformed["metadata"]["temporal_fact_capture"]["status"] == "failed"
     assert (await router.execute_tool("get_deribit_btc_perpetual", {}))["error"] == "TOOL_NOT_ALLOWED_FOR_DOMAIN"
+
+
+@pytest.mark.asyncio
+async def test_router_cache_replay_is_not_captured_but_bypass_is(monkeypatch):
+    """Only actual active-rail tool execution enters the capture path."""
+    import core.source_cache as source_cache
+    import importlib
+    domain = _load("weather")
+    monkeypatch.setattr(importlib.import_module("core.domain"), "current_domain", lambda: domain)
+    monkeypatch.setattr(importlib.import_module("core.project"), "current_project",
+                        lambda: SimpleNamespace(id="weather_test"))
+    monkeypatch.setattr(source_cache, "is_cached_source", lambda _name: True)
+    monkeypatch.setattr(source_cache, "cache_enabled", lambda: True)
+    cached = {"success": True, "result": {"untrusted": "cached"},
+              "metadata": {"age_seconds": 10, "stale": False}}
+    monkeypatch.setattr(source_cache, "serve_from_cache", AsyncMock(return_value=cached))
+    payload = parse_met_forecast(json.loads((FIXTURES / "met_compact.json").read_text()),
+                                 "38.8512", "-77.0402")
+    pm = SimpleNamespace(insert_temporal_facts=AsyncMock())
+    router = ToolRouter(pm, effective_tool_rail(domain))
+    forecast = SimpleNamespace(name="get_weather_forecast_met", parameters={},
+                               execute=AsyncMock(return_value={"success": True, "result": payload}))
+    router.register(forecast)
+    assert await router.execute_tool(forecast.name, {}) is cached
+    forecast.execute.assert_not_awaited()
+    pm.insert_temporal_facts.assert_not_awaited()
+    assert "temporal_fact_capture" not in cached["metadata"]
+    live = await router.execute_tool(forecast.name, {}, bypass_cache=True)
+    assert live["metadata"]["temporal_fact_capture"]["status"] == "captured"
+    forecast.execute.assert_awaited_once()
+    pm.insert_temporal_facts.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tool_without_fact_declaration_keeps_result_unchanged():
+    domain = _load("weather")
+    pm = SimpleNamespace(insert_temporal_facts=AsyncMock())
+    router = ToolRouter(pm, effective_tool_rail(domain))
+    result = {"success": True, "result": {"stations": []}, "metadata": {"source": "NWS"}}
+    tool = SimpleNamespace(name="find_nws_observation_stations", parameters={},
+                           execute=AsyncMock(return_value=result))
+    router.register(tool)
+    assert await router.execute_tool(tool.name, {}, bypass_cache=True) is result
+    assert result["metadata"] == {"source": "NWS"}
+    pm.insert_temporal_facts.assert_not_awaited()
 
 
 @pytest.mark.parametrize("change", ["inactive_tool", "missing_unit", "invalid_selector"])

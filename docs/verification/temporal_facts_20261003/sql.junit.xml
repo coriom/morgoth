@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites name="pytest tests">
+  <testsuite name="pytest" errors="0" failures="0" skipped="0" tests="5" time="13.918" timestamp="2026-10-03T11:09:06.429516+08:00">
+    <testcase classname="tests.test_temporal_facts_integration" name="test_weather_fixture_capture_and_crypto_project_isolation" time="6.966" />
+    <testcase classname="tests.test_weather_domain" name="test_weather_project_persists_only_in_morgoth_test" time="3.524" />
+    <testcase classname="tests.test_project_runtime_integration" name="test_two_processes_same_domain_isolated_sql" time="2.606" />
+    <testcase classname="tests.test_campaign_lifecycle_integration" name="test_expired_campaign_restart_and_readonly_archive" time="0.101" />
+    <testcase classname="tests.test_llm_profiles_integration" name="test_profile_campaign_guard_real_sql" time="0.166" />
+  </testsuite>
+</testsuites>
