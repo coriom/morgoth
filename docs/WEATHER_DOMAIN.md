@@ -4,7 +4,8 @@ Weather is a production Domain pack, separate from Project storage. The pack is
 `domains/weather/domain.yaml`; its three data-feed tools are installed in the
 catalog but active only when a Project selects `domain: weather`. The default
 crypto Project and its rail remain unchanged. No city enum, paid API, API key,
-Weather scorer or Weather-specific generic-engine branch is involved.
+Weather scorer or Weather-specific generic-engine branch is involved. The
+generic temporal-fact contract is described in [TEMPORAL_FACTS.md](TEMPORAL_FACTS.md).
 
 ## Source decision (official documentation checked 2026-10-01)
 
@@ -58,7 +59,9 @@ Every result carries MET credit, a CC BY 4.0 license link and a flag that its
 values were normalized/shortened from the source response.
 Optional `next_1_hours` precipitation (mm) carries its own start/end period;
 missing values are null or an absent period, never zero-filled. MET's
-`meta.updated_at` is the forecast issue/update time.
+`meta.updated_at` is the provider's last forecast-data update time. It is
+exposed as `source_updated_at`, not as an issuance/model-run timestamp. The
+prior smoke's 535-minute figure measured this update age only.
 
 NWS station discovery follows the point's official linked station collection
 and preserves its order without claiming it is distance-ranked. Latest actual
@@ -77,10 +80,13 @@ the declarative benchmark station `KDCA`. It is a narrow historical series;
 
 ## Forecast → observation identity for the next scorer
 
-Persisted tool-result evidence supplies a forecast tuple
-`(source, latitude, longitude, metric, value, unit, issued_at, valid_at)` and
-an actual-observation tuple
-`(source, station_id, station_latitude, station_longitude, metric, value, unit, observed_at)`.
+The Domain now declares temperature-only temporal-fact capture. The tool
+router records provider-normalized predictions and observations into the
+Project's dedicated temporal-fact table at acquisition, separately from
+`metric_series`. A forecast tuple contains
+`(source, coordinates, metric, value, unit, acquired_at, source_updated_at, valid_at)`;
+an observation tuple contains
+`(source, station_id, station_coordinates, metric, value, unit, acquired_at, valid_at)`.
 For precipitation the forecast additionally supplies the period start/end.
 The next scorer must define spatial association, allowed observation-time
 tolerance, null handling and calibration; it must retain the forecast as issued

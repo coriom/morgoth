@@ -22,7 +22,7 @@ def parse_met_forecast(data: dict[str, Any], latitude: str, longitude: str) -> d
         properties = data["properties"]
         meta = properties["meta"]
         units = meta["units"]
-        issued_at = timestamp(meta["updated_at"])
+        source_updated_at = timestamp(meta["updated_at"])
         series = properties["timeseries"]
         if not isinstance(series, list) or not series:
             raise ValueError("empty forecast timeseries")
@@ -55,7 +55,7 @@ def parse_met_forecast(data: dict[str, Any], latitude: str, longitude: str) -> d
             "attribution": "Data from MET Norway",
             "license_url": "https://creativecommons.org/licenses/by/4.0/",
             "modified_from_source": True,
-            "issued_at": issued_at, "valid_at": first["valid_at"],
+            "source_updated_at": source_updated_at, "valid_at": first["valid_at"],
             "air_temperature_celsius": first["air_temperature_celsius"],
             "wind_speed_mps": first["wind_speed_mps"],
             "wind_from_direction_degrees": first["wind_from_direction_degrees"],

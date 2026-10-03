@@ -36,6 +36,13 @@ The second-Domain isolation proof required a generic correction: installed tool 
 
 `analysis.scorer_registry` is a trusted implementation registry. A Domain names zero or more scorer IDs by role; absent means no specialist scorer is selected. The registry does not import scorer modules until selection. The crypto pack explicitly opts into its directional, descriptive and campaign-quality implementations. This keeps crypto backtests specialised rather than pretending their market references are universal.
 
+Role names are now validated machine-safe identifiers, not a core whitelist.
+New trusted implementations still require registration, but a future Domain may
+declare another role without changing generic Domain validation. Temporal
+prediction/observation facts have their own prospective, Project-local store;
+see [TEMPORAL_FACTS.md](TEMPORAL_FACTS.md). The simple metric-series recorder
+and existing scorer call signatures remain unchanged.
+
 ## Remaining intentional exceptions
 
 - `core/domain.py:44` and `core/project.py:106-112` reserve the historical default crypto installation and paths. This is a compatibility boundary, not a new Domain semantic default.

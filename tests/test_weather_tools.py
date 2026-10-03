@@ -49,7 +49,8 @@ async def test_met_forecast_actual_tool_parser_and_period_identity():
     result = await tool.execute(latitude=38.8512, longitude=-77.0402)
     assert result["success"] is True
     data = result["result"]
-    assert data["source"] == "MET Norway" and data["issued_at"] == "2026-09-30T12:00:00Z"
+    assert data["source"] == "MET Norway" and data["source_updated_at"] == "2026-09-30T12:00:00Z"
+    assert "issued_at" not in data
     assert data["attribution"] == "Data from MET Norway"
     assert data["license_url"] == "https://creativecommons.org/licenses/by/4.0/"
     assert data["modified_from_source"] is True
@@ -93,7 +94,7 @@ def test_met_malformed_units_and_missing_period():
 def test_sanitized_official_live_samples_use_production_parsers():
     """One MET and linked NWS requests recorded 2026-10-01, then minimized."""
     met = parse_met_forecast(fixture("met_compact_official.json"), "38.8512", "-77.0402")
-    assert met["source"] == "MET Norway" and met["issued_at"] and met["valid_at"]
+    assert met["source"] == "MET Norway" and met["source_updated_at"] and met["valid_at"]
     assert met["air_temperature_celsius"] is not None
     assert met["wind_speed_mps"] is not None
     point = fixture("nws_point_official.json")

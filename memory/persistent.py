@@ -19,6 +19,31 @@ CREATE_EXTENSION_SQL = 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
 
 TABLE_STATEMENTS = (
     """
+    CREATE TABLE IF NOT EXISTS temporal_facts (
+        semantic_key CHAR(64) PRIMARY KEY,
+        project_id VARCHAR(63) NOT NULL,
+        domain_id VARCHAR(63) NOT NULL,
+        kind VARCHAR(16) NOT NULL CHECK (kind IN ('prediction', 'observation')),
+        source VARCHAR(128) NOT NULL,
+        tool VARCHAR(128) NOT NULL,
+        metric VARCHAR(128) NOT NULL,
+        value DOUBLE PRECISION NOT NULL CHECK (value::text NOT IN ('NaN', 'Infinity', '-Infinity')),
+        unit VARCHAR(64) NOT NULL,
+        entity VARCHAR(64) NOT NULL,
+        dimensions JSONB NOT NULL,
+        acquired_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        valid_at TIMESTAMPTZ NOT NULL,
+        source_updated_at TIMESTAMPTZ,
+        source_record_id VARCHAR(256),
+        code_version VARCHAR(64),
+        user_id VARCHAR(100) NOT NULL DEFAULT 'default'
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS temporal_facts_lookup_idx
+    ON temporal_facts (kind, metric, valid_at, acquired_at);
+    """,
+    """
     CREATE TABLE IF NOT EXISTS tasks (
         task_id UUID PRIMARY KEY,
         type VARCHAR(20),
@@ -1311,6 +1336,67 @@ class PersistentMemory:
             sorted_ms.append(int(r["observed_at"].timestamp() * 1000))
             values.append(float(r["value"]))
         return sorted_ms, values
+
+    async def insert_temporal_fact(self, fact) -> dict[str, Any]:
+        """Insert a semantic fact once; PostgreSQL stamps first acquisition time.
+
+        Caller-supplied acquired_at is never sent to SQL, so a later provider
+        request cannot backdate a prediction. Project search_path is fixed by
+        initialize(), and the active Project/Domain must match the fact.
+        """
+        from core.project import current_project
+        from core.domain import current_domain
+        if fact.project_id != current_project().id or fact.domain_id != current_domain().name:
+            raise ValueError("temporal fact belongs to another Project or Domain")
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO temporal_facts (semantic_key, project_id, domain_id, kind, source, tool, "
+                "metric, value, unit, entity, dimensions, valid_at, source_updated_at, "
+                "source_record_id, code_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15) "
+                "ON CONFLICT (semantic_key) DO NOTHING RETURNING *",
+                fact.semantic_key, fact.project_id, fact.domain_id, fact.kind, fact.source,
+                fact.tool, fact.metric, fact.value, fact.unit, fact.entity,
+                json.dumps(dict(fact.dimensions), sort_keys=True, separators=(",", ":")),
+                fact.valid_at, fact.source_updated_at, fact.source_record_id, fact.code_version,
+            )
+            if row is None:
+                row = await conn.fetchrow("SELECT * FROM temporal_facts WHERE semantic_key = $1", fact.semantic_key)
+        result = dict(row)
+        result["prospective_eligible"] = (
+            result["kind"] == "prediction" and result["acquired_at"] <= result["valid_at"]
+        )
+        return result
+
+    async def list_temporal_facts(self, *, kind: str | None = None, metric: str | None = None,
+                                  source: str | None = None, entity: str | None = None,
+                                  dimensions: dict[str, Any] | None = None,
+                                  valid_from: datetime | None = None, valid_to: datetime | None = None,
+                                  acquired_from: datetime | None = None,
+                                  acquired_to: datetime | None = None) -> list[dict[str, Any]]:
+        """Query only this Project's facts using bounded typed predicates."""
+        if kind is not None and kind not in {"prediction", "observation"}:
+            raise ValueError("invalid temporal fact kind")
+        if dimensions is not None:
+            from core.temporal_facts import _dimensions
+            dimensions = _dimensions(dimensions)
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT *, (kind = 'prediction' AND acquired_at <= valid_at) AS prospective_eligible "
+                "FROM temporal_facts WHERE ($1::text IS NULL OR kind = $1) "
+                "AND ($2::text IS NULL OR metric = $2) AND ($3::text IS NULL OR source = $3) "
+                "AND ($4::text IS NULL OR entity = $4) "
+                "AND ($5::jsonb IS NULL OR dimensions @> $5::jsonb) "
+                "AND ($6::timestamptz IS NULL OR valid_at >= $6) "
+                "AND ($7::timestamptz IS NULL OR valid_at <= $7) "
+                "AND ($8::timestamptz IS NULL OR acquired_at >= $8) "
+                "AND ($9::timestamptz IS NULL OR acquired_at <= $9) "
+                "ORDER BY valid_at, acquired_at, semantic_key LIMIT 10000",
+                kind, metric, source, entity, json.dumps(dimensions) if dimensions is not None else None,
+                valid_from, valid_to, acquired_from, acquired_to,
+            )
+        return [dict(row) for row in rows]
 
     async def record_numeric_fidelity_event(
         self,

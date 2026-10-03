@@ -1,5 +1,22 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-03 — Generic prospective temporal facts
+
+- Domain scorer roles are validated identifiers rather than a hardcoded list;
+  trusted implementation registration and Crypto caller signatures remain unchanged.
+- Added a Project-local `temporal_facts` table and generic tool-result capture
+  driven by declarative Domain rules, separate from legacy `metric_series`.
+  PostgreSQL assigns first `acquired_at`; semantic-key dedup retains that proof.
+- Weather captures MET temperature predictions and NWS temperature observations
+  from actual normalized tool output, with no Weather branch in generic core.
+  MET `meta.updated_at` is now `source_updated_at`, never `issued_at`.
+- Validation: 1960 hermetic passed (+18), 208 integration deselected, exit 0;
+  5 targeted `morgoth_test` SQL integrations passed. The historical 31/16
+  control and Codex safety lock remain unchanged. No Weather scoring yet.
+- No service, production campaign/Project/Profile, real provider, `.env`, UI
+  or production database action; no new dependency.
+
+
 ## 2026-10-01 — First production non-crypto Domain: Weather
 
 - Added declarative `domains/weather/domain.yaml` with its own three-tool rail,

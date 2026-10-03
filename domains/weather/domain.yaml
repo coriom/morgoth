@@ -90,5 +90,25 @@ metric_collections:
     fields: [temperature_celsius]
     args: {station_id: KDCA}
 
+# Prospective temporal facts use a separate, lossless store. The collector
+# continues to write its legacy simple metric_series unchanged.
+fact_captures:
+  get_weather_forecast_met:
+    - kind: prediction
+      metric: temperature
+      field: air_temperature_celsius
+      entity: location
+      records: records
+      valid_at: valid_at
+      source_updated_at: source_updated_at
+      dimensions: {latitude: latitude, longitude: longitude}
+  get_nws_weather_observation:
+    - kind: observation
+      metric: temperature
+      field: temperature_celsius
+      entity: location
+      valid_at: observed_at
+      dimensions: {station_id: station_id, latitude: latitude, longitude: longitude}
+
 # No Weather scorer is selected until forecast-vs-observation rules land.
 scorers: {}

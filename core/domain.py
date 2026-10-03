@@ -63,6 +63,21 @@ class MetricCollection:
 
 
 @dataclass(frozen=True)
+class FactCapture:
+    """Declarative extraction of one scalar temporal fact from a tool result."""
+
+    kind: str
+    metric: str
+    field: str
+    entity: str
+    valid_at: str
+    dimensions: dict[str, str]
+    records: str = ""
+    source_updated_at: str = ""
+    source_record_id: str = ""
+
+
+@dataclass(frozen=True)
 class Domain:
     """A loaded domain pack. Every field is DATA sourced from YAML.
 
@@ -126,6 +141,7 @@ class Domain:
     semantic_windows_hours: dict[str, float] = field(default_factory=dict)
     semantic_window_env: dict[str, str] = field(default_factory=dict)
     metric_collections: dict[str, MetricCollection] = field(default_factory=dict)
+    fact_captures: dict[str, tuple[FactCapture, ...]] = field(default_factory=dict)
     scorers: dict[str, str] = field(default_factory=dict)
     bootstrap_recurring_task: dict[str, str] = field(default_factory=dict)
     thesis_phantom_example: str = ""
@@ -291,6 +307,65 @@ def _metric_collections(x: Any, field_map: dict[str, str],
     return result
 
 
+_FACT_NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
+
+
+def _fact_captures(raw: Any, rail: tuple[str, ...], sources: dict[str, str],
+                   units: dict[str, dict[str, str]]) -> dict[str, tuple[FactCapture, ...]]:
+    """Validate capture selectors and their existing source/unit authorities."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise DomainPackError("fact_captures must map active tools to rules")
+    result: dict[str, tuple[FactCapture, ...]] = {}
+    allowed = {"kind", "metric", "field", "entity", "valid_at", "dimensions",
+               "records", "source_updated_at", "source_record_id"}
+    for tool, rules in raw.items():
+        if tool not in rail or tool not in sources or not isinstance(rules, list) or not rules:
+            raise DomainPackError("fact_captures requires an active sourced tool and nonempty rules")
+        parsed: list[FactCapture] = []
+        seen: set[tuple[str, str, str]] = set()
+        for rule in rules:
+            if not isinstance(rule, dict) or not {"kind", "metric", "field", "entity", "valid_at", "dimensions"} <= set(rule) or set(rule) - allowed:
+                raise DomainPackError("invalid fact capture rule")
+            if any(not isinstance(v, str) or (v and not _FACT_NAME.fullmatch(v))
+                   or (not v and k not in {"records", "source_updated_at", "source_record_id"})
+                   for k, v in rule.items() if k != "dimensions"):
+                raise DomainPackError("invalid fact capture identifier")
+            if rule["kind"] not in {"prediction", "observation"} or rule["field"] not in units.get(tool, {}):
+                raise DomainPackError("fact capture kind or unit field is unknown")
+            dimensions = rule["dimensions"]
+            if (not isinstance(dimensions, dict) or not dimensions or len(dimensions) > 12
+                    or any(not isinstance(k, str) or not isinstance(v, str)
+                           or not _FACT_NAME.fullmatch(k) or not _FACT_NAME.fullmatch(v)
+                           for k, v in dimensions.items())):
+                raise DomainPackError("invalid fact capture dimensions")
+            key = (rule["kind"], rule["metric"], rule["field"])
+            if key in seen:
+                raise DomainPackError("duplicate fact capture rule")
+            seen.add(key)
+            parsed.append(FactCapture(**rule))
+        result[tool] = tuple(parsed)
+    return result
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Reject ambiguous YAML mappings before their duplicate keys disappear."""
+
+
+def _unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict:
+    result: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in result:
+            raise DomainPackError(f"duplicate domain mapping key: {key}")
+        result[key] = loader.construct_object(value_node, deep=True)
+    return result
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
+
+
 def _load(name: str) -> Domain:
     from core.storage_namespace import validate_identifier
     try:
@@ -303,7 +378,7 @@ def _load(name: str) -> Domain:
             f"domain pack {name!r} not found at {path}. "
             f"Existing packs: {sorted(p.name for p in _DOMAINS_ROOT.iterdir()) if _DOMAINS_ROOT.exists() else []}"
         )
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader) or {}
     if not isinstance(raw, dict):
         raise DomainPackError(
             f"domain pack {name!r} at {path}: top-level YAML must be a "
@@ -347,8 +422,8 @@ def _load(name: str) -> Domain:
     scorers = _str_map(raw.get("scorers"), "scorers")
     if scorers:
         from analysis.scorer_registry import registered_scorers
-        if not set(scorers) <= {"descriptive", "directional", "campaign_quality"}:
-            raise DomainPackError("unknown scorer role")
+        if any(not _FACT_NAME.fullmatch(role) for role in scorers):
+            raise DomainPackError("invalid scorer role identifier")
         if not set(scorers.values()) <= registered_scorers():
             raise DomainPackError("unknown scorer implementation")
     recurring = _str_map(raw.get("bootstrap_recurring_task"), "bootstrap_recurring_task")
@@ -368,6 +443,9 @@ def _load(name: str) -> Domain:
         validate_declared_rail(rail_tools, installed_catalog())
     except ToolRailError as exc:
         raise DomainPackError(str(exc)) from None
+    fact_captures = _fact_captures(raw.get("fact_captures"), rail_tools,
+                                  _str_map(raw.get("tool_sources"), "tool_sources"),
+                                  _str_map_map(raw.get("field_units"), "field_units"))
     acquisition_maps = {
         "source_cache_config": source_cache_config,
         "source_cache_default_args": source_cache_default_args,
@@ -427,6 +505,7 @@ def _load(name: str) -> Domain:
         semantic_windows_hours=windows,
         semantic_window_env=window_env,
         metric_collections=collections,
+        fact_captures=fact_captures,
         scorers=scorers,
         bootstrap_recurring_task=recurring,
         thesis_phantom_example=_str_or_empty(raw.get("thesis_phantom_example"), "thesis_phantom_example"),

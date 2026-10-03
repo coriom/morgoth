@@ -14,6 +14,10 @@ from loguru import logger
 from core.config import load_config
 from memory.persistent import PersistentMemory
 
+# PersistentMemory.initialize() applies TABLE_STATEMENTS, including the
+# Project-local temporal_facts table. Keep this entrypoint on that one schema
+# authority rather than duplicating its DDL in EXTRA_TABLE_STATEMENTS.
+
 
 EXTRA_TABLE_STATEMENTS: Sequence[str] = (
     """

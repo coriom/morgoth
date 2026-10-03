@@ -185,7 +185,28 @@ class ToolRouter:
                     except Exception as exc:
                         logger.warning("web_search cache write failed: {}", exc)
                 return result
-        return await tool.execute(**arguments)
+        result = await tool.execute(**arguments)
+        if (self._persistent_memory is not None and isinstance(result, dict)
+                and result.get("success") and name in self.policy.sources):
+            from core.domain import current_domain
+            domain = current_domain()
+            if name in domain.fact_captures:
+                try:
+                    from datetime import datetime, timezone
+                    from core.project import current_project
+                    from core.temporal_facts import extract_temporal_facts
+                    from core.version import get_code_version
+                    facts = extract_temporal_facts(
+                        domain, current_project(), name, result.get("result"),
+                        datetime.now(timezone.utc), get_code_version(),
+                    )
+                    for fact in facts:
+                        await self._persistent_memory.insert_temporal_fact(fact)
+                except Exception as exc:
+                    # Evidence capture is explicit, but cannot rewrite the
+                    # acquisition tool's success/failure semantics.
+                    logger.warning("temporal fact capture failed for {}: {}", name, type(exc).__name__)
+        return result
 
     async def close(self) -> None:
         """Close registered tools that expose an async ``close`` method."""
