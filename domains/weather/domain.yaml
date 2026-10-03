@@ -110,5 +110,6 @@ fact_captures:
       valid_at: observed_at
       dimensions: {station_id: station_id, latitude: latitude, longitude: longitude}
 
-# No Weather scorer is selected until forecast-vs-observation rules land.
-scorers: {}
+# V1 provider forecast verification; no LLM forecast-skill claim.
+scorers:
+  verification: weather_temperature_verification

@@ -4,8 +4,9 @@ Weather is a production Domain pack, separate from Project storage. The pack is
 `domains/weather/domain.yaml`; its three data-feed tools are installed in the
 catalog but active only when a Project selects `domain: weather`. The default
 crypto Project and its rail remain unchanged. No city enum, paid API, API key,
-Weather scorer or Weather-specific generic-engine branch is involved. The
-generic temporal-fact contract is described in [TEMPORAL_FACTS.md](TEMPORAL_FACTS.md).
+Weather-specific generic-engine branch is involved. The temperature-only
+provider-forecast verifier is described in [WEATHER_SCORER.md](WEATHER_SCORER.md).
+The generic temporal-fact contract is described in [TEMPORAL_FACTS.md](TEMPORAL_FACTS.md).
 
 ## Source decision (official documentation checked 2026-10-01)
 
@@ -78,7 +79,7 @@ the declarative benchmark station `KDCA`. It is a narrow historical series;
 `metric_series` records ingestion time and does **not** replace the source
 `observed_at` needed for forecast verification. No collector runs in tests.
 
-## Forecast → observation identity for the next scorer
+## Forecast → observation identity
 
 The Domain now declares temperature-only temporal-fact capture. The tool
 router records provider-normalized predictions and observations into the
@@ -88,10 +89,10 @@ Project's dedicated temporal-fact table at acquisition, separately from
 an observation tuple contains
 `(source, station_id, station_coordinates, metric, value, unit, acquired_at, valid_at)`.
 For precipitation the forecast additionally supplies the period start/end.
-The next scorer must define spatial association, allowed observation-time
-tolerance, null handling and calibration; it must retain the forecast as issued
-at T0 instead of re-fetching a revised forecast at T1. This V1 makes no
-global observation or forecast-accuracy claim.
+The temperature verifier defines spatial association, observation-time
+tolerance and null handling over facts captured prospectively. It uses
+persisted acquisition time, not an inferred model issuance time; it does not
+claim calibration, global observations or an operational forecast experiment.
 
 ## Project boundary and known limits
 
@@ -101,8 +102,10 @@ a manifest under a throwaway `MORGOTH_HOME`; no production Weather Project is
 installed. The two-process proof shows crypto and Weather share the installed
 catalog but expose and execute distinct Domain rails. Only the US NWS station
 path provides actual observations; no city geocoding, historical forecast
-archive, precipitation verification, station-distance algorithm or scorer is
-included. Python remains the engine; no Tauri or UI change is required.
+archive or precipitation verification is included. A read-only temperature
+verifier is selected by the Weather Domain; it does not collect forecasts or
+score precipitation/wind. Python remains the engine; no Tauri or UI change is
+required.
 
 An operator-owned manifest could use this shape; it is documentation, not an
 installed Project:

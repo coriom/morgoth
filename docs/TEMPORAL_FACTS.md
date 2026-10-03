@@ -14,8 +14,9 @@ application-level provenance guarantee, not tamper-proof external timestamping
 or protection against a privileged database administrator. Only a
 prediction with persisted `acquired_at <= valid_at` is eligible for later
 prospective verification; a retrospectively fetched prediction remains stored
-but ineligible. Observations need not precede their valid time. No scorer
-currently evaluates either class.
+but ineligible. Observations need not precede their valid time. The Weather
+temperature verifier evaluates persisted facts read under one read-only
+snapshot; see [WEATHER_SCORER.md](WEATHER_SCORER.md).
 
 `source_updated_at` is optional provider metadata about dataset freshness. It
 never implies model issuance. `source_record_id` is optional provenance when a
@@ -63,13 +64,14 @@ narrow filters for larger corpora. There is no silent truncation or pagination.
 
 The Weather pack schedules NWS observations via its existing metric collector.
 MET forecast facts are captured only when the forecast tool is invoked;
-automatic prospective forecast accumulation is **not** yet guaranteed. No
-Weather scorer or ongoing forecast experiment is part of this layer.
+automatic prospective forecast accumulation is **not** yet guaranteed. The
+temperature verifier does not itself collect facts or establish an ongoing
+forecast experiment.
 
 Scorer roles are validated machine-safe identifiers rather than a finite core
 list. Their implementations remain a trusted allowlist in
 `analysis.scorer_registry`: arbitrary YAML cannot import Python. Existing
 Crypto descriptive/directional/campaign-quality callers keep their current
-role names and signatures. A future verifier may declare a `verification`
-role without changing generic Domain validation. This layer contains no
-matching, accuracy metric or Weather-specific scorer.
+role names and signatures. Weather declares a `verification` role without
+changing generic Domain validation. Matching and descriptive error metrics
+live in its registered specialist, not in generic fact storage or dispatch.

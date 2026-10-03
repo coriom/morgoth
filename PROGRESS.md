@@ -1,5 +1,25 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-03 — Weather temperature provider-forecast verifier (feature branch)
+
+- Weather selects a trusted, pure `verification` scorer. V1 compares only
+  persisted MET temperature predictions to NWS station observations under
+  explicit 10 km / 30 min bounds, `as_of`, prospective eligibility, maturity,
+  deterministic station/revision selection and explicit unmatched statuses.
+  Matched-pair MAE, bias and RMSE are descriptive and revision-weighted.
+- `python -m scripts.verify_facts --from ... --to ... --as-of ... --json` uses
+  a Project-selected, direct, read-only PostgreSQL connection and one bounded
+  repeatable-read snapshot. Missing table and >10,000 facts fail without a
+  partial score. No runtime initialization or score table was added.
+- Worktree-root canonical launcher: 1975 passed, 2 existing nested-sandbox
+  skips, 209 integration-marker deselections, exit 0, wall 29.3 s. Targeted
+  SQL: 2 passed, 15 deselected; guarded broader SQL: 101 passed, 11 deselected.
+  Historical Deribit 31/16 control passed separately. See
+  `docs/WEATHER_SCORER.md` for the scientific and operational limits.
+- Development occurred on `weather-temperature-verifier` descending from
+  `b082472`, without production checkout edits, service/database changes,
+  live API/LLM calls, Codex activation or UI changes. No new dependencies.
+
 ## 2026-10-03 — Temporal-fact capture/retrieval hardening
 
 - One active-rail tool result now persists its declared facts in one validated

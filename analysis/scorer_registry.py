@@ -12,6 +12,7 @@ _IMPLEMENTATIONS = {
     "crypto_descriptive": ("analysis.thesis_backtest_descriptive", "triage"),
     "crypto_directional": ("analysis.thesis_backtest", "resolve_theses"),
     "crypto_campaign_quality": ("analysis.campaign_quality", "score_campaign"),
+    "weather_temperature_verification": ("analysis.weather_temperature_verification", "verify_temperature"),
 }
 
 
