@@ -1,5 +1,21 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-05 — Desktop research API authority boundary V1 (feature branch)
+
+- A Desktop-only outer ASGI middleware authenticates every HTTP path, including
+  docs/OpenAPI, before historical CORS and routes. It requires one Project UI
+  token header, the trusted launcher's exact loopback Host/port, and no Origin;
+  it reads the token without creating it on rejected requests. Desktop
+  WebSockets close before the historical chat handler. Legacy HTTP, CORS,
+  WebSocket and proposal mutation guards retain their previous behavior.
+- Fresh-process proof binds the selected managed Project token before server
+  import. Focused ASGI/legacy checks: 41 passed. Canonical hermetic selection:
+  2032 passed, 2 existing skips. Three guarded `morgoth_test` SQL regressions
+  passed. No production/UI/main change, provider inference or Codex activation.
+- Decision: Rust will later own authenticated native HTTP and a separate
+  WebSocket bridge if needed; browser/WebView requests remain unauthorised.
+  See docs/DESKTOP_RESEARCH_RUNTIME.md.
+
 ## 2026-10-05 — Desktop research-runtime contract V1 (feature branch)
 
 - A separate managed-Project launcher binds loopback on an explicit port, sets

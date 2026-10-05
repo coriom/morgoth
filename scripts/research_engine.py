@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     from api.routes.runtime import _code_sha
 
     app.state.desktop_runtime = True
+    app.state.desktop_expected_port = args.port
     app.state.code_sha = _code_sha()
     uvicorn.run(
         app, host="127.0.0.1", port=args.port, workers=1, reload=False,

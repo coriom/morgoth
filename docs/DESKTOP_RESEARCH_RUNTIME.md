@@ -32,6 +32,35 @@ The historical `python main.py` / systemd path remains `0.0.0.0:8000` with
 immediate autonomous scheduling, including its existing degraded-awakening
 behavior.
 
+## Desktop API authority
+
+```text
+Desktop WebView ─X─ direct HTTP
+                ─X─ direct WebSocket
+Future Rust ResearchEngineClient
+  → authenticated native HTTP → Desktop Research API → Brain/Project runtime
+```
+
+The Desktop launcher sets its trusted port before Uvicorn starts. The outer
+ASGI boundary requires exactly one `X-Morgoth-Token` header on **every**
+Desktop HTTP request, including reads, writes, `/docs`, `/redoc` and
+`/openapi.json`. It compares against the selected Project's existing token in
+constant time, fresh-reading it without creating one for rejected requests.
+Query parameters and cookies never authenticate. The `Host` must be exactly
+`127.0.0.1:<launcher-port>`; every `Origin` is refused, including `null`,
+before historical CORS runs. Uvicorn does not trust forwarded proxy headers.
+There is no unauthenticated health exception; native readiness uses the token.
+
+Desktop V1 rejects all WebSockets, including historical `/ws/chat`, with
+policy code 1008 before its handler runs. The WebView never receives the token.
+Later Rust code may open an authenticated native WebSocket and translate
+events to Tauri; this contract does not implement that bridge.
+
+`python main.py` keeps its previous public-local reads/chat, historical local
+CORS and WebSocket behavior. Existing proposal mutation guards remain active
+there, and continue as defense in depth in Desktop mode. Desktop HTTP access
+is therefore native-token-only; loopback binding alone is not the authority.
+
 ## Initialization, readiness and control
 
 The desktop lifespan initializes Project storage and its campaigns table,

@@ -10,6 +10,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.agent_manager import AgentManager
+from api.desktop_authority import DesktopAuthorityMiddleware
 from api.routes import (
     admin,
     agents,
@@ -141,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Morgoth", lifespan=lifespan)
 app.state.desktop_runtime = False
+app.state.desktop_expected_port = None
 # Local-only dashboard: the front-end port is operator-chosen (Next
 # auto-shifts to 3001/3002 when 3000 is squatted, alt Vite dashboards
 # land on 5173, dev shells often pick 8080/8081). The port carries
@@ -163,6 +165,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added last so Desktop authorization runs outside historical CORS and before
+# every HTTP route, including docs/OpenAPI and route-level dependencies.
+app.add_middleware(DesktopAuthorityMiddleware, runtime_state=app.state)
 
 app.include_router(chat.router)
 app.include_router(agents.router)
