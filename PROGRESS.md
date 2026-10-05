@@ -1,5 +1,25 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-05 — Desktop research-runtime contract V1 (feature branch)
+
+- A separate managed-Project launcher binds loopback on an explicit port, sets
+  Project/home before engine and token imports, rejects `default`/unknown
+  Projects, and starts the initialized engine PAUSED. Managed Projects continue
+  to skip checkout `.env`; the historical `main.py` port/start behavior remains.
+- Brain retains one autonomous-task handle, gates desktop start on awakening,
+  exposes lifecycle/task death and cancels/awaits that exact task on shutdown.
+  The existing legacy automatic scheduling remains, including degraded wakeup.
+- Four versioned runtime routes reuse the Project UI token and canonical LLM
+  profile readiness/switch/campaign guard. Start and profile mutation share a
+  process-local lock; blocked Codex/legacy routes cannot start research.
+- Verification: 2024 canonical hermetic passed, 2 existing skips; focused
+  runtime/management/profile/campaign 57 passed; three guarded morgoth_test
+  SQL regressions passed. No provider inference, production state/service,
+  UI, dependency, Domain, Codex safety lock or main-branch change.
+- Decisions: desktop PAUSED still performs existing awakening probes; runtime
+  Git SHA is captured once by the launcher. External process supervision and
+  packaged startup remain future Rust work. See docs/DESKTOP_RESEARCH_RUNTIME.md.
+
 ## 2026-10-03 — Independent local Management API V1 (feature branch)
 
 - Added a separate authenticated FastAPI factory over the offline ProjectManager:

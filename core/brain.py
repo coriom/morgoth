@@ -181,6 +181,11 @@ class Brain:
         self._notifier = notifier
         self._websocket_manager = websocket_manager
         self._ready = False
+        self._initialized = False
+        self._stopped = False
+        self._autonomous_task: asyncio.Task[None] | None = None
+        self._autonomous_failure: str | None = None
+        self._start_lock = asyncio.Lock()
         self._message_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._total_cycles_completed: int = 0
         self._last_cycle_at: str | None = None
@@ -190,11 +195,11 @@ class Brain:
         self._last_vram_used_mb: int | None = None
         self._current_objective_id: str | None = None
 
-    async def initialize(self) -> dict[str, Any]:
+    async def initialize(self, *, start_autonomous: bool = True) -> dict[str, Any]:
         """Run startup checks and initialize runtime dependencies."""
 
-        if self._ready:
-            return {"status": "READY"}
+        if self._initialized:
+            return {"status": "READY" if self._ready else "MISSING_DEPENDENCIES"}
 
         if MIN_DISTINCT_SOURCES >= self._config.max_cycles_per_objective:
             logger.warning(
@@ -270,9 +275,73 @@ class Brain:
         await self._scheduler.initialize()
         awakening = await self.awaken()
         self._ready = awakening["status"] == "READY"
-        asyncio.create_task(self.run_autonomous_cycle())
-        logger.info("Autonomous cycle scheduled")
+        self._initialized = True
+        if start_autonomous:
+            # Historical main.py also schedules in degraded awakening state.
+            # Desktop uses the explicit readiness-checked start method instead.
+            self._schedule_autonomous_task()
         return awakening
+
+    def _schedule_autonomous_task(self) -> None:
+        """Create and retain the one autonomous loop, including legacy startup."""
+        if self._autonomous_task is not None:
+            raise RuntimeError("autonomous research already started")
+        task = asyncio.create_task(self.run_autonomous_cycle(), name="morgoth-autonomous-cycle")
+        self._autonomous_task = task
+        task.add_done_callback(self._autonomous_done)
+        logger.info("Autonomous cycle scheduled")
+
+    def _autonomous_done(self, task: asyncio.Task[None]) -> None:
+        """Record unexpected loop termination without logging arbitrary exception text."""
+        if self._stopped:
+            return
+        if task.cancelled():
+            self._autonomous_failure = "TASK_CANCELLED"
+        elif task.exception() is not None:
+            self._autonomous_failure = "TASK_FAILED"
+        else:
+            self._autonomous_failure = "TASK_EXITED"
+        logger.error("Autonomous cycle terminated unexpectedly: {}", self._autonomous_failure)
+
+    async def start_autonomous_research(self) -> bool:
+        """Start once after a successful awakening; return False if already running."""
+        async with self._start_lock:
+            if not self._initialized or not self._ready or self._stopped:
+                raise RuntimeError("research runtime is not ready")
+            if self._autonomous_task is not None:
+                if not self._autonomous_task.done():
+                    return False
+                raise RuntimeError("autonomous task terminated; restart the engine")
+            self._schedule_autonomous_task()
+            return True
+
+    @property
+    def research_state(self) -> str:
+        """Report lifecycle separately from dependency readiness."""
+        if self._stopped:
+            return "STOPPED"
+        if self._autonomous_failure or (self._autonomous_task and self._autonomous_task.done()):
+            return "FAILED"
+        if self._autonomous_task is not None:
+            return "RUNNING"
+        if not self._initialized:
+            return "INITIALIZING"
+        return "PAUSED" if self._ready else "NOT_READY"
+
+    @property
+    def autonomous_task_alive(self) -> bool:
+        """Whether the owned autonomous task is currently active."""
+        return self._autonomous_task is not None and not self._autonomous_task.done()
+
+    @property
+    def initialized(self) -> bool:
+        """Whether storage, scheduler and awakening completed."""
+        return self._initialized
+
+    @property
+    def awakening_ready(self) -> bool:
+        """Whether the last awakening found dependencies ready."""
+        return self._ready
 
     async def awaken(self) -> dict[str, Any]:
         """Execute the AWAKENING protocol from the specification."""
@@ -2183,6 +2252,17 @@ class Brain:
     async def shutdown(self) -> None:
         """Close all managed resources."""
 
+        self._stopped = True
+        task = self._autonomous_task
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.error("Autonomous cycle failed before shutdown")
         await self._tool_router.close()
         await self._notifier.close()
         await self._llm_client.close()

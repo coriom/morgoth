@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -20,6 +21,7 @@ from api.routes import (
     market,
     objectives,
     proposals as proposals_route,
+    runtime as runtime_route,
     tools as tools_route,
     wiki,
 )
@@ -114,7 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         notifier,
         websocket_manager,
     )
-    await brain_service.initialize()
+    await brain_service.initialize(start_autonomous=not app.state.desktop_runtime)
     # Materialize the UI session token on startup so the Next.js server
     # can read it before the first user hits an approve/reject/apply.
     ensure_ui_token()
@@ -129,6 +131,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.agent_manager = agent_manager
     app.state.tool_router = tool_router
     app.state.brain = brain_service
+    app.state.runtime_control_lock = asyncio.Lock()
 
     try:
         yield
@@ -137,6 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Morgoth", lifespan=lifespan)
+app.state.desktop_runtime = False
 # Local-only dashboard: the front-end port is operator-chosen (Next
 # auto-shifts to 3001/3002 when 3000 is squatted, alt Vite dashboards
 # land on 5173, dev shells often pick 8080/8081). The port carries
@@ -172,6 +176,7 @@ app.include_router(knowledge.router)
 app.include_router(wiki.router)
 app.include_router(tools_route.router)
 app.include_router(proposals_route.router)
+app.include_router(runtime_route.router)
 
 
 @app.websocket("/ws/chat")

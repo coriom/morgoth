@@ -46,7 +46,8 @@ def test_startup_order_proves_guard_needed_even_before_expiry():
     from core.brain import Brain
     initialize = inspect.getsource(Brain.initialize)
     cycle = inspect.getsource(Brain.run_autonomous_cycle)
-    assert initialize.index('timeout_stale_objectives') < initialize.index('reclaim_orphan_objectives') < initialize.index('create_task')
+    assert initialize.index('timeout_stale_objectives') < initialize.index('reclaim_orphan_objectives') < initialize.index('if start_autonomous:') < initialize.index('_schedule_autonomous_task()')
+    assert 'asyncio.create_task(self.run_autonomous_cycle()' in inspect.getsource(Brain._schedule_autonomous_task)
     assert cycle.index('expire_active_campaign_if_due') < cycle.index('claim_next_objective')
     # Real SQL scenarios exercise this exact worst-case ordering in the dedicated
     # test DB. Neither recovery timeout nor env override is changed here.
