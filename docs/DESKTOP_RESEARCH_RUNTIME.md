@@ -64,16 +64,44 @@ is therefore native-token-only; loopback binding alone is not the authority.
 ## Initialization, readiness and control
 
 The desktop lifespan initializes Project storage and its campaigns table,
-scheduler, episodic memory and awakening before serving requests. It then
+scheduler, episodic memory and a safe local preflight before serving requests.
+It then
 creates the Project UI token at `Project.runtime_dir/auth/ui_token`. The future
 Rust supervisor may read that private file natively; it must never enter the
 WebView. A healthy process is not equivalent to research readiness.
 
-PAUSED means no autonomous-cycle task exists. It is **not** network-silent:
-the existing awakening can probe Ollama, call its local warmup, self-test tools
-and dependencies, and initialize storage. `NOT_READY` means awakening did not
-pass. `FAILED` records unexpected autonomous-task termination. The status
-separately reports initialized, awakening readiness and task liveness.
+Desktop PAUSED means initialized storage and validated active Domain rail,
+local Ollama `/api/tags` reachable with both configured models present, and
+**no** autonomous task. Its empty owned workspace needs no `SPEC.md`.
+Initialization performs no research-tool execution, LLM inference, notification,
+tool-test file write, objective recovery or recurring-task creation. The local
+read-only Ollama check is bounded to five seconds; it does not verify external
+Domain sources or provider login/quota. `NOT_READY` remains inspectable when
+the local preflight fails. The existing `awakening_ready` API field carries
+this safe managed-runtime readiness in Desktop mode. `FAILED` records unexpected
+autonomous-task termination. The status separately reports initialized,
+awakening readiness and task liveness.
+
+Legacy `python main.py` retains its historical full awakening, Ollama warmup,
+live tool self-tests, stale/orphan recovery, recurring-task setup and immediate
+autonomous scheduling. Desktop requires explicit qualified profile selection
+and `POST /start`; only then does it recover objectives, ensure the Domain's
+recurring task exactly once, and schedule the autonomous loop. Research-tool
+and source-network activity begins after this explicit START.
+
+Before importing the server or publishing a token, the Desktop launcher obtains
+`<Project.runtime_dir>/.research-engine.lock` with a nonblocking exclusive
+Linux `flock` on a private regular file. A second launcher for the same Project
+exits `PROJECT_ENGINE_ALREADY_ACTIVE`; another Project has a separate lease.
+The historical `main.py` entrypoint also requires this lease if explicitly
+pointed at a managed Project; its default legacy Project remains unchanged.
+The research ASGI lifespan refuses a managed Project if no launcher has passed
+it a lease currently held by that process, so a direct `uvicorn api.server:app`
+invocation cannot initialize managed research without the lease.
+The descriptor remains open for the engine process lifetime. An old file is
+harmless after a crash because the kernel lock, not a PID or file existence,
+is authoritative. This is a host-local Linux lease, not a distributed lock
+across machines or NFS.
 
 All four `/api/runtime/v1` routes require the existing `X-Morgoth-Token` gate:
 
@@ -98,6 +126,5 @@ process supervisor or auto-restart loop.
 
 Hermetic tests use a controlled loop and synthetic readiness; SQL integrations
 use only `morgoth_test` and disposable managed schemas. No real provider or
-market/weather call is made for this contract. A fully live Brain awakening
-and its external dependencies remain for the later Rust-supervised smoke;
-PAUSED must not be misrepresented as an inference-free initialization.
+market/weather call is made for this contract. PAUSED is inference-free but
+may contact the configured local Ollama `/api/tags` endpoint.

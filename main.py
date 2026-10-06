@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 
 import uvicorn
 from loguru import logger
-
-from api.server import app
+from core.project_engine_lease import ProjectEngineLease, ProjectEngineLeaseError
 
 
 def _wire_log_rotation() -> None:
@@ -37,14 +37,32 @@ def _wire_log_rotation() -> None:
         logger.warning("log-file sink not attached (non-fatal): {}", exc)
 
 
-async def main() -> None:
-    """Run the Morgoth API server and trigger the bootstrap protocol."""
-
+async def _serve(lease: ProjectEngineLease | None = None) -> None:
+    """Preserve the historical bind and autonomous lifespan behavior."""
+    from api.server import app
+    if lease is not None:
+        app.state.project_engine_lease = lease
     _wire_log_rotation()
     logger.info("Starting Morgoth Phase 1 runtime")
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
+
+
+async def main() -> None:
+    """Run legacy unchanged; require a Project lease for managed engines."""
+    from core.project import current_project
+
+    project = current_project()
+    if project.is_legacy:
+        await _serve()
+        return
+    try:
+        with ProjectEngineLease(project) as lease:
+            await _serve(lease)
+    except ProjectEngineLeaseError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(3) from None
 
 
 if __name__ == "__main__":

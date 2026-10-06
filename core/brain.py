@@ -8,6 +8,7 @@ import json
 import os
 import time
 from datetime import date, datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,13 @@ Memory collections: conversations, research, decisions, market_patterns, code_ar
 When working on an objective, ALWAYS finish by calling update_objective. Never leave an objective in pending status after gathering data."""
 
 MIN_DISTINCT_SOURCES: int = 3
+
+
+class BrainInitializationMode(str, Enum):
+    """Explicit startup contract; pausing scheduling alone is not safe startup."""
+
+    LEGACY_FULL = "legacy_full"
+    DESKTOP_PAUSED = "desktop_paused"
 
 # Objectives older than this transition to ``stale_timeout`` at
 # Brain.initialize(). Rationale: MAX_CYCLES bounds an objective's
@@ -182,6 +190,7 @@ class Brain:
         self._websocket_manager = websocket_manager
         self._ready = False
         self._initialized = False
+        self._initialization_mode: BrainInitializationMode | None = None
         self._stopped = False
         self._autonomous_task: asyncio.Task[None] | None = None
         self._autonomous_failure: str | None = None
@@ -195,11 +204,20 @@ class Brain:
         self._last_vram_used_mb: int | None = None
         self._current_objective_id: str | None = None
 
-    async def initialize(self, *, start_autonomous: bool = True) -> dict[str, Any]:
-        """Run startup checks and initialize runtime dependencies."""
+    async def initialize(
+        self, *, mode: BrainInitializationMode = BrainInitializationMode.LEGACY_FULL,
+        start_autonomous: bool | None = None,
+    ) -> dict[str, Any]:
+        """Initialize storage, then run the explicitly selected startup protocol."""
 
         if self._initialized:
             return {"status": "READY" if self._ready else "MISSING_DEPENDENCIES"}
+        if not isinstance(mode, BrainInitializationMode):
+            raise ValueError("unknown brain initialization mode")
+        if mode is BrainInitializationMode.DESKTOP_PAUSED and start_autonomous is not None:
+            raise ValueError("desktop initialization does not accept autonomous scheduling")
+        if start_autonomous is None:
+            start_autonomous = mode is BrainInitializationMode.LEGACY_FULL
 
         if MIN_DISTINCT_SOURCES >= self._config.max_cycles_per_objective:
             logger.warning(
@@ -212,6 +230,22 @@ class Brain:
             )
 
         await self._persistent_memory.initialize()
+        if mode is BrainInitializationMode.LEGACY_FULL:
+            await self._recover_objectives_at_start()
+        await self._episodic_memory.initialize()
+        await self._scheduler.initialize()
+        awakening = (await self.awaken() if mode is BrainInitializationMode.LEGACY_FULL
+                     else await self._desktop_preflight())
+        self._ready = awakening["status"] == "READY"
+        self._initialization_mode = mode
+        self._initialized = True
+        if start_autonomous:
+            # Historical main.py also schedules in degraded awakening state.
+            self._schedule_autonomous_task()
+        return awakening
+
+    async def _recover_objectives_at_start(self) -> None:
+        """Run the historical stale/orphan recovery before research starts."""
         # Stale-objective sweep: transition non-terminal rows older
         # than OBJECTIVE_STALE_DAYS (env-overridable) to
         # ``stale_timeout``. Non-blocking: any failure warns and
@@ -271,16 +305,21 @@ class Brain:
                 )
         except Exception as exc:
             logger.warning("orphan reclaim failed (non-blocking): {}", exc)
-        await self._episodic_memory.initialize()
-        await self._scheduler.initialize()
-        awakening = await self.awaken()
-        self._ready = awakening["status"] == "READY"
-        self._initialized = True
-        if start_autonomous:
-            # Historical main.py also schedules in degraded awakening state.
-            # Desktop uses the explicit readiness-checked start method instead.
-            self._schedule_autonomous_task()
-        return awakening
+
+    async def _desktop_preflight(self) -> dict[str, Any]:
+        """Check local Ollama models only; tool-rail validation occurred at build."""
+        required = (self._config.ollama_primary_model, self._config.ollama_agent_model)
+        try:
+            # GET /api/tags only. Bound independently of inference client timeout.
+            available = await asyncio.wait_for(self._llm_client.list_models(), timeout=5)
+            names = {item.name for item in available}
+            models = {name: name in names for name in required}
+            missing = [f"Missing Ollama model: {name}" for name, found in models.items() if not found]
+        except (OSError, ValueError, asyncio.TimeoutError, httpx.HTTPError):
+            models = {name: False for name in required}
+            missing = ["Ollama local model preflight unavailable"]
+        return {"status": "READY" if not missing else "MISSING_DEPENDENCIES",
+                "missing": missing, "tool_results": {}, "models": models}
 
     def _schedule_autonomous_task(self) -> None:
         """Create and retain the one autonomous loop, including legacy startup."""
@@ -312,6 +351,9 @@ class Brain:
                 if not self._autonomous_task.done():
                     return False
                 raise RuntimeError("autonomous task terminated; restart the engine")
+            if self._initialization_mode is BrainInitializationMode.DESKTOP_PAUSED:
+                await self._recover_objectives_at_start()
+                await self.ensure_recurring_tasks()
             self._schedule_autonomous_task()
             return True
 

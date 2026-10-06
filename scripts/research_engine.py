@@ -60,19 +60,28 @@ def main(argv: list[str] | None = None) -> int:
         print("desktop research Project is unavailable", file=sys.stderr)
         return 2
 
-    # These imports bind current_project/api.token; they must stay below configure().
-    import uvicorn
-    from api.server import app
-    from api.routes.runtime import _code_sha
+    from core.project import current_project
+    from core.project_engine_lease import ProjectEngineLease, ProjectEngineLeaseError
 
-    app.state.desktop_runtime = True
-    app.state.desktop_expected_port = args.port
-    app.state.code_sha = _code_sha()
-    uvicorn.run(
-        app, host="127.0.0.1", port=args.port, workers=1, reload=False,
-        proxy_headers=False, forwarded_allow_ips="", access_log=False,
-        server_header=False, date_header=False,
-    )
+    try:
+        # This must precede api.server/api.token imports and all runtime startup.
+        with ProjectEngineLease(current_project()) as lease:
+            import uvicorn
+            from api.server import app
+            from api.routes.runtime import _code_sha
+
+            app.state.project_engine_lease = lease
+            app.state.desktop_runtime = True
+            app.state.desktop_expected_port = args.port
+            app.state.code_sha = _code_sha()
+            uvicorn.run(
+                app, host="127.0.0.1", port=args.port, workers=1, reload=False,
+                proxy_headers=False, forwarded_allow_ips="", access_log=False,
+                server_header=False, date_header=False,
+            )
+    except ProjectEngineLeaseError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     return 0
 
 

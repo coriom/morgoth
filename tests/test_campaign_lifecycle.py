@@ -45,8 +45,12 @@ async def test_generation_and_expiration_share_live_definition():
 def test_startup_order_proves_guard_needed_even_before_expiry():
     from core.brain import Brain
     initialize = inspect.getsource(Brain.initialize)
+    recover = inspect.getsource(Brain._recover_objectives_at_start)
+    start = inspect.getsource(Brain.start_autonomous_research)
     cycle = inspect.getsource(Brain.run_autonomous_cycle)
-    assert initialize.index('timeout_stale_objectives') < initialize.index('reclaim_orphan_objectives') < initialize.index('if start_autonomous:') < initialize.index('_schedule_autonomous_task()')
+    assert recover.index('timeout_stale_objectives') < recover.index('reclaim_orphan_objectives')
+    assert initialize.index('await self._recover_objectives_at_start()') < initialize.index('await self.awaken()') < initialize.index('_schedule_autonomous_task()')
+    assert start.index('await self._recover_objectives_at_start()') < start.index('await self.ensure_recurring_tasks()') < start.index('_schedule_autonomous_task()')
     assert 'asyncio.create_task(self.run_autonomous_cycle()' in inspect.getsource(Brain._schedule_autonomous_task)
     assert cycle.index('expire_active_campaign_if_due') < cycle.index('claim_next_objective')
     # Real SQL scenarios exercise this exact worst-case ordering in the dedicated

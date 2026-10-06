@@ -28,9 +28,10 @@ from api.routes import (
 )
 from api.token import ensure_ui_token
 from api.ws.handler import InboundWebSocketMessage, WebSocketManager
-from core.brain import Brain
+from core.brain import Brain, BrainInitializationMode
 from core.config import AppConfig, load_config
 from core.llm_client import OllamaLLMClient
+from core.project_engine_lease import ProjectEngineLease, ProjectEngineLeaseError
 from core.scheduler import Scheduler
 from core.tool_router import ToolRouter
 from memory.episodic import EpisodicMemory
@@ -97,6 +98,12 @@ def build_tool_router(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and tear down the application state."""
 
+    from core.project import current_project
+    project = current_project()
+    if not project.is_legacy:
+        lease = getattr(app.state, "project_engine_lease", None)
+        if not isinstance(lease, ProjectEngineLease) or not lease.held_for(project):
+            raise ProjectEngineLeaseError("PROJECT_ENGINE_LEASE_UNAVAILABLE")
     config = await load_config()
     llm_client = OllamaLLMClient(config)
     persistent_memory = PersistentMemory(config)
@@ -117,7 +124,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         notifier,
         websocket_manager,
     )
-    await brain_service.initialize(start_autonomous=not app.state.desktop_runtime)
+    mode = (BrainInitializationMode.DESKTOP_PAUSED if app.state.desktop_runtime
+            else BrainInitializationMode.LEGACY_FULL)
+    await brain_service.initialize(mode=mode)
     # Materialize the UI session token on startup so the Next.js server
     # can read it before the first user hits an approve/reject/apply.
     ensure_ui_token()

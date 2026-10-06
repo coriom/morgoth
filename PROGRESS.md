@@ -1,5 +1,31 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-06 — Safe managed research bootstrap V1 (feature branch)
+
+- The managed Desktop launcher obtains a process-lifetime, host-local Linux
+  `flock` for its Project before importing the server or publishing a token.
+  Unsafe lock files fail closed; a second engine for that Project exits with
+  `PROJECT_ENGINE_ALREADY_ACTIVE`. The historical entrypoint also takes this
+  lease when explicitly targeting a managed Project. An old file has no
+  authority after death.
+- Explicit `DESKTOP_PAUSED` initialization retains storage and Domain-rail
+  construction but uses a bounded local Ollama model-list preflight. It does
+  not run historical live self-tests, inference, notifications, objective
+  recovery, recurring-task creation or autonomy. Recovery and recurring setup
+  occur immediately before explicit START. `LEGACY_FULL` retains the original
+  awakening and immediate scheduling sequence.
+- Actual launcher smoke used a disposable `morgoth_test` cluster and fake
+  loopback Ollama for Crypto and Weather managed Projects: authenticated PAUSED,
+  no autonomous task, duplicate-process refusal and released leases. Canonical
+  hermetic: 2044 passed, 2 existing skips, exit 0. Focused sandbox: 35 passed.
+  Guarded SQL selections: 8 and 95 passed, 11 total deselections. The Deribit
+  31 genuine / 16 confused control passed. No UI, main, production service,
+  production state, provider inference or Codex safety-lock change.
+- Decision: the lease is deliberately host-local and non-distributed; Desktop
+  readiness proves local models and structural rail only, not external sources.
+  Research-engine supervision, provider inference and packaging remain outside
+  this backend contract. See docs/DESKTOP_RESEARCH_RUNTIME.md.
+
 ## 2026-10-05 — Desktop research API authority boundary V1 (feature branch)
 
 - A Desktop-only outer ASGI middleware authenticates every HTTP path, including
