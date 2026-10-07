@@ -15,26 +15,11 @@ from core.config import load_config
 from memory.persistent import PersistentMemory
 
 # PersistentMemory.initialize() applies TABLE_STATEMENTS, including the
-# Project-local temporal_facts table. Keep this entrypoint on that one schema
-# authority rather than duplicating its DDL in EXTRA_TABLE_STATEMENTS.
+# Project-local objectives and temporal_facts tables. Keep this entrypoint on
+# that one schema authority rather than duplicating runtime DDL here.
 
 
 EXTRA_TABLE_STATEMENTS: Sequence[str] = (
-    """
-    CREATE TABLE IF NOT EXISTS objectives (
-        objective_id UUID PRIMARY KEY,
-        title VARCHAR(500) NOT NULL,
-        description TEXT NOT NULL,
-        category VARCHAR(100) NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 2,
-        generated_by VARCHAR(100) NOT NULL DEFAULT 'morgoth',
-        status VARCHAR(50) NOT NULL DEFAULT 'pending',
-        evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        completed_at TIMESTAMPTZ,
-        user_id VARCHAR(100) NOT NULL DEFAULT 'default'
-    );
-    """,
     """
     CREATE TABLE IF NOT EXISTS ui_widgets (
         widget_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

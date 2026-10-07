@@ -1,5 +1,19 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-07 — Managed Project objective storage bootstrap
+
+The canonical `PersistentMemory.initialize()` runtime DDL now creates the
+historical base `objectives` table before its idempotent migrations. The
+runtime-critical objective and campaign migrations fail startup if they cannot
+complete; PAUSED cannot advertise incomplete objective storage. `scripts.init_db`
+continues to call that initializer and owns only its extra UI/Scout tables.
+Fresh and historical managed schemas, service-level objective creation/claim/
+cycle/evidence, and a real Weather Desktop PAUSED process are covered by
+disposable `morgoth_test` tests. No `.env`, production Project, or UI change.
+Validation: 2045 canonical hermetic passed, 2 existing skips; 8 guarded SQL
+regressions passed. The historical 31 genuine / 16 confused control remains in
+the canonical suite. No dependency added.
+
 ## 2026-10-06 — Safe managed research bootstrap V1 (feature branch)
 
 - The managed Desktop launcher obtains a process-lifetime, host-local Linux

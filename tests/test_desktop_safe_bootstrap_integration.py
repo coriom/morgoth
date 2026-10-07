@@ -103,6 +103,16 @@ def test_actual_crypto_and_weather_launch_paused_without_research(tmp_path: Path
     try:
         for identifier in ("crypto_lab", "weather_lab"):
             project = projects[identifier]
+            async def absent_before_start() -> bool:
+                conn = await asyncpg.connect(dsn, timeout=5)
+                try:
+                    return not await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)",
+                        project.postgres_schema,
+                    )
+                finally:
+                    await conn.close()
+            assert asyncio.run(absent_before_start())
             port = _free_loopback_port()
             argv = [sys.executable, "-B", "-m", "scripts.research_engine",
                     "--home", str(home), "--project", identifier, "--port", str(port)]
@@ -114,6 +124,28 @@ def test_actual_crypto_and_weather_launch_paused_without_research(tmp_path: Path
             assert status["research_state"] == "PAUSED"
             assert status["initialized"] and status["awakening_ready"]
             assert status["autonomous_task_alive"] is False
+            async def objective_columns() -> set[str]:
+                conn = await asyncpg.connect(dsn, timeout=5)
+                try:
+                    rows = await conn.fetch(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema=$1 AND table_name='objectives'",
+                        project.postgres_schema,
+                    )
+                    return {row["column_name"] for row in rows}
+                finally:
+                    await conn.close()
+            assert {"objective_id", "cycle_count", "sources_used",
+                    "consecutive_network_outage_cycles", "campaign_id", "updated_at"} <= asyncio.run(objective_columns())
+            if identifier == "weather_lab":
+                probe_env = {**environment, "MORGOTH_HOME": str(home),
+                             "MORGOTH_PROJECT": identifier}
+                probe = subprocess.run(
+                    [sys.executable, "-B", str(repo / "tests" / "objective_bootstrap_probe.py")],
+                    cwd=repo, env=probe_env, capture_output=True, timeout=30, check=False,
+                )
+                assert probe.returncode == 0, "objective service probe failed after PAUSED"
+                assert json.loads(probe.stdout)["read_back"] is True
             assert (project.runtime_dir / ".research-engine.lock").is_file()
             assert not (project.workspace_root / "data" / "tool_test.txt").exists()
             assert not any(project.workspace_root.iterdir())

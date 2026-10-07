@@ -126,6 +126,21 @@ TABLE_STATEMENTS = (
         metadata JSONB
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS objectives (
+        objective_id UUID PRIMARY KEY,
+        title VARCHAR(500) NOT NULL,
+        description TEXT NOT NULL,
+        category VARCHAR(100) NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 2,
+        generated_by VARCHAR(100) NOT NULL DEFAULT 'morgoth',
+        status VARCHAR(50) NOT NULL DEFAULT 'pending',
+        evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        user_id VARCHAR(100) NOT NULL DEFAULT 'default'
+    );
+    """,
 )
 
 
@@ -187,25 +202,19 @@ class PersistentMemory:
                 await connection.execute(CREATE_EXTENSION_SQL)
             for statement in TABLE_STATEMENTS:
                 await connection.execute(statement)
-            try:
-                await connection.execute(
-                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS cycle_count INTEGER DEFAULT 0;"
-                )
-            except Exception as exc:
-                logger.warning("Could not add cycle_count column (objectives table may not exist yet): {}", exc)
-            try:
-                await connection.execute(
-                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS sources_used JSONB DEFAULT '[]'::jsonb;"
-                )
-            except Exception as exc:
-                logger.warning("Could not add sources_used column (objectives table may not exist yet): {}", exc)
-            try:
-                await connection.execute(
-                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS "
-                    "consecutive_network_outage_cycles INTEGER DEFAULT 0;"
-                )
-            except Exception as exc:
-                logger.warning("Could not add outage-streak column (non-fatal): {}", exc)
+            # Objective storage is required by the autonomous runtime. An
+            # unsuccessful migration must prevent PAUSED from advertising a
+            # schema that cannot claim or update objectives.
+            await connection.execute(
+                "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS cycle_count INTEGER DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS sources_used JSONB DEFAULT '[]'::jsonb;"
+            )
+            await connection.execute(
+                "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS "
+                "consecutive_network_outage_cycles INTEGER DEFAULT 0;"
+            )
             try:
                 await connection.execute(
                     """
@@ -529,26 +538,23 @@ class PersistentMemory:
                 logger.warning(
                     "Could not ensure focus_directives table (non-fatal): {}", exc
                 )
-            try:
-                # Campaigns — sustained work on ONE subject for N days.
-                # Reuses focus_directives' single-active + tombstone model.
-                await connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS campaigns (
-                        campaign_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        subject TEXT NOT NULL,
-                        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        ends_at TIMESTAMPTZ NOT NULL,
-                        status TEXT NOT NULL DEFAULT 'active',
-                        ended_at TIMESTAMPTZ NULL
-                    );
-                    """
-                )
-                await connection.execute(
-                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS campaign_id UUID;"
-                )
-            except Exception as exc:
-                logger.warning("Could not ensure campaigns table (non-fatal): {}", exc)
+            # Campaigns — sustained work on ONE subject for N days.
+            # Both relations are required by objective claim and profile guards.
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS campaigns (
+                    campaign_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    subject TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    ends_at TIMESTAMPTZ NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    ended_at TIMESTAMPTZ NULL
+                );
+                """
+            )
+            await connection.execute(
+                "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS campaign_id UUID;"
+            )
             try:
                 await connection.execute(
                     """
@@ -696,19 +702,14 @@ class PersistentMemory:
             # objectives.updated_at — activity marker for the orphan
             # reclaim path. Nullable ALTER; existing rows default to
             # created_at so the first reclaim cycle doesn't false-positive.
-            try:
-                await connection.execute(
-                    "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS "
-                    "updated_at TIMESTAMPTZ DEFAULT NOW();"
-                )
-                await connection.execute(
-                    "UPDATE objectives SET updated_at = created_at "
-                    "WHERE updated_at IS NULL;"
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Could not ensure objectives.updated_at (non-fatal): {}", exc
-                )
+            await connection.execute(
+                "ALTER TABLE objectives ADD COLUMN IF NOT EXISTS "
+                "updated_at TIMESTAMPTZ DEFAULT NOW();"
+            )
+            await connection.execute(
+                "UPDATE objectives SET updated_at = created_at "
+                "WHERE updated_at IS NULL;"
+            )
             # theses.code_version + self_modify_proposals.code_version —
             # provenance so every measurement can filter "produced under
             # commit X". Historical rows stay NULL; the descriptive

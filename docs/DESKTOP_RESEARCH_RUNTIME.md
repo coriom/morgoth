@@ -63,6 +63,16 @@ is therefore native-token-only; loopback binding alone is not the authority.
 
 ## Initialization, readiness and control
 
+ProjectManager creation publishes only configuration and owned directories;
+it does not provision PostgreSQL. The first desktop engine initialization
+creates or migrates the selected Project's runtime schema through
+`PersistentMemory.initialize()`, including the base `objectives` table and its
+current cycle, source, outage, campaign and activity columns. It never resolves
+a missing managed table through `public`. `scripts.init_db` remains an optional
+explicit maintenance/bootstrap command and is not a prerequisite for Desktop
+research or human objective creation after PAUSED. Its additional `ui_widgets`
+table is UI-facing; `api_leads` is also ensured by Scout when needed.
+
 The desktop lifespan initializes Project storage and its campaigns table,
 scheduler, episodic memory and a safe local preflight before serving requests.
 It then
