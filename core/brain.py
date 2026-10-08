@@ -385,6 +385,15 @@ class Brain:
         return self._autonomous_task is not None and not self._autonomous_task.done()
 
     @property
+    def autonomous_failure(self) -> str | None:
+        """A bounded failure code for monitoring, never an exception message."""
+        if self.research_state != "FAILED":
+            return None
+        if self._autonomous_failure in {"TASK_CANCELLED", "TASK_FAILED", "TASK_EXITED"}:
+            return self._autonomous_failure
+        return "TASK_EXITED"
+
+    @property
     def initialized(self) -> bool:
         """Whether storage, scheduler and awakening completed."""
         return self._initialized

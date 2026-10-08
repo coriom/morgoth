@@ -14,6 +14,8 @@ Boundaries under test:
 from __future__ import annotations
 
 import inspect
+import asyncio
+import threading
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -69,6 +71,21 @@ class TestDetectionNeverRaises:
         assert env.claude_cli is not None
         assert env.api_key is not None
         assert env.platform
+
+    @pytest.mark.asyncio
+    async def test_slow_sync_probes_overlap_without_blocking_loop(self, monkeypatch):
+        cap = ENV.Capability("ok", "synthetic")
+        rendezvous = threading.Barrier(2, timeout=1)
+
+        def slow():
+            rendezvous.wait()
+            return cap
+
+        monkeypatch.setattr(ENV, "_probe_hardware", slow)
+        monkeypatch.setattr(ENV, "_probe_claude_cli", slow)
+        monkeypatch.setattr(ENV, "_probe_ollama", AsyncMock(return_value=cap))
+        result = await asyncio.wait_for(ENV.detect_environment(), timeout=2)
+        assert result.hardware is cap and result.claude_cli is cap
 
 
 # ═════════════════════════════════════════════════════════════════════

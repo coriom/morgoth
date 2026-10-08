@@ -1,5 +1,14 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-08 — Desktop runtime liveness (feature branch)
+
+Added token-protected `/api/runtime/v1/liveness` for cheap identity/task
+monitoring. Full profile readiness remains on explicit status and control
+operations; synchronous local probes now overlap in threads with Ollama's
+bounded tag check. START uses one fresh readiness snapshot. No research,
+Domain, profile or legacy behavior changed. The separate Desktop Rust monitor
+must adopt this endpoint before a new live qualification attempt.
+
 ## 2026-10-08 — Canonical objective finalization (feature branch)
 
 Brain now uses one finalizer for model-requested `done` (after committed

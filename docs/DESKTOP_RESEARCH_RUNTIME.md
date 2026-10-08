@@ -113,14 +113,24 @@ harmless after a crash because the kernel lock, not a PID or file existence,
 is authoritative. This is a host-local Linux lease, not a distributed lock
 across machines or NFS.
 
-All four `/api/runtime/v1` routes require the existing `X-Morgoth-Token` gate:
+All `/api/runtime/v1` routes require the existing `X-Morgoth-Token` gate:
 
 | Method/path | Result |
 |---|---|
 | `GET /status` | Project, Domain, code SHA, initialization, awakening, research and current-profile readiness |
 | `GET /profiles` | Effective provider map and canonical readiness for legacy/claude/codex |
+| `GET /liveness` | Cheap authenticated Project/Domain/code identity and owned-task state; no provider, hardware or tool probe |
 | `POST /profile` `{"profile":"claude"}` | Canonical atomic guarded Project profile switch while paused |
 | `POST /start` | Start the one owned autonomous task only after dependency and effective-profile readiness |
+
+The native monitor should poll `/liveness`, not `/status`. Liveness reads only
+in-process identity and Brain task state. `autonomous_failure` is null or one
+of `TASK_CANCELLED`, `TASK_FAILED`, `TASK_EXITED`; exception text is never
+returned. `/status`, `/profiles`, profile selection and START retain full
+readiness evaluation. Synchronous hardware and Claude version checks run in
+threads concurrently with the bounded Ollama check, so they cannot block the
+ASGI event loop. START evaluates readiness once before scheduling and reuses
+that qualified snapshot in its response.
 
 The legacy profile evaluates its actual effective task routes. Codex remains
 BLOCKED while `SAFE_FOR_WORKLOADS=False`; a new Project in legacy mode cannot

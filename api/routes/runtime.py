@@ -65,6 +65,19 @@ class RuntimeStatus(BaseModel):
     profile_status: Literal["READY", "BLOCKED", "UNAVAILABLE"]
 
 
+class RuntimeLivenessV1(BaseModel):
+    """Cheap, credential-free facts for the native process monitor."""
+
+    schema_version: int = 1
+    project: str
+    domain: str
+    code_sha: str | None
+    initialized: bool
+    research_state: str
+    autonomous_task_alive: bool
+    autonomous_failure: Literal["TASK_CANCELLED", "TASK_FAILED", "TASK_EXITED"] | None
+
+
 def _desktop(request: Request) -> None:
     if not getattr(request.app.state, "desktop_runtime", False):
         raise HTTPException(status_code=404, detail="desktop research runtime unavailable")
@@ -104,12 +117,9 @@ async def _profiles() -> ProfilesResponse:
         raise HTTPException(status_code=409, detail="Project profile state unavailable") from None
 
 
-@router.get("/status", response_model=RuntimeStatus, operation_id="desktopRuntimeStatus")
-async def runtime_status(request: Request) -> RuntimeStatus:
-    """Return identity and readiness without equating process liveness to research."""
-    _desktop(request)
+def _status_from_profiles(request: Request, profiles: ProfilesResponse) -> RuntimeStatus:
+    """Build a full status from one already-qualified readiness snapshot."""
     project = current_project()
-    profiles = await _profiles()
     brain = request.app.state.brain
     active = next(item for item in profiles.profiles if item.id == profiles.current)
     return RuntimeStatus(
@@ -121,6 +131,29 @@ async def runtime_status(request: Request) -> RuntimeStatus:
         autonomous_task_alive=brain.autonomous_task_alive,
         profile=profiles.current, profile_status=active.status,
     )
+
+
+@router.get("/liveness", response_model=RuntimeLivenessV1, operation_id="desktopRuntimeLiveness")
+async def runtime_liveness(request: Request) -> RuntimeLivenessV1:
+    """Report owned-task liveness without any provider or hardware probes."""
+    _desktop(request)
+    project = current_project()
+    brain = request.app.state.brain
+    failure = brain.autonomous_failure
+    return RuntimeLivenessV1(
+        project=project.id, domain=project.domain,
+        code_sha=getattr(request.app.state, "code_sha", None),
+        initialized=brain.initialized, research_state=brain.research_state,
+        autonomous_task_alive=brain.autonomous_task_alive,
+        autonomous_failure=failure,
+    )
+
+
+@router.get("/status", response_model=RuntimeStatus, operation_id="desktopRuntimeStatus")
+async def runtime_status(request: Request) -> RuntimeStatus:
+    """Return identity and readiness without equating process liveness to research."""
+    _desktop(request)
+    return _status_from_profiles(request, await _profiles())
 
 
 @router.get("/profiles", response_model=ProfilesResponse, operation_id="desktopRuntimeProfiles")
@@ -165,4 +198,4 @@ async def start_research(request: Request) -> RuntimeStatus:
             raise HTTPException(status_code=409, detail="research start unavailable") from None
         if not started:
             raise HTTPException(status_code=409, detail="research already started")
-        return await runtime_status(request)
+        return _status_from_profiles(request, profiles)

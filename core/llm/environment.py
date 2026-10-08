@@ -181,15 +181,16 @@ def _probe_api_key() -> Capability:
 async def detect_environment() -> Environment:
     """Full snapshot. Every sub-probe is non-fatal; a hard failure records
     an 'unavailable' with the exception type, never raises. Ollama probe
-    runs concurrently with the synchronous ones (which are trivial)."""
-    ollama_task = asyncio.create_task(_probe_ollama())
-    hw = _probe_hardware()
-    cli = _probe_claude_cli()
+    runs concurrently with the synchronous subprocess probes in threads."""
     from core.llm.heartbeat import probe_codex_cli
     from core.llm.codex_cli import SAFE_FOR_WORKLOADS
-    codex = await asyncio.to_thread(probe_codex_cli) if SAFE_FOR_WORKLOADS else None
+    ollama, hw, cli, codex = await asyncio.gather(
+        _probe_ollama(),
+        asyncio.to_thread(_probe_hardware),
+        asyncio.to_thread(_probe_claude_cli),
+        asyncio.to_thread(probe_codex_cli) if SAFE_FOR_WORKLOADS else asyncio.sleep(0, result=None),
+    )
     key = _probe_api_key()
-    ollama = await ollama_task
     return Environment(
         platform=_probe_platform(),
         ollama=ollama, hardware=hw, claude_cli=cli, api_key=key,

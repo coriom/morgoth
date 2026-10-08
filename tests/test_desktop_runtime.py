@@ -183,14 +183,19 @@ async def test_authenticated_runtime_blocked_then_claude_then_one_start(
         starting_b = asyncio.create_task(client.post(f"{path}/start", headers=headers))
         await asyncio.sleep(0)
         assert not starting_a.done() and not starting_b.done()
+        probes_before_start = runtime.detect_environment.await_count
         release_switch.set()
         assert (await changing).status_code == 200
         first, second = await asyncio.gather(starting_a, starting_b)
         assert sorted((first.status_code, second.status_code)) == [200, 409]
+        assert runtime.detect_environment.await_count == probes_before_start + 2
         assert brain.research_state == "RUNNING"
         assert (await client.post(f"{path}/profile", json={"profile": "legacy"}, headers=headers)).status_code == 409
-        assert "synthetic-private-token" not in first.text
+    assert "synthetic-private-token" not in first.text
+    assert runtime.detect_environment.await_count >= 1
     await brain.shutdown()
+
+
 
 
 def _required_env(monkeypatch: pytest.MonkeyPatch) -> None:

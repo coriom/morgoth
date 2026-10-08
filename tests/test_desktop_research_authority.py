@@ -41,6 +41,7 @@ def route_fixture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     brain.awakening_ready = True
     brain.research_state = "PAUSED"
     brain.autonomous_task_alive = False
+    brain.autonomous_failure = None
     monkeypatch.setattr(app.state, "brain", brain, raising=False)
     manager = MagicMock()
     manager.list_objectives = AsyncMock(return_value=[])
@@ -71,6 +72,7 @@ def route_fixture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 
 def _request_cases() -> tuple[tuple[str, str, dict | None], ...]:
     return (
+        ("GET", "/api/runtime/v1/liveness", None),
         ("GET", "/api/runtime/v1/status", None),
         ("GET", "/api/brain/status", None),
         ("GET", "/api/tools", None),
@@ -101,6 +103,61 @@ async def test_every_mounted_http_surface_requires_desktop_token(route_fixture: 
     route_fixture["brain"].process_message.assert_awaited_once()
     route_fixture["manager"].create_objective.assert_awaited_once()
     route_fixture["store"].update_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_liveness_is_cheap_and_reports_only_bounded_failure(
+    route_fixture: dict[str, object],
+) -> None:
+    app = route_fixture["app"]
+    brain = route_fixture["brain"]
+    probe = runtime._profiles
+    assert isinstance(probe, AsyncMock)
+    probe.side_effect = AssertionError("provider readiness must not run")
+    request = SimpleNamespace(app=app)
+    response = await asyncio.wait_for(runtime.runtime_liveness(request), timeout=1)
+    assert response.model_dump() == {
+            "schema_version": 1, "project": "synthetic", "domain": "crypto",
+            "code_sha": "a" * 40, "initialized": True,
+            "research_state": "PAUSED", "autonomous_task_alive": False,
+            "autonomous_failure": None,
+        }
+    brain.research_state = "FAILED"
+    brain.autonomous_failure = "TASK_FAILED"
+    response = await asyncio.wait_for(runtime.runtime_liveness(request), timeout=1)
+    assert response.autonomous_failure == "TASK_FAILED"
+    assert "traceback" not in response.model_dump_json().lower()
+    probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_liveness_remains_available_while_full_status_probe_stalls(
+    route_fixture: dict[str, object],
+) -> None:
+    app = route_fixture["app"]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stalled_profiles() -> runtime.ProfilesResponse:
+        entered.set()
+        await release.wait()
+        return runtime.ProfilesResponse(current="claude", recommended="claude", profiles=[
+            runtime.ProfileView(id="claude", status="READY", reason="fixture", providers={}),
+        ])
+
+    original = runtime._profiles
+    runtime._profiles = stalled_profiles
+    try:
+        request = SimpleNamespace(app=app)
+        full = asyncio.create_task(runtime.runtime_status(request))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        cheap = await asyncio.wait_for(runtime.runtime_liveness(request), timeout=1)
+        assert cheap.research_state == "PAUSED" and not full.done()
+        release.set()
+        assert (await asyncio.wait_for(full, timeout=1)).profile_status == "READY"
+    finally:
+        release.set()
+        runtime._profiles = original
 
 
 @pytest.mark.asyncio
