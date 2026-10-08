@@ -188,10 +188,8 @@ def make_cancel_after_first_sleep():
     through the "no objective / create" branch which DOES reach the
     inter-cycle sleep at the bottom of the loop.
 
-    NOTE: the forced-completion branch (cycle_count >= max) exits
-    via `continue` at core/brain.py:941 and SKIPS the inter-cycle
-    sleep — patching asyncio.sleep alone will loop forever there.
-    For forced-completion tests use ``claim_then_cancel`` below."""
+    Forced completion now reaches the same cancellable cadence helper;
+    this fixture remains useful for testing the first sleep boundary."""
     import asyncio as _aio
 
     async def _cancel(*_a, **_kw):
@@ -206,11 +204,8 @@ def claim_then_cancel(objective_row):
     persistent_memory.claim_next_objective so a forced-completion
     test runs exactly ONE cycle body then exits cleanly.
 
-    Why not asyncio.sleep? The forced-completion path continues to
-    the top of `while True:` (core/brain.py:941) and skips the sleep
-    entirely. Cancellation must be raised somewhere the cycle body
-    still awaits — claim_next_objective is the first await at cycle
-    top on iteration 2, so it's the correct choke-point."""
+    The forced-completion path now sleeps before iteration 2; this
+    helper instead verifies it never finalizes the same claimed row twice."""
     import asyncio as _aio
     state = {"n": 0}
 

@@ -1,5 +1,17 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-08 — Canonical objective finalization (feature branch)
+
+Brain now uses one finalizer for model-requested `done` (after committed
+`cycle_payload`) and MAX_CYCLES completion. The finalizer retains existing
+synthesis, thesis extraction, numeric-fidelity, field-confusion, abstention and
+contradiction behavior. Forced completion takes the shared cancellable cadence;
+empty-queue objective creation still chains immediately. The prompt source
+minimum is bounded by the active Domain's measurement-source rail: Crypto 3,
+Weather 2; zero/one-source rails have explicit prompt semantics. No new
+dependency, endpoint, table or UI change. Tests use provider fakes and only
+disposable `morgoth_test` schemas; no live inference or research request.
+
 ## 2026-10-07 — Managed Project objective storage bootstrap
 
 The canonical `PersistentMemory.initialize()` runtime DDL now creates the

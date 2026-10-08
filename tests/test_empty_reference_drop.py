@@ -90,7 +90,7 @@ class TestExtractionAbstainsOnHistoricalOnly:
         # Grep-lock: auto-complete branch skips extract_theses when
         # findings_current is empty (synthesis input is HISTORICAL-only).
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         # Guard on findings_current gates the extraction block.
         assert "and findings_current" in src
         # Feed line explaining the abstention.
@@ -122,7 +122,7 @@ class TestHistoricalDedupeSameObj:
         # findings_current.
         import inspect
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         assert "same-obj → drop as duplicate" in src or "str(mo) == obj_id" in src
 
 

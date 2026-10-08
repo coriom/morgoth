@@ -32,7 +32,7 @@ class TestChainedCreationWiring:
         # position (chain flag defined before, continue after).
         flag_pos = src.find("_chain_creation = any(")
         cont_pos = src.find("if _chain_creation:")
-        sleep_pos = src.find("await asyncio.sleep(self._config.autonomous_cycle_minutes")
+        sleep_pos = src.rfind("await self._sleep_between_cycles()")
         assert 0 < flag_pos < cont_pos < sleep_pos
 
     def test_increment_cycle_count_still_called_only_in_work_branch(self):

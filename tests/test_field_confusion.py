@@ -166,7 +166,7 @@ class TestCyclePayloadPersistWiring:
     def test_auto_complete_merges_cycle_payload_into_findings(self):
         import inspect
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         # Cycle_payload entries are turned back into TOOL RESULTS
         # strings and appended to findings before extract_theses runs.
         assert 'entry.get("type") != "cycle_payload"' in src

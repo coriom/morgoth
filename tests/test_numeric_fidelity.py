@@ -348,7 +348,7 @@ class TestBrainWiringGrepLocks:
     def test_brain_imports_and_calls_the_gate(self):
         import inspect
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         assert "from core.numeric_fidelity import" in src
         assert "check_thesis" in src
         assert "record_numeric_fidelity_event" in src
@@ -360,5 +360,5 @@ class TestBrainWiringGrepLocks:
         # to add_thesis without gate touching evidence[].detail.
         import inspect
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         assert "if _fg_enabled():" in src

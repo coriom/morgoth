@@ -27,13 +27,13 @@ class TestBrainSplitsFindings:
     def test_findings_current_vs_recalled_variables_declared(self):
         # Grep-lock: the auto-complete branch MUST declare both lists.
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         assert "findings_current" in src
         assert "findings_recalled" in src
 
     def test_fidelity_gate_receives_current_only(self):
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         # The gate call must pass findings_current as the primary
         # (positional) findings arg. historical_findings is a
         # separate kwarg used only for the split reason code.
@@ -42,7 +42,7 @@ class TestBrainSplitsFindings:
 
     def test_field_confusion_uses_current_only(self):
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         # Same rule for field_confusion — reference payloads must come
         # from cycle_payload snapshots, not recall.
         assert "_parse_fps(findings_current)" in src
@@ -52,7 +52,7 @@ class TestBrainSplitsFindings:
         # emits a HISTORICAL header so the synthesis prompt sees a
         # clear demarcation and does not treat recall as current.
         from core import brain
-        src = inspect.getsource(brain.Brain.run_autonomous_cycle)
+        src = inspect.getsource(brain.Brain._finalize_objective)
         assert "HISTORICAL" in src
         assert "do NOT cite as current" in src
 

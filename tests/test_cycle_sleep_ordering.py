@@ -30,10 +30,8 @@ def test_run_autonomous_cycle_docstring_documents_bottom_placement():
 
 def test_sleep_is_after_the_body_not_before():
     """The `while True:` block in run_autonomous_cycle must have its
-    `await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)`
-    AFTER the `except` handlers (i.e., outside the try/except body,
-    at the bottom of one iteration) — NOT immediately after
-    `while True:`."""
+    shared cadence call after the body and exception handlers. Forced
+    completion also calls that same cancellable helper before continuing."""
     # Grab the body of run_autonomous_cycle.
     match = re.search(
         r"async def run_autonomous_cycle\(self\) -> None:(.+?)async def ",
@@ -41,15 +39,19 @@ def test_sleep_is_after_the_body_not_before():
     )
     assert match, "run_autonomous_cycle not found in brain.py"
     body = match.group(1)
-    # The sleep line must exist exactly once in this function.
-    sleep_line = "await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)"
-    assert body.count(sleep_line) == 1
-    # And it must appear AFTER the exception handlers, not before "logger.info(...cycle starting"
-    sleep_pos = body.index(sleep_line)
+    sleep_line = "await self._sleep_between_cycles()"
+    assert body.count(sleep_line) == 2
+    helper = BRAIN_SRC.split("async def _sleep_between_cycles", 1)[1].split("async def ", 1)[0]
+    assert helper.count("await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)") == 1
+    assert "except asyncio.CancelledError:" in helper and "raise" in helper
+    # The shared bottom call must appear after the exception handlers.
+    sleep_pos = body.rindex(sleep_line)
     cycle_start_pos = body.index('"Autonomous cycle starting"')
-    assert sleep_pos > cycle_start_pos, (
+    assert sleep_pos > body.index("except Exception as e:") > cycle_start_pos, (
         "sleep must be at bottom of loop (after the cycle body), not top"
     )
+    forced = body.index("await self._finalize_objective(obj, new_count, forced=True)")
+    assert forced < body.index(sleep_line, forced) < body.index("continue", forced)
 
 
 def test_no_top_of_loop_sleep_regression():

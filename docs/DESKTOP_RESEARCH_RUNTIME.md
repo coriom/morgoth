@@ -132,6 +132,33 @@ starts return conflict rather than creating another loop. Normal shutdown
 cancels and awaits the owned task before closing resources; there is no Python
 process supervisor or auto-restart loop.
 
+## Objective completion and cadence
+
+An autonomous work cycle first commits its full `cycle_payload` to the active
+Project's objective row. If the model's successful `update_objective(done)`
+completed that objective, Brain then reloads the committed row and runs the
+same finalizer used by MAX_CYCLES. The model's human-readable evidence summary
+is preserved. The finalizer assembles persisted current findings, synthesizes
+when at least two distinct source tools were used, extracts theses, applies the
+existing numeric-fidelity and field-confusion checks, persists accepted theses
+or the existing empty-extraction abstention event, and checks contradictions.
+Historical-only evidence records an abstention in the feed. A failed auxiliary
+Chroma write cannot replace or block the committed PostgreSQL evidence. If the
+`cycle_payload` write fails, synthesis is deferred and an error is surfaced;
+transient tool data is never treated as committed evidence.
+
+MAX_CYCLES uses the same finalizer on payloads from earlier work cycles and
+then takes the normal cancellable inter-cycle sleep. Model completion likewise
+sleeps before another claim. An empty-queue `create_objective` success remains
+the intentional exception: it chains immediately into work on the new row.
+
+The objective prompt's achievable minimum is
+`min(MIN_DISTINCT_SOURCES, len(DATA_SOURCE_TOOLS))`. Crypto retains its
+three-source minimum; Weather has two measurement sources (`get_weather_forecast_met` and
+`get_nws_weather_observation`). Station discovery is a lookup, not a third
+measurement source. A zero-source Domain has a zero prompt minimum and never
+demands a nonexistent source; the separate synthesis rule still requires two.
+
 ## Proof and limits
 
 Hermetic tests use a controlled loop and synthetic readiness; SQL integrations

@@ -16,6 +16,8 @@ import pytest
 from core import brain as brain_module
 from core.brain import MIN_DISTINCT_SOURCES, Brain
 from core.config import AppConfig
+from core.domain import _load
+from core.tool_rail import effective_tool_rail
 
 
 pytestmark = pytest.mark.asyncio
@@ -119,6 +121,27 @@ async def test_prompt_switches_to_minimum_met_when_threshold_reached(monkeypatch
 
     assert "Minimum sources met" in prompt
     assert "MUST gather from a DIFFERENT source" not in prompt
+
+
+async def test_weather_prompt_uses_two_active_measurement_sources(monkeypatch) -> None:
+    """Station discovery is a lookup; the active measurement rail has two sources."""
+    sources = effective_tool_rail(_load("weather")).sources
+    assert sources == {"get_weather_forecast_met", "get_nws_weather_observation"}
+    monkeypatch.setattr(brain_module, "DATA_SOURCE_TOOLS", sources)
+    prompt = await _build_prompt(monkeypatch, sources_used=["get_weather_forecast_met"])
+    assert "(1/2 minimum)" in prompt
+    assert "get_nws_weather_observation" in prompt
+    prompt = await _build_prompt(monkeypatch, sources_used=sorted(sources))
+    assert "(2/2 minimum)" in prompt
+    assert "Minimum sources met" in prompt
+
+
+async def test_empty_rail_prompt_never_demands_nonexistent_source(monkeypatch) -> None:
+    monkeypatch.setattr(brain_module, "DATA_SOURCE_TOOLS", frozenset())
+    prompt = await _build_prompt(monkeypatch, sources_used=[])
+    assert "(0/0 minimum)" in prompt
+    assert "Minimum sources met" in prompt
+    assert "Call ONE of them now" not in prompt
 
 
 async def test_rail_is_satisfiable_under_default_config() -> None:

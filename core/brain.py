@@ -50,6 +50,15 @@ When working on an objective, ALWAYS finish by calling update_objective. Never l
 MIN_DISTINCT_SOURCES: int = 3
 
 
+def effective_min_sources(source_tools: frozenset[str] | None = None) -> int:
+    """Return the achievable source budget for the active Domain data rail.
+
+    An empty data rail has a zero-source target; synthesis still requires its
+    existing independent minimum of two distinct source tools.
+    """
+    return min(MIN_DISTINCT_SOURCES, len(DATA_SOURCE_TOOLS if source_tools is None else source_tools))
+
+
 class BrainInitializationMode(str, Enum):
     """Explicit startup contract; pausing scheduling alone is not safe startup."""
 
@@ -219,13 +228,13 @@ class Brain:
         if start_autonomous is None:
             start_autonomous = mode is BrainInitializationMode.LEGACY_FULL
 
-        if MIN_DISTINCT_SOURCES >= self._config.max_cycles_per_objective:
+        if effective_min_sources() >= self._config.max_cycles_per_objective:
             logger.warning(
-                "Multi-source rail unsatisfiable: MIN_DISTINCT_SOURCES={} >= "
+                "Multi-source rail unsatisfiable: effective_min_sources={} >= "
                 "MAX_CYCLES_PER_OBJECTIVE={}. The model has zero slack cycles "
                 "to call update_objective after meeting the source minimum; "
                 "MAX_CYCLES will force-complete every objective.",
-                MIN_DISTINCT_SOURCES,
+                effective_min_sources(),
                 self._config.max_cycles_per_objective,
             )
 
@@ -721,298 +730,14 @@ class Brain:
 
                     new_count = await self._persistent_memory.increment_cycle_count(obj_id)
                     if new_count >= self._config.max_cycles_per_objective:
-                        # 2026-09-24 (findings_current vs recalled): SPLIT.
-                        # The numeric-fidelity gate and field-confusion
-                        # classifier MUST reference only the CURRENT
-                        # objective's cycle_payload snapshots — the
-                        # authoritative tool output at cycle time.
-                        # ChromaDB semantic recall is objective-scoped by
-                        # metadata_filter but is HISTORICAL: an old
-                        # cycle's value can match a fresher citation and
-                        # silently pass ("stale recall" — hypothesis (a)
-                        # confirmed for theses f549eabf/ad93de91 whose
-                        # objective had NO cycle_payloads; the gate
-                        # matched cited=0.0001 to a 0.0001 line pulled
-                        # from ChromaDB memory).
-                        findings_current: list[str] = []
-                        findings_recalled: list[str] = []
-                        try:
-                            past_matches = await self._episodic_memory.query(
-                                "conversations",
-                                f"objective {obj.get('title', '')}",
-                                limit=10,
-                                max_distance=2.0,
-                                metadata_filter={"objective_id": obj_id},
-                            )
-                            # 2026-09-25 DEDUPE: findings_recalled must
-                            # NOT contain the current objective's own
-                            # entries — they duplicate findings_current
-                            # (from cycle_payload) or ARE findings_current
-                            # (for pre-7a41b97 objectives). Labelling
-                            # current data "do NOT cite as current" is
-                            # contradictory. Keep only cross-objective
-                            # recall; since the metadata_filter enforces
-                            # objective_id=self, the resulting list is
-                            # empty in practice — the block is retained
-                            # for future cross-objective recall paths.
-                            for m in past_matches:
-                                if not m.content:
-                                    continue
-                                mo = getattr(m.metadata, "objective_id", None)
-                                if str(mo) == obj_id:
-                                    continue  # same-obj → drop as duplicate
-                                findings_recalled.append(m.content)
-                            evidence_lines = "\n".join(
-                                f"- {m.content[:200]}" for m in past_matches[:3]
-                            )
-                        except Exception:
-                            evidence_lines = ""
-                        try:
-                            _obj_full = await self._persistent_memory.get_objective(obj_id)
-                            _ev = _obj_full.get("evidence") if _obj_full else []
-                            if isinstance(_ev, str):
-                                import json as _json
-                                _ev = _json.loads(_ev)
-                            for entry in (_ev or []):
-                                if not isinstance(entry, dict): continue
-                                if entry.get("type") != "cycle_payload": continue
-                                import json as _json
-                                lines = ["TOOL RESULTS:"]
-                                for tr in (entry.get("tool_results") or []):
-                                    tool = tr.get("tool")
-                                    if tr.get("success") and tr.get("result") is not None:
-                                        lines.append(f"- {tool}: {_json.dumps(tr['result'], default=str)}")
-                                    else:
-                                        lines.append(f"- {tool} FAILED: {tr.get('error') or 'unknown'}")
-                                findings_current.append("\n".join(lines))
-                        except Exception as _cp_exc:
-                            logger.warning("cycle_payload merge failed: {}", _cp_exc)
-                        # Synthesis gets both, clearly labeled — the model
-                        # may still summarise historical trends, but the
-                        # extraction prompt is meant to cite current values.
-                        findings = list(findings_current)
-                        if findings_recalled:
-                            findings.append(
-                                "HISTORICAL (from prior cycles' recall — "
-                                "do NOT cite as current values):\n"
-                                + "\n".join(f"- {c[:220]}" for c in findings_recalled)
-                            )
-                        evidence = (
-                            f"Auto-completed after {new_count} cycles. Findings:\n"
-                            + (evidence_lines or "No prior findings captured.")
-                        )
-                        try:
-                            sources_used_done = await self._persistent_memory.get_sources_used(obj_id)
-                        except Exception:
-                            sources_used_done = []
-                        synthesis_text = await self._synthesize_objective(
-                            obj, sources_used_done, findings
-                        )
-                        await self._persistent_memory.update_objective(
-                            objective_id=obj_id,
-                            status="done",
-                            evidence={"summary": evidence, "auto_completed": True},
-                        )
-                        if synthesis_text is not None:
-                            try:
-                                await self._persistent_memory.update_objective(
-                                    objective_id=obj_id,
-                                    evidence={
-                                        "type": "synthesis",
-                                        "content": synthesis_text,
-                                        "sources": sorted(set(sources_used_done)),
-                                    },
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    "Synthesis storage failed, objective already done: {}",
-                                    exc,
-                                )
-                                self._feed_append(
-                                    "ERROR",
-                                    f"synthesis storage failed: {type(exc).__name__}",
-                                )
-                        # 2026-09-25: also abstain when the objective has ZERO
-                        # cycle_payload evidence (findings_current empty). The
-                        # synthesis input is HISTORICAL-only in that case, and
-                        # theses derived from HISTORICAL cannot be verified by
-                        # the fidelity gate. Emitting them would produce
-                        # unverifiable claims that the numeric-fidelity gate
-                        # would drop anyway.
-                        if synthesis_text and not findings_current:
-                            self._feed_append(
-                                "INFO",
-                                "extraction abstained: no cycle_payload "
-                                "reference — synthesis input is HISTORICAL-only",
-                            )
-                        # Thesis extraction: structured beliefs derived from the
-                        # synthesis, persisted for future contradiction detection.
-                        # Skipped when there is no synthesis (None/empty). The whole
-                        # block is non-blocking — objective is already done above.
-                        if synthesis_text and findings_current:
-                            try:
-                                theses = await self._extract_theses(
-                                    obj, synthesis_text, sources_used_done
-                                )
-                                # NUMERIC-FIDELITY GATE — deterministic check
-                                # that every cited number in evidence[].detail
-                                # matches a value in that tool's raw output.
-                                # `findings` (populated at auto-complete) IS
-                                # the tool_results digest across cycles; we
-                                # thread it in without pipeline restructuring.
-                                from core.numeric_fidelity import (
-                                    check_thesis as _fidelity_check,
-                                    _flag_enabled as _fg_enabled,
-                                )
-                                # Field-confusion write-time hook (2026-09-22):
-                                # parse the TOOL RESULTS blocks the thesis
-                                # was derived from and flag every cited number
-                                # whose expected field doesn't match its
-                                # value's field. READ-ONLY: persists events
-                                # only. No rewrite, no drop.
-                                from core.field_confusion import (
-                                    parse_findings_payloads as _parse_fps,
-                                    classify_thesis_evidence as _cfe,
-                                )
-                                # GATE REFERENCE = CURRENT CYCLE PAYLOADS ONLY.
-                                # Historical recall must NEVER supply the
-                                # reference numbers a citation is checked
-                                # against — see 2026-09-24 diagnosis for
-                                # f549eabf/ad93de91.
-                                _fc_payloads, _fc_trunc = _parse_fps(findings_current)
-                                gated: list[dict[str, Any]] = []
-                                if _fg_enabled():
-                                    for t in theses:
-                                        act = _fidelity_check(
-                                            t, findings_current,
-                                            historical_findings=findings_recalled,
-                                        )
-                                        # Field-confusion pass on this thesis.
-                                        try:
-                                            for rec in _cfe(t.get("evidence") or [], _fc_payloads):
-                                                if rec["verdict"] == "field_confusion":
-                                                    await self._persistent_memory.record_field_confusion_event(
-                                                        None, rec["source"], rec["cited_value"],
-                                                        rec["expected_field"], rec["matched_field"],
-                                                        rec["detail_snippet"],
-                                                    )
-                                        except Exception:
-                                            pass
-                                        try:
-                                            await self._persistent_memory.record_numeric_fidelity_event(
-                                                obj_id, act.subject, act.tool, act.action,
-                                                act.reason, act.cited_value, act.true_value,
-                                            )
-                                        except Exception:
-                                            pass
-                                        if act.action == "drop":
-                                            self._feed_append(
-                                                "INFO",
-                                                f"numeric-gate DROP {act.subject!r} "
-                                                f"tool={act.tool} cited={act.cited_value}",
-                                            )
-                                            continue
-                                        if act.action == "rewrite" and act.corrected_detail:
-                                            # Replace the first evidence entry's
-                                            # detail with the corrected string.
-                                            new_ev = list(t.get("evidence") or [])
-                                            for i, e in enumerate(new_ev):
-                                                if isinstance(e, dict) and e.get("source") == act.tool:
-                                                    new_ev[i] = {**e, "detail": act.corrected_detail}
-                                                    break
-                                            t = {**t, "evidence": new_ev}
-                                            self._feed_append(
-                                                "OK",
-                                                f"numeric-gate REWRITE {act.subject!r} "
-                                                f"cited={act.cited_value} → true={act.true_value}",
-                                            )
-                                        gated.append(t)
-                                    theses = gated
-                                from core.version import get_code_version as _gcv
-                                _cv = _gcv()
-                                for t in theses:
-                                    await self._persistent_memory.add_thesis(
-                                        subject=t["subject"],
-                                        claim=t["claim"],
-                                        confidence=t.get("confidence", "medium"),
-                                        evidence=t.get("evidence", []),
-                                        objective_id=obj_id,
-                                        code_version=_cv,
-                                    )
-                                if theses:
-                                    self._feed_append(
-                                        "OK",
-                                        f"extracted {len(theses)} thesis/theses",
-                                    )
-                                else:
-                                    # Abstention event — valued outcome, not an
-                                    # error. Log + persist so the rate is
-                                    # queryable via `morgoth session-report`.
-                                    self._feed_append(
-                                        "INFO",
-                                        f"abstain: no grounded thesis "
-                                        f"(objective_id={obj_id[:8]} cycles={new_count})",
-                                    )
-                                    logger.info(
-                                        "thesis abstention: objective_id={} cycles={} reason=empty",
-                                        obj_id, new_count,
-                                    )
-                                    try:
-                                        pool = self._persistent_memory._require_pool()
-                                        async with pool.acquire() as _conn:
-                                            await _conn.execute(
-                                                "INSERT INTO abstention_events "
-                                                "(objective_id, cycles) VALUES ($1, $2)",
-                                                obj_id, int(new_count),
-                                            )
-                                    except Exception as _abstain_exc:
-                                        logger.warning(
-                                            "abstention_events insert failed (non-fatal): {}",
-                                            _abstain_exc,
-                                        )
-                            except Exception as exc:
-                                logger.warning(
-                                    "Thesis extraction failed, objective already done: {}",
-                                    exc,
-                                )
-                                self._feed_append(
-                                    "ERROR",
-                                    f"thesis extraction failed: {type(exc).__name__}",
-                                )
-                        # Contradiction detection: scan the active thesis set
-                        # for newly-introduced opposed claims. Non-blocking — a
-                        # detector failure must NOT prevent objective completion.
-                        try:
-                            contradictions = await self.detect_contradictions()
-                            if contradictions:
-                                self._feed_append(
-                                    "WARN",
-                                    f"detected {len(contradictions)} contradiction(s)",
-                                )
-                        except Exception as exc:
-                            logger.warning(
-                                "Contradiction detection failed, objective already done: {}",
-                                exc,
-                            )
-                            self._feed_append(
-                                "ERROR",
-                                f"contradiction detection failed: {type(exc).__name__}",
-                            )
+                        await self._finalize_objective(obj, new_count, forced=True)
                         action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
-                        logger.info(
-                            "Objective {} auto-completed after {} cycles",
-                            obj_id,
-                            new_count,
-                        )
+                        logger.info("Objective {} auto-completed after {} cycles", obj_id, new_count)
                         self._total_cycles_completed += 1
                         self._last_cycle_at = datetime.now(timezone.utc).isoformat()
                         self._last_cycle_action = action_desc
                         self._feed_append("OK", action_desc)
-                        # INTENTIONAL continue (not return): ends this cycle iteration
-                        # after forced auto-completion. The scheduler enforces the
-                        # inter-cycle delay, so this does not cause a tight loop. Do
-                        # NOT change to return without understanding the
-                        # MAX_CYCLES_PER_OBJECTIVE design (forced completion safety net).
+                        await self._sleep_between_cycles()
                         continue
 
                     try:
@@ -1038,11 +763,11 @@ class Brain:
                     _source_count = len(set(sources_used))
                     _source_rail = (
                         f"DATA SOURCES USED: {', '.join(sources_used) or 'none'} "
-                        f"({_source_count}/{MIN_DISTINCT_SOURCES} minimum).\n"
+                        f"({_source_count}/{effective_min_sources()} minimum).\n"
                         + (
                             f"You MUST gather from a DIFFERENT source not yet used. "
                             f"Unused sources: {', '.join(_remaining)}. Call ONE of them now.\n"
-                            if _source_count < MIN_DISTINCT_SOURCES else
+                            if _source_count < effective_min_sources() else
                             "Minimum sources met. You may call update_objective to finish, or gather more.\n"
                         )
                     )
@@ -1236,20 +961,13 @@ class Brain:
                 if objectives:
                     obj = objectives[0]
                     obj_id = str(obj["objective_id"])
-                    await self._episodic_memory.add_text(
-                        "conversations",
-                        self._format_cycle_finding(result)[:1500],
-                        category="objective_action",
-                        agent_id="morgoth_autonomous",
-                        user_id="morgoth_autonomous",
-                        objective_id=obj_id,
-                    )
                     # 2026-09-22: also persist the FULL per-cycle tool
                     # payloads onto the objective, untruncated. Fed to
                     # synthesis + numeric-fidelity + field-confusion at
                     # auto-complete so those subsystems no longer see
                     # 300-char-cut findings. ChromaDB above keeps its
                     # 1500-char copy for semantic recall (unchanged).
+                    payload_persisted = False
                     try:
                         _tool_results_raw = []
                         for tr in (result.tool_results or []):
@@ -1268,8 +986,37 @@ class Brain:
                                 "tool_results": _tool_results_raw,
                             },
                         )
+                        payload_persisted = True
                     except Exception as _pl_exc:
                         logger.warning("cycle_payload persist failed: {}", _pl_exc)
+                    # PostgreSQL evidence is authoritative for finalization;
+                    # Chroma recall is auxiliary and cannot block the terminal path.
+                    try:
+                        await self._episodic_memory.add_text(
+                            "conversations",
+                            self._format_cycle_finding(result)[:1500],
+                            category="objective_action",
+                            agent_id="morgoth_autonomous",
+                            user_id="morgoth_autonomous",
+                            objective_id=obj_id,
+                        )
+                    except Exception as exc:
+                        logger.warning("objective episodic recall write failed: {}", exc)
+                    model_completed_this_cycle = any(
+                        tr.get("tool") == "update_objective"
+                        and isinstance(tr.get("result"), dict)
+                        and tr["result"].get("success")
+                        and isinstance(tr["result"].get("result"), dict)
+                        and tr["result"]["result"].get("status") == "done"
+                        and str(tr["result"]["result"].get("objective_id")) == obj_id
+                        for tr in (result.tool_results or [])
+                    )
+                    if payload_persisted and model_completed_this_cycle:
+                        completed_row = await self._persistent_memory.get_objective(obj_id)
+                        if isinstance(completed_row, dict) and completed_row.get("status") == "done":
+                            await self._finalize_objective(completed_row, new_count, forced=False)
+                    elif not payload_persisted and model_completed_this_cycle:
+                        self._feed_append("ERROR", "objective finalization deferred: cycle evidence not durable")
                     action_desc = f"worked on objective {obj.get('title', obj_id)}"
                     _chain_creation = False
                 else:
@@ -1320,11 +1067,305 @@ class Brain:
             # cancel AND re-raise so the enclosing task actually cancels
             # (`morgoth restart` / asyncio.wait_for / shutdown depend on
             # this). Swallowing CancelledError would break shutdown.
+            await self._sleep_between_cycles()
+
+    async def _sleep_between_cycles(self) -> None:
+        """Apply the one cancellable inter-cycle cadence after completed work."""
+        try:
+            await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
+        except asyncio.CancelledError:
+            logger.info("Autonomous cycle cancelled during inter-cycle sleep")
+            raise
+
+    async def _finalize_objective(
+        self, obj: dict[str, Any], new_count: int, *, forced: bool,
+    ) -> None:
+        """Finalize a completed objective from committed cycle evidence."""
+        obj_id = str(obj["objective_id"])
+        # 2026-09-24 (findings_current vs recalled): SPLIT.
+        # The numeric-fidelity gate and field-confusion
+        # classifier MUST reference only the CURRENT
+        # objective's cycle_payload snapshots — the
+        # authoritative tool output at cycle time.
+        # ChromaDB semantic recall is objective-scoped by
+        # metadata_filter but is HISTORICAL: an old
+        # cycle's value can match a fresher citation and
+        # silently pass ("stale recall" — hypothesis (a)
+        # confirmed for theses f549eabf/ad93de91 whose
+        # objective had NO cycle_payloads; the gate
+        # matched cited=0.0001 to a 0.0001 line pulled
+        # from ChromaDB memory).
+        findings_current: list[str] = []
+        findings_recalled: list[str] = []
+        try:
+            past_matches = await self._episodic_memory.query(
+                "conversations",
+                f"objective {obj.get('title', '')}",
+                limit=10,
+                max_distance=2.0,
+                metadata_filter={"objective_id": obj_id},
+            )
+            # 2026-09-25 DEDUPE: findings_recalled must
+            # NOT contain the current objective's own
+            # entries — they duplicate findings_current
+            # (from cycle_payload) or ARE findings_current
+            # (for pre-7a41b97 objectives). Labelling
+            # current data "do NOT cite as current" is
+            # contradictory. Keep only cross-objective
+            # recall; since the metadata_filter enforces
+            # objective_id=self, the resulting list is
+            # empty in practice — the block is retained
+            # for future cross-objective recall paths.
+            for m in past_matches:
+                if not m.content:
+                    continue
+                mo = getattr(m.metadata, "objective_id", None)
+                if str(mo) == obj_id:
+                    continue  # same-obj → drop as duplicate
+                findings_recalled.append(m.content)
+            evidence_lines = "\n".join(
+                f"- {m.content[:200]}" for m in past_matches[:3]
+            )
+        except Exception:
+            evidence_lines = ""
+        try:
+            _obj_full = await self._persistent_memory.get_objective(obj_id)
+            _ev = _obj_full.get("evidence") if _obj_full else []
+            if isinstance(_ev, str):
+                import json as _json
+                _ev = _json.loads(_ev)
+            for entry in (_ev or []):
+                if not isinstance(entry, dict): continue
+                if entry.get("type") != "cycle_payload": continue
+                import json as _json
+                lines = ["TOOL RESULTS:"]
+                for tr in (entry.get("tool_results") or []):
+                    tool = tr.get("tool")
+                    if tr.get("success") and tr.get("result") is not None:
+                        lines.append(f"- {tool}: {_json.dumps(tr['result'], default=str)}")
+                    else:
+                        lines.append(f"- {tool} FAILED: {tr.get('error') or 'unknown'}")
+                findings_current.append("\n".join(lines))
+        except Exception as _cp_exc:
+            logger.warning("cycle_payload merge failed: {}", _cp_exc)
+        # Synthesis gets both, clearly labeled — the model
+        # may still summarise historical trends, but the
+        # extraction prompt is meant to cite current values.
+        findings = list(findings_current)
+        if findings_recalled:
+            findings.append(
+                "HISTORICAL (from prior cycles' recall — "
+                "do NOT cite as current values):\n"
+                + "\n".join(f"- {c[:220]}" for c in findings_recalled)
+            )
+        if forced:
+            evidence = (
+                f"Auto-completed after {new_count} cycles. Findings:\n"
+                + (evidence_lines or "No prior findings captured.")
+            )
+        try:
+            sources_used_done = await self._persistent_memory.get_sources_used(obj_id)
+        except Exception:
+            sources_used_done = []
+        if forced:
+            await self._persistent_memory.update_objective(
+                objective_id=obj_id,
+                status="done",
+                evidence={"summary": evidence, "auto_completed": True},
+            )
+        try:
+            synthesis_text = await self._synthesize_objective(
+                obj, sources_used_done, findings
+            )
+        except Exception as exc:
+            logger.warning("Synthesis failed, objective already done: {}", exc)
+            self._feed_append("ERROR", f"synthesis failed: {type(exc).__name__}")
+            synthesis_text = None
+        if synthesis_text is not None:
             try:
-                await asyncio.sleep(self._config.autonomous_cycle_minutes * 60)
-            except asyncio.CancelledError:
-                logger.info("Autonomous cycle cancelled during inter-cycle sleep")
-                raise
+                await self._persistent_memory.update_objective(
+                    objective_id=obj_id,
+                    evidence={
+                        "type": "synthesis",
+                        "content": synthesis_text,
+                        "sources": sorted(set(sources_used_done)),
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Synthesis storage failed, objective already done: {}",
+                    exc,
+                )
+                self._feed_append(
+                    "ERROR",
+                    f"synthesis storage failed: {type(exc).__name__}",
+                )
+        # 2026-09-25: also abstain when the objective has ZERO
+        # cycle_payload evidence (findings_current empty). The
+        # synthesis input is HISTORICAL-only in that case, and
+        # theses derived from HISTORICAL cannot be verified by
+        # the fidelity gate. Emitting them would produce
+        # unverifiable claims that the numeric-fidelity gate
+        # would drop anyway.
+        if synthesis_text and not findings_current:
+            self._feed_append(
+                "INFO",
+                "extraction abstained: no cycle_payload "
+                "reference — synthesis input is HISTORICAL-only",
+            )
+        # Thesis extraction: structured beliefs derived from the
+        # synthesis, persisted for future contradiction detection.
+        # Skipped when there is no synthesis (None/empty). The whole
+        # block is non-blocking — objective is already done above.
+        if synthesis_text and findings_current and not synthesis_text.startswith("(synthesis failed:"):
+            try:
+                theses = await self._extract_theses(
+                    obj, synthesis_text, sources_used_done
+                )
+                # NUMERIC-FIDELITY GATE — deterministic check
+                # that every cited number in evidence[].detail
+                # matches a value in that tool's raw output.
+                # `findings` (populated at auto-complete) IS
+                # the tool_results digest across cycles; we
+                # thread it in without pipeline restructuring.
+                from core.numeric_fidelity import (
+                    check_thesis as _fidelity_check,
+                    _flag_enabled as _fg_enabled,
+                )
+                # Field-confusion write-time hook (2026-09-22):
+                # parse the TOOL RESULTS blocks the thesis
+                # was derived from and flag every cited number
+                # whose expected field doesn't match its
+                # value's field. READ-ONLY: persists events
+                # only. No rewrite, no drop.
+                from core.field_confusion import (
+                    parse_findings_payloads as _parse_fps,
+                    classify_thesis_evidence as _cfe,
+                )
+                # GATE REFERENCE = CURRENT CYCLE PAYLOADS ONLY.
+                # Historical recall must NEVER supply the
+                # reference numbers a citation is checked
+                # against — see 2026-09-24 diagnosis for
+                # f549eabf/ad93de91.
+                _fc_payloads, _fc_trunc = _parse_fps(findings_current)
+                gated: list[dict[str, Any]] = []
+                if _fg_enabled():
+                    for t in theses:
+                        act = _fidelity_check(
+                            t, findings_current,
+                            historical_findings=findings_recalled,
+                        )
+                        # Field-confusion pass on this thesis.
+                        try:
+                            for rec in _cfe(t.get("evidence") or [], _fc_payloads):
+                                if rec["verdict"] == "field_confusion":
+                                    await self._persistent_memory.record_field_confusion_event(
+                                        None, rec["source"], rec["cited_value"],
+                                        rec["expected_field"], rec["matched_field"],
+                                        rec["detail_snippet"],
+                                    )
+                        except Exception:
+                            pass
+                        try:
+                            await self._persistent_memory.record_numeric_fidelity_event(
+                                obj_id, act.subject, act.tool, act.action,
+                                act.reason, act.cited_value, act.true_value,
+                            )
+                        except Exception:
+                            pass
+                        if act.action == "drop":
+                            self._feed_append(
+                                "INFO",
+                                f"numeric-gate DROP {act.subject!r} "
+                                f"tool={act.tool} cited={act.cited_value}",
+                            )
+                            continue
+                        if act.action == "rewrite" and act.corrected_detail:
+                            # Replace the first evidence entry's
+                            # detail with the corrected string.
+                            new_ev = list(t.get("evidence") or [])
+                            for i, e in enumerate(new_ev):
+                                if isinstance(e, dict) and e.get("source") == act.tool:
+                                    new_ev[i] = {**e, "detail": act.corrected_detail}
+                                    break
+                            t = {**t, "evidence": new_ev}
+                            self._feed_append(
+                                "OK",
+                                f"numeric-gate REWRITE {act.subject!r} "
+                                f"cited={act.cited_value} → true={act.true_value}",
+                            )
+                        gated.append(t)
+                    theses = gated
+                from core.version import get_code_version as _gcv
+                _cv = _gcv()
+                for t in theses:
+                    await self._persistent_memory.add_thesis(
+                        subject=t["subject"],
+                        claim=t["claim"],
+                        confidence=t.get("confidence", "medium"),
+                        evidence=t.get("evidence", []),
+                        objective_id=obj_id,
+                        code_version=_cv,
+                    )
+                if theses:
+                    self._feed_append(
+                        "OK",
+                        f"extracted {len(theses)} thesis/theses",
+                    )
+                else:
+                    # Abstention event — valued outcome, not an
+                    # error. Log + persist so the rate is
+                    # queryable via `morgoth session-report`.
+                    self._feed_append(
+                        "INFO",
+                        f"abstain: no grounded thesis "
+                        f"(objective_id={obj_id[:8]} cycles={new_count})",
+                    )
+                    logger.info(
+                        "thesis abstention: objective_id={} cycles={} reason=empty",
+                        obj_id, new_count,
+                    )
+                    try:
+                        pool = self._persistent_memory._require_pool()
+                        async with pool.acquire() as _conn:
+                            await _conn.execute(
+                                "INSERT INTO abstention_events "
+                                "(objective_id, cycles) VALUES ($1, $2)",
+                                obj_id, int(new_count),
+                            )
+                    except Exception as _abstain_exc:
+                        logger.warning(
+                            "abstention_events insert failed (non-fatal): {}",
+                            _abstain_exc,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "Thesis extraction failed, objective already done: {}",
+                    exc,
+                )
+                self._feed_append(
+                    "ERROR",
+                    f"thesis extraction failed: {type(exc).__name__}",
+                )
+        # Contradiction detection: scan the active thesis set
+        # for newly-introduced opposed claims. Non-blocking — a
+        # detector failure must NOT prevent objective completion.
+        try:
+            contradictions = await self.detect_contradictions()
+            if contradictions:
+                self._feed_append(
+                    "WARN",
+                    f"detected {len(contradictions)} contradiction(s)",
+                )
+        except Exception as exc:
+            logger.warning(
+                "Contradiction detection failed, objective already done: {}",
+                exc,
+            )
+            self._feed_append(
+                "ERROR",
+                f"contradiction detection failed: {type(exc).__name__}",
+            )
 
     async def enqueue_message(self, content: str, user_id: str = "default") -> None:
         """Queue an incoming chat message for asynchronous processing."""
