@@ -684,9 +684,13 @@ class PersistentMemory:
                         response_bytes INT NOT NULL DEFAULT 0,
                         latency_ms INT NOT NULL DEFAULT 0,
                         outcome TEXT NOT NULL,
+                        error_code TEXT,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
                     """
+                )
+                await connection.execute(
+                    "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS error_code TEXT;"
                 )
             except Exception as exc:
                 logger.warning(

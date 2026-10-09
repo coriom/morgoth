@@ -686,3 +686,15 @@ Log files:
   wall 16.7 s, exit 0. No production profile switch, service operation or market call.
 - docs/LLM_PROFILES.md defines the future Tauri selector contract; Unix lock
   portability, custom profile authoring and Tauri implementation remain future work.
+
+## 2026-10-09 — Claude CLI safe error taxonomy
+
+- `ReflectLLMError.safe_code` now distinguishes six fixed CLI failure classes;
+  `llm_calls.error_code` is nullable, migrated idempotently, and stores no provider output.
+  Historical `outcome=error:ReflectLLMError` remains compatible. The prior
+  disposable synthesis failure cannot be classified retroactively.
+- No CLI argv, timeout, fallback, provider readiness, or research semantics changed.
+  New focused tests cover each branch and secret-output hygiene; a disposable
+  `morgoth_test` proof covers fresh and migrated Project-local `llm_calls`.
+- Canonical hermetic: 2077 passed, 2 skipped, wall 33.1 s, exit 0.
+  Focused provider/SQL selection: 30 passed, wall 1.68 s, exit 0.

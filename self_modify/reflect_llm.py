@@ -78,6 +78,18 @@ class ReflectLLMError(RuntimeError):
     hygiene concern — the class contract is that the message is safe.
     """
 
+    _SAFE_CODES = frozenset({
+        "REFLECT_ERROR", "CLAUDE_CLI_NOT_FOUND", "CLAUDE_CLI_TIMEOUT",
+        "CLAUDE_CLI_EXIT_NONZERO", "CLAUDE_CLI_JSON_INVALID",
+        "CLAUDE_CLI_JSON_NOT_OBJECT", "CLAUDE_CLI_REPORTED_ERROR",
+    })
+
+    def __init__(self, message: str, *, safe_code: str = "REFLECT_ERROR") -> None:
+        if safe_code not in self._SAFE_CODES:
+            raise ValueError("invalid ReflectLLMError safe code")
+        super().__init__(message)
+        self.safe_code = safe_code
+
 
 def resolve_provider(cli_flag: str | None) -> str:
     """Managed profile first; otherwise preserve the historical CLI/env order.
@@ -310,10 +322,11 @@ def _parse_claude_cli_json(stdout: str) -> tuple[str, str, bool]:
         data = json.loads(stdout)
     except (ValueError, TypeError) as exc:
         raise ReflectLLMError(
-            f"claude-cli JSON parse failed: {type(exc).__name__}"
+            f"claude-cli JSON parse failed: {type(exc).__name__}",
+            safe_code="CLAUDE_CLI_JSON_INVALID",
         ) from None
     if not isinstance(data, dict):
-        raise ReflectLLMError("claude-cli JSON was not an object")
+        raise ReflectLLMError("claude-cli JSON was not an object", safe_code="CLAUDE_CLI_JSON_NOT_OBJECT")
     is_error = bool(data.get("is_error"))
     result_text = str(data.get("result") or "")
     model_usage = data.get("modelUsage") or {}
@@ -334,7 +347,8 @@ async def _claude_cli_call(
         # this check is skipped in the mock path.
         raise ReflectLLMError(
             "claude CLI not found on PATH — install Claude Code "
-            "(https://claude.com/claude-code) or use --provider ollama"
+            "(https://claude.com/claude-code) or use --provider ollama",
+            safe_code="CLAUDE_CLI_NOT_FOUND",
         )
 
     argv = _build_claude_cli_argv(prompt)
@@ -357,11 +371,13 @@ async def _claude_cli_call(
             # PATH check and the exec call. Same operator instruction.
             raise ReflectLLMError(
                 "claude CLI not found on PATH — install Claude Code "
-                "(https://claude.com/claude-code) or use --provider ollama"
+                "(https://claude.com/claude-code) or use --provider ollama",
+                safe_code="CLAUDE_CLI_NOT_FOUND",
             ) from None
         except subprocess.TimeoutExpired:
             raise ReflectLLMError(
-                f"claude CLI timed out after {CLAUDE_CLI_TIMEOUT_SECS}s"
+                f"claude CLI timed out after {CLAUDE_CLI_TIMEOUT_SECS}s",
+                safe_code="CLAUDE_CLI_TIMEOUT",
             ) from None
     finally:
         shutil.rmtree(tmp_cwd, ignore_errors=True)
@@ -378,12 +394,13 @@ async def _claude_cli_call(
             "(stdout not logged)", completed.returncode,
         )
         raise ReflectLLMError(
-            f"claude CLI exited with returncode {completed.returncode}"
+            f"claude CLI exited with returncode {completed.returncode}",
+            safe_code="CLAUDE_CLI_EXIT_NONZERO",
         )
 
     text, model_reported, is_error = _parse_claude_cli_json(completed.stdout)
     if is_error:
-        raise ReflectLLMError("claude CLI reported is_error=true in JSON payload")
+        raise ReflectLLMError("claude CLI reported is_error=true in JSON payload", safe_code="CLAUDE_CLI_REPORTED_ERROR")
 
     meta = {
         "provider": "claude-cli",
