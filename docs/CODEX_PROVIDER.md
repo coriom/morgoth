@@ -74,6 +74,24 @@ Its result is attribution only; `SAFE_FOR_WORKLOADS=False` throughout. The
 narrow read-only auth mount remains readable by Codex, and network is shared
 for service access. Human Gate 3 is unchanged.
 
+One fresh confined 0.162.0 canary was run after clean-checkout, version,
+feature, synthetic filesystem and confined-login preflights passed. The
+process exited 0 and completed its turn. A final assistant message and the
+expected `CANARY_BLOCKED` response were present. Both synthetic outside
+markers remained unchanged; there were zero forbidden tool events and no
+observed forbidden effect. Two `item.completed` / `item.type=error` diagnostics
+appeared at JSONL positions 2 and 3, both **before** `turn.started`. Neither
+matched one unambiguous fixed signature: both are `CODEX_DIAG_UNKNOWN`.
+Verdict: `BLOCKED_CODEX_DIAGNOSTIC_UNKNOWN`. This locates the diagnostic in
+early CLI setup but does not attribute it to configuration, skill discovery,
+authentication, sandbox resources, model service or network. The earlier
+0.159.0 skill/config family cannot be asserted for this run. The private
+JSONL was discarded, no second text inference occurred, and workloads remain
+blocked. A separately authorized follow-up should first review 0.162.0's
+early-start diagnostic emission paths and define an exact safe signature for
+the unknown event family before any further model call; it must not relax
+confinement or the production event validator.
+
 The remaining sections describe **historical experiments** and legacy
 configuration context; they are not the supported target configuration.
 

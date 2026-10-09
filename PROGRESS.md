@@ -29,6 +29,12 @@ bounded lifecycle metadata. Production event rejection and
 `SAFE_FOR_WORKLOADS=False` remain unchanged. No new dependency, API endpoint,
 Desktop change, provider key, research run or production state was added.
 See `docs/CODEX_PROVIDER.md` for the event contract and final one-shot result.
+The sole live canary exited 0 with a completed turn and no tool/outside-file
+effect, but emitted two unclassified error items before turn start. Final
+verdict is `BLOCKED_CODEX_DIAGNOSTIC_UNKNOWN`; current 0.162.0 cause is not
+proved to match the historical 0.159.0 skill/config family. No text probe or
+retry followed. Workloads remain blocked pending separately authorized
+early-start diagnostic attribution.
 
 ## 2026-10-09 — Project-local work-cycle failure ledger (feature branch)
 
