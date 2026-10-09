@@ -63,7 +63,8 @@ def route_fixture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     monkeypatch.setattr(runtime, "_profiles", AsyncMock(return_value=runtime.ProfilesResponse(
         current="claude", recommended="claude", profiles=[runtime.ProfileView(
             id="claude", status="READY", reason="synthetic", providers={},
-        )],
+        )], codex=runtime.CodexReadinessView(installed=False, authenticated=False,
+             sandbox_available=False, sandbox_qualified=False, workloads_ready=False),
     )))
     monkeypatch.setattr(app.state, "code_sha", "a" * 40, raising=False)
     monkeypatch.setattr(app.state, "websocket_manager", WebSocketManager(), raising=False)
@@ -143,7 +144,8 @@ async def test_liveness_remains_available_while_full_status_probe_stalls(
         await release.wait()
         return runtime.ProfilesResponse(current="claude", recommended="claude", profiles=[
             runtime.ProfileView(id="claude", status="READY", reason="fixture", providers={}),
-        ])
+        ], codex=runtime.CodexReadinessView(installed=False, authenticated=False,
+           sandbox_available=False, sandbox_qualified=False, workloads_ready=False))
 
     original = runtime._profiles
     runtime._profiles = stalled_profiles

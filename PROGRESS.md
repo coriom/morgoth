@@ -1,3 +1,14 @@
+## 2026-10-09 - Integrated Codex confinement, qualification blocked
+
+The Codex subprocess path now enters a mandatory Bubblewrap Linux namespace
+with private workspace and a narrow read-only ChatGPT auth mount. Synthetic
+outside read/write, unrelated HOME/repository and fake-key access are denied;
+confined non-inference login works. The sole authorized model-authority
+canary returned safe `cli_diagnostic`; no text probe followed. The cause is
+unclassified and `SAFE_FOR_WORKLOADS=False`. Desktop exposes separate local
+installation/authentication/sandbox facts without claiming workload readiness.
+No Weather run, production state, provider key or new dependency was used.
+
 ## 2026-10-09 - Codex-only target foundation
 
 Development branch codex-only-provider-foundation-v1 removes Claude from the

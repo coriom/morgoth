@@ -182,19 +182,24 @@ async def detect_environment() -> Environment:
     """Full snapshot. Every sub-probe is non-fatal; a hard failure records
     an 'unavailable' with the exception type, never raises. Ollama probe
     runs concurrently with the synchronous subprocess probes in threads."""
-    from core.llm.heartbeat import probe_codex_cli
-    from core.llm.codex_cli import SAFE_FOR_WORKLOADS
+    from core.llm.codex_cli import readiness_snapshot
     ollama, hw, codex = await asyncio.gather(
         _probe_ollama(),
         asyncio.to_thread(_probe_hardware),
-        asyncio.to_thread(probe_codex_cli) if SAFE_FOR_WORKLOADS else asyncio.sleep(0, result=None),
+        asyncio.to_thread(readiness_snapshot),
     )
     cli = Capability("unavailable", "deprecated; not probed")
     key = Capability("unavailable", "unsupported; not probed")
     return Environment(
         platform=_probe_platform(),
         ollama=ollama, hardware=hw, claude_cli=cli, api_key=key,
-        codex_cli=Capability("ok" if codex.status == "ok" else "unavailable", codex.detail) if codex else Capability("blocked", "NOT_QUALIFIED; binary presence is insufficient", facts={"binary_present": shutil.which("codex") is not None}),
+        codex_cli=Capability(
+            "ok" if codex.workloads_ready else "blocked" if codex.installed else "unavailable",
+            "qualified confined workload" if codex.workloads_ready else "NOT_QUALIFIED; local presence is insufficient",
+            facts={name: getattr(codex, name) for name in (
+                "installed", "authenticated", "sandbox_available",
+                "sandbox_qualified", "workloads_ready")},
+        ),
     )
 
 

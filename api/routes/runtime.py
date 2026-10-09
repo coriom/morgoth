@@ -41,6 +41,16 @@ class ProfileView(BaseModel):
     providers: dict[str, str]
 
 
+class CodexReadinessView(BaseModel):
+    """Safe native UI distinctions; none imply successful model inference."""
+
+    installed: bool
+    authenticated: bool
+    sandbox_available: bool
+    sandbox_qualified: bool
+    workloads_ready: bool
+
+
 class ProfilesResponse(BaseModel):
     """Project profile catalog and current/recommended selections."""
 
@@ -48,6 +58,7 @@ class ProfilesResponse(BaseModel):
     current: str
     recommended: str | None
     profiles: list[ProfileView]
+    codex: CodexReadinessView
 
 
 class RuntimeStatus(BaseModel):
@@ -112,6 +123,8 @@ async def _profiles() -> ProfilesResponse:
             current=selected.id,
             recommended=recommended_profile(project, environment),
             profiles=profiles,
+            codex=CodexReadinessView(**{name: bool(environment.codex_cli.facts.get(name, False))
+                                        for name in CodexReadinessView.model_fields}),
         )
     except (ProfileError, ValueError, KeyError):
         raise HTTPException(status_code=409, detail="Project profile state unavailable") from None

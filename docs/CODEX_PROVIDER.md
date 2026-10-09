@@ -16,23 +16,30 @@ The operator's installed CLI was checked without inference: `codex-cli
 0.162.0`, ChatGPT login ready, and the existing mandatory flag and feature
 names present. That is **not workload qualification**. `SAFE_FOR_WORKLOADS`
 remains `False`; Desktop must display Codex as BLOCKED and refuse START with
-the Codex profile. The historical 0.159 diagnostic event and missing
-whole-process host-file boundary remain the reasons to require fresh review.
+the Codex profile. The historical 0.159 diagnostic event requires a fresh
+model-event qualification even after the filesystem boundary is installed.
 
-Bubblewrap 0.9.0 and unprivileged user namespaces are available on this Linux
-host. A prototype namespace exposing `/usr`, runtime libraries, a private
-`/tmp`, the installed Node/Codex tree, and only the two Codex login files
-allowed `codex login status` to retain the existing ChatGPT login while the
-rest of HOME was hidden. No credential contents were read. This is a
-**structural direction, not an integrated workload boundary**: the production
-provider still launches the CLI without this namespace, and model-authorized
-read/write, event and network canaries have not all passed inside it. The
-single permitted text inference was therefore not attempted. The next
-qualification must integrate a reviewed whole-process namespace, prove
-synthetic outside-read/write and repository/HOME denial, verify no tool or
-unknown events, and then run one fixed text probe before considering a
-`SAFE_FOR_WORKLOADS=True` change. Do not use a flag or environment override
-to bypass this gate.
+The production Codex subprocess now enters a mandatory Bubblewrap 0.9.0
+mount/user/PID namespace. It receives read-only `/usr`, `/lib`, `/lib64`,
+minimal DNS/TLS files, the installed Codex package and Node executable,
+private `/tmp`, and one writable 0700 invocation directory. The only host
+HOME content mounted is the operator-owned 0600 `auth.json`, read-only at a
+private `CODEX_HOME`. The Codex process can still **read that credential**;
+this is not an authentication broker. The rest of HOME, the Morgoth checkout
+and other host paths are absent. Network is deliberately shared for ChatGPT
+service access; this is not network isolation. The authenticated confined
+`login status` and synthetic outside-read/write, fake-key, symlink and
+timeout/cancellation checks passed. No credential contents were read by the
+qualification harness.
+
+The sole authorized model-authority canary returned the fixed
+`cli_diagnostic` verdict after 23.2 seconds. This is a CLI error event, not
+proof of tool activity, but it is **not a clean text-only event stream**.
+The cause cannot be inferred from the discarded private event body. The
+additional fixed text inference was not run; `SAFE_FOR_WORKLOADS=False`
+remains. A later separately authorized diagnostic must classify the CLI
+error without weakening the namespace or exposing raw events. No Weather
+research or external workload was run in this chantier.
 
 The remaining sections describe **historical experiments** and legacy
 configuration context; they are not the supported target configuration.
@@ -79,9 +86,9 @@ LLM_FALLBACK_ENABLED switch, event recording and local bottom rung are retained.
 No paid API is selected by default; OPENAI_API_KEY is neither used nor inherited.
 Heartbeat checks binary/version only, not login, quota or inference readiness.
 
-## Restricted transport
+## Historical 0.159 restricted transport (superseded)
 
-Reviewed CLI: `codex-cli 0.159.0`. Unknown versions or missing mandatory flags /
+Historical reviewed CLI: `codex-cli 0.159.0`. Unknown versions or missing mandatory flags /
 feature disables fail closed. `core/llm/codex_cli.py` is the exact argv source:
 
 ```text

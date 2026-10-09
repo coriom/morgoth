@@ -3,6 +3,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -70,6 +73,25 @@ def test_minimal_environment(monkeypatch):
                 'CODEX_THREAD_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE', 'NODE_OPTIONS', 'PYTHONPATH']:
         monkeypatch.setenv(key, 'SYNTHETIC_NOT_A_SECRET')
     assert set(C.minimal_env()) <= {'HOME', 'PATH', 'CODEX_HOME', 'LANG'}
+
+
+def test_non_inference_readiness_distinguishes_presence_login_and_qualification(monkeypatch):
+    monkeypatch.setattr(C.shutil, 'which', lambda *a, **kw: '/synthetic/codex')
+    calls = []
+    def run(argv, *args):
+        calls.append(argv[1:])
+        return subprocess.CompletedProcess(argv, 0,
+            C.VERSION if argv[1:] == ['--version'] else '', '')
+    monkeypatch.setattr(C, '_run', run)
+    snap = C.readiness_snapshot()
+    assert snap.installed and snap.authenticated and snap.sandbox_available
+    assert not snap.sandbox_qualified and not snap.workloads_ready
+    assert calls == [['--version'], ['login', 'status']]
+    monkeypatch.setattr(C, '_run', lambda argv, *args: subprocess.CompletedProcess(
+        argv, 1, '', 'TOP_SECRET_DO_NOT_PERSIST'))
+    snap = C.readiness_snapshot()
+    assert snap.installed and not snap.sandbox_available and not snap.authenticated
+    assert 'TOP_SECRET_DO_NOT_PERSIST' not in repr(snap)
 
 
 def test_neutral_cwd_final_only(monkeypatch):
@@ -145,24 +167,72 @@ def test_stdin_and_separate_pipes(monkeypatch):
     proc.returncode = 0
     popen = MagicMock(return_value=proc)
     monkeypatch.setattr(C.subprocess, 'Popen', popen)
+    monkeypatch.setattr(C, 'build_sandbox_argv', lambda argv, cwd, env, args: (
+        ['bwrap', '--', 'codex', *args], {'PATH': '/usr/bin:/bin'}))
     result = C._run(['codex','exec','-'], '/tmp/neutral', {}, 'private prompt', 3)
     assert result.stdout == 'output' and result.stderr == 'diagnostic'
-    proc.communicate.assert_called_once_with('private prompt', timeout=3)
+    assert proc.communicate.call_args.args == ('private prompt',)
+    assert 0 < proc.communicate.call_args.kwargs['timeout'] <= 0.2
     assert popen.call_args.kwargs['stdout'] == subprocess.PIPE
     assert popen.call_args.kwargs['stderr'] == subprocess.PIPE
     assert not popen.call_args.kwargs.get('shell', False)
+    assert popen.call_args.args[0][0] == 'bwrap'
+    assert popen.call_args.kwargs['env'] == {'PATH': '/usr/bin:/bin'}
+
+
+def test_missing_sandbox_prevents_spawn_without_direct_fallback(monkeypatch):
+    def unavailable(*args):
+        raise C.SandboxUnavailable('sandbox_runtime_missing')
+    popen = MagicMock()
+    monkeypatch.setattr(C, 'build_sandbox_argv', unavailable)
+    monkeypatch.setattr(C.subprocess, 'Popen', popen)
+    with pytest.raises(C.CodexCliError, match='sandbox_runtime_missing'):
+        C._run(['codex', 'exec'], '/tmp/neutral', {}, 'synthetic', 1)
+    popen.assert_not_called()
 
 
 def test_timeout_kills_group(monkeypatch):
     proc = MagicMock()
     proc.__enter__.return_value = proc
-    proc.communicate.side_effect = [subprocess.TimeoutExpired('codex', 2), ('','')]
+    killed = False
+    def communicate(*args, **kwargs):
+        if killed:
+            return ('', '')
+        raise subprocess.TimeoutExpired('codex', 2)
+    proc.communicate.side_effect = communicate
+    proc.poll.return_value = None
     monkeypatch.setattr(C.subprocess, 'Popen', MagicMock(return_value=proc))
-    kill = MagicMock()
+    monkeypatch.setattr(C, 'build_sandbox_argv', lambda argv, cwd, env, args: (
+        ['bwrap', '--', 'codex', *args], {'PATH': '/usr/bin:/bin'}))
+    def kill_group(*args):
+        nonlocal killed
+        killed = True
+    kill = MagicMock(side_effect=kill_group)
     monkeypatch.setattr(C.os, 'killpg', kill)
     with pytest.raises(C.CodexCliError, match='timeout'):
-        C._run(['codex'], '/tmp', {}, 'prompt', 2)
+        C._run(['codex'], '/tmp', {}, 'prompt', 0.01)
     kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_provider_cancellation_signals_owned_worker(monkeypatch):
+    started = threading.Event()
+    finished = threading.Event()
+    def worker(prompt, model, timeout, cancel_event):
+        started.set()
+        assert cancel_event.wait(2)
+        finished.set()
+        raise C.CodexCliError('cancelled')
+    monkeypatch.setattr(C, '_complete', worker)
+    task = asyncio.create_task(C.CodexCliProvider('default').complete('synthetic'))
+    deadline = time.monotonic() + 2
+    while not started.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished.is_set()
 
 
 @pytest.mark.parametrize('leak', [True, False])
@@ -178,6 +248,16 @@ def test_canary_marker_not_in_prompt(monkeypatch, leak):
             C.capability_canary('codex','default',{},2)
     else:
         C.capability_canary('codex','default',{},2)
+
+
+def test_canary_reports_host_effect_even_when_cli_reports_diagnostic(monkeypatch):
+    def invoke(binary, model, env, prompt, timeout):
+        write_path = Path(prompt.split('write CANARY_WRITE to ')[1].split()[0].rstrip('.'))
+        write_path.write_text('synthetic effect')
+        raise C.CodexCliError('cli_diagnostic')
+    monkeypatch.setattr(C, 'invoke', invoke)
+    with pytest.raises(C.CodexCliError, match='canary_effect'):
+        C.capability_canary('codex', 'default', {}, 2)
 
 
 def test_failed_canary_latches_before_real_prompt(monkeypatch, tmp_path):
@@ -307,6 +387,7 @@ async def test_codex_only_catalog_never_probes_claude(monkeypatch, tmp_path):
     monkeypatch.setattr(E, '_probe_claude_cli', lambda: (_ for _ in ()).throw(AssertionError('Claude probe')))
     monkeypatch.setattr(heartbeat, 'probe_claude_cli', lambda: (_ for _ in ()).throw(AssertionError('Claude heartbeat')))
     monkeypatch.setattr(E.asyncio, 'to_thread', AsyncMock(side_effect=lambda fn: fn()))
+    monkeypatch.setattr(C, 'readiness_snapshot', lambda: C.CodexReadiness(installed=True))
     cap = E.Capability('ok', 'synthetic')
     monkeypatch.setattr(E, '_probe_ollama', AsyncMock(return_value=cap))
     snapshot = await E.detect_environment()

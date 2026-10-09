@@ -62,9 +62,9 @@ class TestDetectionNeverRaises:
 
     @pytest.mark.asyncio
     async def test_full_detect_environment_returns_all_slots(self, monkeypatch):
-        from core.llm import heartbeat
+        from core.llm import codex_cli
         monkeypatch.setattr(ENV.asyncio, "to_thread", AsyncMock(side_effect=lambda fn: fn()))
-        monkeypatch.setattr(heartbeat, "probe_codex_cli", lambda: heartbeat.ProbeResult("codex-cli", "ok", "mock"))
+        monkeypatch.setattr(codex_cli, "readiness_snapshot", lambda: codex_cli.CodexReadiness(installed=True))
         monkeypatch.setattr(ENV, "_probe_ollama", AsyncMock(return_value=ENV.Capability("ok", "synthetic")))
         monkeypatch.setattr(ENV, "_probe_hardware", lambda: ENV.Capability("ok", "synthetic"))
         env = await ENV.detect_environment()
@@ -77,8 +77,10 @@ class TestDetectionNeverRaises:
 
     @pytest.mark.asyncio
     async def test_hardware_probe_does_not_run_claude(self, monkeypatch):
+        from core.llm import codex_cli
         cap = ENV.Capability("ok", "synthetic")
         monkeypatch.setattr(ENV.asyncio, "to_thread", AsyncMock(side_effect=lambda fn: fn()))
+        monkeypatch.setattr(codex_cli, "readiness_snapshot", lambda: codex_cli.CodexReadiness())
         monkeypatch.setattr(ENV, "_probe_hardware", lambda: cap)
         monkeypatch.setattr(ENV, "_probe_claude_cli", lambda: (_ for _ in ()).throw(AssertionError("Claude probed")))
         monkeypatch.setattr(ENV, "_probe_ollama", AsyncMock(return_value=cap))
