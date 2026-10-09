@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import uuid
 
-VERSION = "codex-cli 0.159.0"
+VERSION = "codex-cli 0.162.0"
 # The old tool_activity verdict included diagnostic error items. Neither
 # flags nor synthetic observations prove host read confinement. No environment
 # override may bypass this deployment gate; see docs/CODEX_PROVIDER.md.

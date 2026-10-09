@@ -202,11 +202,11 @@ async def test_fallback_never_claude(monkeypatch):
         names.append(name)
         return MagicMock(name=name)
     async def call(provider):
-        if len(names)<3: raise C.CodexCliError('process_failed')
+        if len(names)<2: raise C.CodexCliError('process_failed')
         return 'ollama result'
-    assert await fallback.call_with_fallback(build,'thesis','api',call) == 'ollama result'
-    assert names == ['api','codex-cli','ollama']
-    assert fallback._next_provider_down('claude-cli') == 'ollama'
+    assert await fallback.call_with_fallback(build,'thesis','codex-cli',call) == 'ollama result'
+    assert names == ['codex-cli','ollama']
+    assert fallback._next_provider_down('claude-cli') is None
 
 
 @pytest.mark.asyncio
@@ -291,3 +291,25 @@ def test_no_environment_activation(monkeypatch, key):
     with pytest.raises(C.CodexCliError, match='capability_restrictions_unqualified'):
         C._complete('synthetic', 'default', 2)
     run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_codex_only_catalog_never_probes_claude(monkeypatch, tmp_path):
+    from core.llm import environment as E, profiles as P, heartbeat
+    from core.project import Project
+    project = Project(id='synthetic', name='Synthetic', domain='crypto',
+                      postgres_schema='synthetic', chroma_prefix='synthetic_',
+                      vault_dir=tmp_path / 'vault', runtime_dir=tmp_path / 'runtime')
+    assert [p.id for p in P.list_profiles(project)] == ['legacy', 'codex']
+    assert P.provider_status('claude-cli', None)[0] == 'UNAVAILABLE'
+    assert C.SAFE_FOR_WORKLOADS is False
+    assert C.VERSION == 'codex-cli 0.162.0'
+    monkeypatch.setattr(E, '_probe_claude_cli', lambda: (_ for _ in ()).throw(AssertionError('Claude probe')))
+    monkeypatch.setattr(heartbeat, 'probe_claude_cli', lambda: (_ for _ in ()).throw(AssertionError('Claude heartbeat')))
+    monkeypatch.setattr(E.asyncio, 'to_thread', AsyncMock(side_effect=lambda fn: fn()))
+    cap = E.Capability('ok', 'synthetic')
+    monkeypatch.setattr(E, '_probe_ollama', AsyncMock(return_value=cap))
+    snapshot = await E.detect_environment()
+    assert snapshot.claude_cli.status == 'unavailable'
+    assert all(r.provider != 'claude-cli' for r in E.suggest_routing(snapshot))
+    assert fallback._LADDER == ['codex-cli', 'ollama']

@@ -22,6 +22,9 @@ def projects(tmp_path, monkeypatch):
                        chroma_prefix=name+'_', vault_dir=tmp_path/name/'vault', runtime_dir=tmp_path/name/'state')
     a,b=make('project_a'),make('project_b')
     monkeypatch.setattr('core.project.current_project', lambda:a)
+    from types import MappingProxyType
+    local = P.LLMProfile('synthetic_local', {task: 'ollama:default' for task in tasks.all_tasks()})
+    monkeypatch.setattr(P, 'PROFILES', MappingProxyType({**P.PROFILES, local.id: local}))
     return a,b
 
 
@@ -42,14 +45,14 @@ def no_campaign(monkeypatch):
 
 
 def test_registry_data_immutable(projects):
-    for name, provider in [('claude','claude-cli'),('codex','codex-cli')]:
+    for name, provider in [('synthetic_local','ollama'),('codex','codex-cli')]:
         profile=P.PROFILES[name]
         assert set(profile.routes)==set(tasks.all_tasks())
         assert profile.routes['chat']=='ollama:default'
         assert all(route==provider+':default' for task,route in profile.routes.items() if task!='chat')
         with pytest.raises(TypeError): profile.routes['chat']='api:default'
         with pytest.raises(FrozenInstanceError): profile.id='changed'
-    with pytest.raises(TypeError): P.PROFILES['new']=P.PROFILES['claude']
+    with pytest.raises(TypeError): P.PROFILES['new']=P.PROFILES['synthetic_local']
 
 
 def test_absent_state_exact_legacy(projects,monkeypatch):
@@ -58,8 +61,8 @@ def test_absent_state_exact_legacy(projects,monkeypatch):
     assert not a.runtime_dir.exists()
     for task,spec in tasks.DEFAULTS.items():
         assert P.resolve_task_route(a,task)==registry._parse_spec(spec)
-    monkeypatch.setenv('THESIS_GENERATOR','claude-cli')
-    assert registry.resolve('thesis')==('claude-cli','default')
+    monkeypatch.setenv('THESIS_GENERATOR','ollama')
+    assert registry.resolve('thesis')==('ollama','default')
     monkeypatch.setenv('MORGOTH_LLM_THESIS','ollama:custom')
     assert registry.resolve('thesis')==('ollama','custom')
     monkeypatch.setenv('MORGOTH_LLM_THESIS','bad')
@@ -71,12 +74,12 @@ async def test_atomic_all_tasks_reload_and_legacy(projects,ready,no_campaign,mon
     a,_=projects
     for task in tasks.all_tasks(): monkeypatch.setenv('MORGOTH_LLM_'+task.upper(),'codex-cli:default')
     monkeypatch.setenv('REFLECT_PROVIDER','codex-cli')
-    await P.switch_profile(a,'claude')
-    assert json.loads(P.state_path(a).read_text())=={'schema_version':1,'profile':'claude'}
+    await P.switch_profile(a,'synthetic_local')
+    assert json.loads(P.state_path(a).read_text())=={'schema_version':1,'profile':'synthetic_local'}
     assert P.state_path(a).stat().st_mode & 0o777 == 0o600
     assert P.state_path(a).parent.stat().st_mode & 0o777 == 0o700
     for task in tasks.all_tasks():
-        assert registry.resolve(task)==('ollama' if task=='chat' else 'claude-cli','default')
+        assert registry.resolve(task)==('ollama','default')
     assert 'REFLECT_PROVIDER' in P.shadowed_overrides(a)
     assert all(row['source']=='managed profile' for row in registry.routing_table())
     await P.switch_profile(a,'legacy')
@@ -87,10 +90,10 @@ async def test_atomic_all_tasks_reload_and_legacy(projects,ready,no_campaign,mon
 @pytest.mark.asyncio
 async def test_two_projects_same_domain_independent(projects,ready,no_campaign):
     a,b=projects
-    await P.switch_profile(a,'claude')
+    await P.switch_profile(a,'synthetic_local')
     await P.switch_profile(b,'legacy')
     assert a.domain==b.domain=='crypto'
-    assert P.resolve_task_route(a,'thesis')==('claude-cli','default')
+    assert P.resolve_task_route(a,'thesis')==('ollama','default')
     assert P.resolve_task_route(b,'thesis')==('codex-cli','default')
     assert not P.state_path(b).exists()
 
@@ -98,7 +101,7 @@ async def test_two_projects_same_domain_independent(projects,ready,no_campaign):
 @pytest.mark.asyncio
 async def test_codex_rejected_no_change_even_binary_ready(projects,ready,no_campaign):
     a,_=projects
-    await P.switch_profile(a,'claude')
+    await P.switch_profile(a,'synthetic_local')
     before=P.state_path(a).read_bytes()
     with pytest.raises(P.ProfileError,match='NOT_QUALIFIED'):
         await P.switch_profile(a,'codex')
@@ -106,7 +109,7 @@ async def test_codex_rejected_no_change_even_binary_ready(projects,ready,no_camp
     assert codex_cli.SAFE_FOR_WORKLOADS is False
     assert P.provider_status('codex-cli',ready)[0]=='BLOCKED'
     assert P.profile_status(a,P.PROFILES['codex'],ready)[0]=='BLOCKED'
-    assert P.recommended_profile(a,ready)=='claude'
+    assert P.recommended_profile(a,ready)=='synthetic_local'
     assert all(r.provider!='codex-cli' for r in E.suggest_routing(ready))
 
 
@@ -130,7 +133,7 @@ async def test_unknown_never_persists(projects):
 @pytest.mark.asyncio
 async def test_publish_failure_preserves_whole_profile(projects,ready,no_campaign,monkeypatch):
     a,_=projects
-    await P.switch_profile(a,'claude')
+    await P.switch_profile(a,'synthetic_local')
     before=P.state_path(a).read_bytes()
     def fail(*args): raise OSError('synthetic')
     monkeypatch.setattr(P.os,'replace',fail)
@@ -169,11 +172,11 @@ async def test_campaign_guard_canonical_sql_and_publication(projects,ready,monke
         publish(*args)
     monkeypatch.setattr(P,'_publish',checked)
     if live:
-        with pytest.raises(P.ProfileError,match='research-live'): await P.switch_profile(a,'claude')
+        with pytest.raises(P.ProfileError,match='research-live'): await P.switch_profile(a,'synthetic_local')
         assert not P.state_path(a).exists()
     else:
-        await P.switch_profile(a,'claude')
-        assert P.current_profile(a).id=='claude'
+        await P.switch_profile(a,'synthetic_local')
+        assert P.current_profile(a).id=='synthetic_local'
     assert connect.call_args.kwargs['server_settings']['search_path']==a.postgres_schema
     assert not held and queries
     conn.close.assert_awaited_once()
@@ -183,18 +186,18 @@ async def test_campaign_guard_canonical_sql_and_publication(projects,ready,monke
 async def test_guard_unavailable_refuses(projects,ready,monkeypatch):
     a,_=projects
     monkeypatch.delenv('POSTGRES_URL',raising=False)
-    with pytest.raises(P.ProfileError,match='guard unavailable'): await P.switch_profile(a,'claude')
+    with pytest.raises(P.ProfileError,match='guard unavailable'): await P.switch_profile(a,'synthetic_local')
     assert not P.state_path(a).exists()
 
 
 @pytest.mark.asyncio
 async def test_same_profile_noop_during_campaign(projects,ready,no_campaign,monkeypatch):
     a,_=projects
-    await P.switch_profile(a,'claude')
+    await P.switch_profile(a,'synthetic_local')
     guard=MagicMock(side_effect=AssertionError('must not check'))
     monkeypatch.setattr(P,'campaign_guard',guard)
     before=P.state_path(a).stat().st_mtime_ns
-    await P.switch_profile(a,'claude')
+    await P.switch_profile(a,'synthetic_local')
     assert P.state_path(a).stat().st_mtime_ns==before
     guard.assert_not_called()
 
@@ -204,8 +207,8 @@ async def test_reflect_and_shadow_resolve_at_call(projects,ready,no_campaign,mon
     from self_modify import reflect_llm
     from core.llm.providers import get_provider
     a,_=projects
-    await P.switch_profile(a,'claude')
-    assert reflect_llm.resolve_provider('codex-cli')=='claude-cli'
+    await P.switch_profile(a,'synthetic_local')
+    assert reflect_llm.resolve_provider('codex-cli')=='ollama'
     complete=AsyncMock(return_value='synthetic')
     monkeypatch.setattr('core.llm.providers.get_provider',lambda *a,**kw:SimpleNamespace(complete=complete))
     for task in ('reflect','shadow'):
@@ -219,9 +222,9 @@ async def test_models_cli_no_database_initialization(projects,ready,no_campaign,
     from self_modify import cli
     initialize=AsyncMock(side_effect=AssertionError('must not initialize'))
     monkeypatch.setattr(cli.PersistentMemory,'initialize',initialize)
-    assert await cli._main(['models','use','claude'])==0
+    assert await cli._main(['models','use','synthetic_local'])==0
     assert await cli._main(['models'])==0
-    assert 'profile=claude' in capsys.readouterr().out
+    assert 'profile=synthetic_local' in capsys.readouterr().out
     assert await cli._main(['models','use','codex'])==2
     initialize.assert_not_called()
 
@@ -238,7 +241,6 @@ async def test_new_profile_is_data_not_switch_branch(projects,ready,no_campaign,
 
 def test_unavailable_never_recommended(projects,ready):
     a,_=projects
-    ready.claude_cli.status='unavailable'
     ready.ollama.status='unavailable'
     assert E.suggest_routing(ready)==[]
     assert P.recommended_profile(a,ready) is None
@@ -264,21 +266,21 @@ async def test_concurrent_switch_refuses_without_partial_state(projects,ready,no
     with open(a.runtime_dir/'.llm-profile.lock','w') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         with pytest.raises(P.ProfileError,match='in progress'):
-            await P.switch_profile(a,'claude')
+            await P.switch_profile(a,'synthetic_local')
     assert P.current_profile(a).id=='legacy'
 
 
 def test_project_override_preserved_in_legacy(projects):
     a,_=projects
-    customized=Project(**{**a.model_dump(),'llm_overrides':{'thesis':'claude-cli:custom'}})
-    assert P.resolve_task_route(customized,'thesis')==('claude-cli','custom')
+    customized=Project(**{**a.model_dump(),'llm_overrides':{'thesis':'ollama:custom'}})
+    assert P.resolve_task_route(customized,'thesis')==('ollama','custom')
 
 
 @pytest.mark.asyncio
 async def test_unavailable_switch_leaves_state_absent(projects,ready,no_campaign):
     a,_=projects
-    ready.claude_cli.status='unavailable'
-    with pytest.raises(P.ProfileError,match='UNAVAILABLE'): await P.switch_profile(a,'claude')
+    ready.ollama.status='unavailable'
+    with pytest.raises(P.ProfileError,match='UNAVAILABLE'): await P.switch_profile(a,'synthetic_local')
     assert not a.runtime_dir.exists()
 
 

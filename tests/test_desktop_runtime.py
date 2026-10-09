@@ -121,7 +121,7 @@ def _synthetic_env() -> Environment:
 
 
 @pytest.mark.asyncio
-async def test_authenticated_runtime_blocked_then_claude_then_one_start(
+async def test_authenticated_runtime_blocked_then_local_then_one_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _project(tmp_path)
@@ -139,6 +139,9 @@ async def test_authenticated_runtime_blocked_then_claude_then_one_start(
     monkeypatch.setattr(proposals, "ensure_ui_token", lambda: "synthetic-private-token")
     monkeypatch.setattr(runtime, "current_project", lambda: project)
     monkeypatch.setattr(runtime, "detect_environment", AsyncMock(return_value=_synthetic_env()))
+    from types import MappingProxyType
+    local = profiles.LLMProfile("synthetic_local", {task: "ollama:default" for task in profiles.tasks.all_tasks()})
+    monkeypatch.setattr(profiles, "PROFILES", MappingProxyType({**profiles.PROFILES, local.id: local}))
     selected = "legacy"
     monkeypatch.setattr(runtime, "current_profile", lambda _project: profiles.PROFILES[selected])
     switch_entered = asyncio.Event()
@@ -148,7 +151,7 @@ async def test_authenticated_runtime_blocked_then_claude_then_one_start(
         nonlocal selected
         if target == "codex":
             raise profiles.ProfileError("BLOCKED: Codex workload qualification has not passed")
-        if target == "claude":
+        if target == "synthetic_local":
             switch_entered.set()
             await release_switch.wait()
         selected = target
@@ -168,7 +171,7 @@ async def test_authenticated_runtime_blocked_then_claude_then_one_start(
         assert status.json()["project"] == project.id
         assert status.json()["domain"] == project.domain
         brain._ready = False
-        assert (await client.post(f"{path}/profile", json={"profile": "claude"}, headers=headers)).status_code == 409
+        assert (await client.post(f"{path}/profile", json={"profile": "synthetic_local"}, headers=headers)).status_code == 409
         assert selected == "legacy"
         brain._ready = True
         catalog = (await client.get(f"{path}/profiles", headers=headers)).json()
@@ -176,8 +179,8 @@ async def test_authenticated_runtime_blocked_then_claude_then_one_start(
         assert (await client.post(f"{path}/start", headers=headers)).status_code == 409
         assert (await client.post(f"{path}/profile", json={"profile": "codex"}, headers=headers)).status_code == 409
         assert selected == "legacy"
-        assert (await client.post(f"{path}/profile", json={"profile": "claude", "force": True}, headers=headers)).status_code == 422
-        changing = asyncio.create_task(client.post(f"{path}/profile", json={"profile": "claude"}, headers=headers))
+        assert (await client.post(f"{path}/profile", json={"profile": "synthetic_local", "force": True}, headers=headers)).status_code == 422
+        changing = asyncio.create_task(client.post(f"{path}/profile", json={"profile": "synthetic_local"}, headers=headers))
         await asyncio.wait_for(switch_entered.wait(), 3)
         starting_a = asyncio.create_task(client.post(f"{path}/start", headers=headers))
         starting_b = asyncio.create_task(client.post(f"{path}/start", headers=headers))

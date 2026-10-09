@@ -184,13 +184,13 @@ async def detect_environment() -> Environment:
     runs concurrently with the synchronous subprocess probes in threads."""
     from core.llm.heartbeat import probe_codex_cli
     from core.llm.codex_cli import SAFE_FOR_WORKLOADS
-    ollama, hw, cli, codex = await asyncio.gather(
+    ollama, hw, codex = await asyncio.gather(
         _probe_ollama(),
         asyncio.to_thread(_probe_hardware),
-        asyncio.to_thread(_probe_claude_cli),
         asyncio.to_thread(probe_codex_cli) if SAFE_FOR_WORKLOADS else asyncio.sleep(0, result=None),
     )
-    key = _probe_api_key()
+    cli = Capability("unavailable", "deprecated; not probed")
+    key = Capability("unavailable", "unsupported; not probed")
     return Environment(
         platform=_probe_platform(),
         ollama=ollama, hardware=hw, claude_cli=cli, api_key=key,
@@ -248,11 +248,11 @@ def suggest_routing(env: Environment) -> list[TaskRecommendation]:
     they're inspectable at review time."""
     from core.llm.profiles import provider_status
     from core.llm.tasks import all_tasks
-    ready = {p for p in ("ollama", "claude-cli", "codex-cli") if provider_status(p, env)[0] == "READY"}
+    ready = {p for p in ("ollama", "codex-cli") if provider_status(p, env)[0] == "READY"}
     picked = _recommend_ollama_model(env) or "default"
     out = []
     for task in all_tasks():
-        preference = ("ollama", "claude-cli", "codex-cli") if task == "chat" else ("claude-cli", "codex-cli", "ollama")
+        preference = ("ollama", "codex-cli") if task == "chat" else ("codex-cli", "ollama")
         provider = next((p for p in preference if p in ready), None)
         if provider is not None:
             out.append(TaskRecommendation(task, provider, picked if provider == "ollama" else "default", "ready non-inference preconditions; operator selection required"))

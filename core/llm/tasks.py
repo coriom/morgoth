@@ -19,9 +19,9 @@ REFLECT = "reflect"        # self_modify.reflect (default: codex-cli)
 SHADOW = "shadow"          # self_modify.shadow (default: codex-cli)
 SCOUT = "scout"            # self_modify.scout (default: codex-cli — reserved)
 
-# High-quality tasks use Codex; chat remains local. Claude is explicit rollback.
+# High-quality tasks use Codex; chat remains local.
 # "default" as model means "provider picks its own default"
-# (ollama uses config.primary_model; claude-cli/api use their own default).
+# (ollama uses config.primary_model; Codex uses its own default).
 DEFAULTS: dict[str, str] = {
     THESIS: "codex-cli:default",
     SYNTHESIS: "codex-cli:default",

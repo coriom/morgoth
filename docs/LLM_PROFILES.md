@@ -1,3 +1,15 @@
+# Current supported catalog (2026-10-09)
+
+Managed Projects expose `legacy` and `codex`. The supported `codex` policy
+routes CHAT to local Ollama and all high-quality tasks to Codex CLI. Claude
+is not probed or recommended; historical Claude state/overrides are
+unsupported. Codex currently reports BLOCKED because whole-process
+confinement has not been integrated or qualified. A BLOCKED profile cannot
+be selected and research START remains gated. See [CODEX_PROVIDER.md](CODEX_PROVIDER.md).
+
+The older examples below describe historical behavior and are not current
+operating instructions.
+
 # Project LLM profiles
 
 `morgoth models` shows the selected Project's profile, effective registry routes,

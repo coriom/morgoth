@@ -45,7 +45,6 @@ PROFILES = MappingProxyType({
     identifier: LLMProfile(identifier, routes)
     for identifier, routes in (
         ('legacy', {}),
-        ('claude', {task: 'ollama:default' if task == tasks.CHAT else 'claude-cli:default' for task in tasks.all_tasks()}),
         ('codex', {task: 'ollama:default' if task == tasks.CHAT else 'codex-cli:default' for task in tasks.all_tasks()}),
     )
 })
@@ -121,6 +120,8 @@ def shadowed_overrides(project: Project) -> tuple[str, ...]:
 def provider_status(provider: str, environment: Environment | None) -> tuple[str, str]:
     """Readiness is separate from presence; qualification takes precedence."""
     from core.llm.codex_cli import SAFE_FOR_WORKLOADS
+    if provider in ('claude-cli', 'api'):
+        return 'UNAVAILABLE', 'historical provider is unsupported in the Codex-only runtime'
     if provider == 'codex-cli' and not SAFE_FOR_WORKLOADS:
         return 'BLOCKED', 'Codex workload qualification has not passed (NOT_QUALIFIED); binary presence is insufficient'
     attribute = {'ollama': 'ollama', 'claude-cli': 'claude_cli', 'codex-cli': 'codex_cli', 'api': 'api_key'}.get(provider)

@@ -63,7 +63,10 @@ class TestDetectionNeverRaises:
     @pytest.mark.asyncio
     async def test_full_detect_environment_returns_all_slots(self, monkeypatch):
         from core.llm import heartbeat
+        monkeypatch.setattr(ENV.asyncio, "to_thread", AsyncMock(side_effect=lambda fn: fn()))
         monkeypatch.setattr(heartbeat, "probe_codex_cli", lambda: heartbeat.ProbeResult("codex-cli", "ok", "mock"))
+        monkeypatch.setattr(ENV, "_probe_ollama", AsyncMock(return_value=ENV.Capability("ok", "synthetic")))
+        monkeypatch.setattr(ENV, "_probe_hardware", lambda: ENV.Capability("ok", "synthetic"))
         env = await ENV.detect_environment()
         # Every slot present, none None.
         assert env.ollama is not None
@@ -73,19 +76,15 @@ class TestDetectionNeverRaises:
         assert env.platform
 
     @pytest.mark.asyncio
-    async def test_slow_sync_probes_overlap_without_blocking_loop(self, monkeypatch):
+    async def test_hardware_probe_does_not_run_claude(self, monkeypatch):
         cap = ENV.Capability("ok", "synthetic")
-        rendezvous = threading.Barrier(2, timeout=1)
-
-        def slow():
-            rendezvous.wait()
-            return cap
-
-        monkeypatch.setattr(ENV, "_probe_hardware", slow)
-        monkeypatch.setattr(ENV, "_probe_claude_cli", slow)
+        monkeypatch.setattr(ENV.asyncio, "to_thread", AsyncMock(side_effect=lambda fn: fn()))
+        monkeypatch.setattr(ENV, "_probe_hardware", lambda: cap)
+        monkeypatch.setattr(ENV, "_probe_claude_cli", lambda: (_ for _ in ()).throw(AssertionError("Claude probed")))
         monkeypatch.setattr(ENV, "_probe_ollama", AsyncMock(return_value=cap))
         result = await asyncio.wait_for(ENV.detect_environment(), timeout=2)
-        assert result.hardware is cap and result.claude_cli is cap
+        assert result.hardware is cap
+        assert result.claude_cli.status == "unavailable"
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -129,13 +128,13 @@ class TestRecommendationRules:
         env = _mk_env(ollama_ok=False, cli_ok=True)
         for rec in ENV.suggest_routing(env):
             if rec.task == "chat":
-                assert rec.provider == "claude-cli"
+                assert rec.provider == "ollama"
 
     def test_self_mod_tasks_prefer_cli(self):
         env = _mk_env(ollama_ok=True, cli_ok=True)
         for rec in ENV.suggest_routing(env):
             if rec.task in ("thesis", "synthesis", "reflect", "shadow", "scout"):
-                assert rec.provider == "claude-cli"
+                assert rec.provider == "ollama"
 
     def test_self_mod_recommend_unavailable_when_no_cli(self):
         env = _mk_env(ollama_ok=False, cli_ok=False)
@@ -168,10 +167,10 @@ class TestLadderDirection:
         assert ranks[0] > ranks[-1]
 
     def test_next_down_from_api_is_cli(self):
-        assert FB._next_provider_down("api") == "codex-cli"
+        assert FB._next_provider_down("api") is None
 
     def test_next_down_from_cli_is_ollama(self):
-        assert FB._next_provider_down("claude-cli") == "ollama"
+        assert FB._next_provider_down("codex-cli") == "ollama"
 
     def test_next_down_from_ollama_is_none(self):
         """Bottom of ladder — no fallback possible. Cycle handles the None."""
@@ -205,7 +204,7 @@ class TestFallbackExecution:
         ol = MagicMock(); ol.complete = AsyncMock(return_value="ollama response")
 
         def build(name):
-            if name == "claude-cli": return cli
+            if name == "codex-cli": return cli
             if name == "ollama": return ol
             return None
 
@@ -213,7 +212,7 @@ class TestFallbackExecution:
             return await prov.complete("x")
 
         out = await FB.call_with_fallback(
-            build, "thesis", "claude-cli", call, pm=None,
+            build, "thesis", "codex-cli", call, pm=None,
         )
         assert out == "ollama response"
 
@@ -228,8 +227,8 @@ class TestFallbackExecution:
 
         with pytest.raises(HttpApiError):
             await FB.call_with_fallback(
-                lambda name: cli if name == "claude-cli" else None,
-                "thesis", "claude-cli", call, pm=None,
+                lambda name: cli if name == "codex-cli" else None,
+                "thesis", "codex-cli", call, pm=None,
             )
 
     @pytest.mark.asyncio
@@ -260,7 +259,7 @@ class TestFallbackExecution:
 
         async def call(prov): return await prov.complete("x")
 
-        await FB.call_with_fallback(build, "thesis", "claude-cli", call, pm=None)
+        await FB.call_with_fallback(build, "thesis", "codex-cli", call, pm=None)
         assert FB.in_proc_fallback_count() >= 1
 
 

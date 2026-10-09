@@ -112,8 +112,7 @@ def probe_api_key() -> ProbeResult:
 async def one_heartbeat_round() -> list[ProbeResult]:
     """Probe every provider referenced by the current routing. Order
     doesn't matter — this returns a snapshot, not a state machine."""
-    return [await probe_ollama(), await asyncio.to_thread(probe_claude_cli),
-            await asyncio.to_thread(probe_codex_cli), probe_api_key()]
+    return [await probe_ollama(), await asyncio.to_thread(probe_codex_cli)]
 
 
 async def persist_on_change(

@@ -24,6 +24,10 @@ async def test_profile_campaign_guard_real_sql(tmp_path,monkeypatch):
     cap=E.Capability('ok','synthetic')
     async def environment(): return E.Environment('synthetic',cap,cap,cap,cap,cap)
     monkeypatch.setattr(E,'detect_environment',environment)
+    from types import MappingProxyType
+    from core.llm import tasks
+    local=P.LLMProfile('synthetic_local',{task:'ollama:default' for task in tasks.all_tasks()})
+    monkeypatch.setattr(P,'PROFILES',MappingProxyType({**P.PROFILES,local.id:local}))
     other=None;pending=None
     try:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
@@ -31,12 +35,12 @@ async def test_profile_campaign_guard_real_sql(tmp_path,monkeypatch):
         await conn.execute('CREATE TABLE campaigns(status text, ended_at timestamptz, ends_at timestamptz)')
         await conn.execute("INSERT INTO campaigns VALUES ('active',NULL,NOW()+interval '1 day')")
         with pytest.raises(P.ProfileError,match='research-live'):
-            await P.switch_profile(project,'claude')
+            await P.switch_profile(project,'synthetic_local')
         assert not P.state_path(project).exists()
         # An expired row is still persisted active; no lifecycle mutation needed.
         await conn.execute("UPDATE campaigns SET ends_at=NOW()-interval '1 second'")
-        await P.switch_profile(project,'claude')
-        assert P.current_profile(project).id=='claude'
+        await P.switch_profile(project,'synthetic_local')
+        assert P.current_profile(project).id=='synthetic_local'
         assert await conn.fetchval('SELECT status FROM campaigns')=='active'
         other=await asyncpg.connect(dsn,server_settings={'search_path':schema},timeout=5)
         async with P.campaign_guard(project):
@@ -44,7 +48,7 @@ async def test_profile_campaign_guard_real_sql(tmp_path,monkeypatch):
             await asyncio.sleep(.05)
             assert not pending.done(), 'campaign creation must wait for profile publication'
         await asyncio.wait_for(pending,5)
-        await P.switch_profile(project,'claude')  # no-op allowed during live campaign
+        await P.switch_profile(project,'synthetic_local')  # no-op allowed during live campaign
         with pytest.raises(P.ProfileError,match='research-live'):
             await P.switch_profile(project,'legacy')
         await conn.execute("UPDATE campaigns SET ended_at=NOW(),status='cancelled'")

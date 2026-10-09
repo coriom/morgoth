@@ -1,5 +1,42 @@
 # Internal LLM migration
 
+## Current target (Codex-only external provider, 2026-10-09)
+
+`CLAUDE_RUNTIME_REQUIRED = false`. The supported managed catalog contains
+`legacy` and `codex`. CHAT uses local Ollama; THESIS, SYNTHESIS, REFLECT,
+SHADOW and SCOUT target `codex-cli:default`. No current profile recommends
+Claude, provider readiness does not execute `claude`, and the live heartbeat
+checks Ollama and Codex only. Historical Claude implementations and explicit
+legacy override parsing remain for old records; they are unsupported and
+report UNAVAILABLE. The supported fallback is Codex CLI -> Ollama only, or
+the original Codex error when `LLM_FALLBACK_ENABLED=false`. No API key is
+required or used by the target route. Human Gate 3 remains human-only.
+
+The operator's installed CLI was checked without inference: `codex-cli
+0.162.0`, ChatGPT login ready, and the existing mandatory flag and feature
+names present. That is **not workload qualification**. `SAFE_FOR_WORKLOADS`
+remains `False`; Desktop must display Codex as BLOCKED and refuse START with
+the Codex profile. The historical 0.159 diagnostic event and missing
+whole-process host-file boundary remain the reasons to require fresh review.
+
+Bubblewrap 0.9.0 and unprivileged user namespaces are available on this Linux
+host. A prototype namespace exposing `/usr`, runtime libraries, a private
+`/tmp`, the installed Node/Codex tree, and only the two Codex login files
+allowed `codex login status` to retain the existing ChatGPT login while the
+rest of HOME was hidden. No credential contents were read. This is a
+**structural direction, not an integrated workload boundary**: the production
+provider still launches the CLI without this namespace, and model-authorized
+read/write, event and network canaries have not all passed inside it. The
+single permitted text inference was therefore not attempted. The next
+qualification must integrate a reviewed whole-process namespace, prove
+synthetic outside-read/write and repository/HOME denial, verify no tool or
+unknown events, and then run one fixed text probe before considering a
+`SAFE_FOR_WORKLOADS=True` change. Do not use a flag or environment override
+to bypass this gate.
+
+The remaining sections describe **historical experiments** and deprecated
+Claude rollback options; they are not the supported target configuration.
+
 For whole-lane selection use the [Project profile manager](LLM_PROFILES.md).
 The environment assignments below describe legacy mode only. `models use codex`
 is refused while NOT_QUALIFIED; a ready Claude profile can be explicitly selected.

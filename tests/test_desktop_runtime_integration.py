@@ -44,6 +44,10 @@ async def test_managed_projects_initialize_campaign_guard_in_disjoint_schemas(
         monkeypatch.setenv(key, value)
     cap = E.Capability("ok", "synthetic")
     monkeypatch.setattr(E, "detect_environment", lambda: _environment(cap))
+    from types import MappingProxyType
+    from core.llm import tasks
+    local = P.LLMProfile("synthetic_local", {task: "ollama:default" for task in tasks.all_tasks()})
+    monkeypatch.setattr(P, "PROFILES", MappingProxyType({**P.PROFILES, local.id: local}))
     admin = await asyncpg.connect(dsn, timeout=5)
     memories: list[PersistentMemory] = []
     try:
@@ -58,8 +62,8 @@ async def test_managed_projects_initialize_campaign_guard_in_disjoint_schemas(
                 assert await connection.fetchval("SELECT to_regclass('campaigns') IS NOT NULL")
                 assert await connection.fetchval("SHOW search_path") == projects[identifier].postgres_schema
         a, b = projects["desktop_a"], projects["desktop_b"]
-        await P.switch_profile(a, "claude")
-        assert P.current_profile(a).id == "claude"
+        await P.switch_profile(a, "synthetic_local")
+        assert P.current_profile(a).id == "synthetic_local"
         assert P.current_profile(b).id == "legacy"
         async with memories[0]._pool.acquire() as connection:
             await connection.execute(
@@ -69,8 +73,8 @@ async def test_managed_projects_initialize_campaign_guard_in_disjoint_schemas(
             assert await connection.fetchval("SELECT count(*) FROM campaigns") == 0
         with pytest.raises(P.ProfileError, match="research-live"):
             await P.switch_profile(a, "legacy")
-        await P.switch_profile(b, "claude")
-        assert P.current_profile(b).id == "claude"
+        await P.switch_profile(b, "synthetic_local")
+        assert P.current_profile(b).id == "synthetic_local"
     finally:
         for memory in memories:
             await memory.close()

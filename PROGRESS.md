@@ -1,3 +1,12 @@
+## 2026-10-09 - Codex-only target foundation
+
+Development branch codex-only-provider-foundation-v1 removes Claude from the
+supported Project profile catalog, readiness probe, recommendation, heartbeat,
+and automatic fallback. CHAT remains Ollama; external tasks target Codex CLI.
+The installed 0.162.0 CLI and ChatGPT login were checked without inference.
+SAFE_FOR_WORKLOADS=False remains the deployment gate until whole-process
+confinement and final text/event canaries pass. No production state was used.
+
 # PROGRESS.md — Morgoth Development Tracker
 
 ## 2026-10-09 — Project-local work-cycle failure ledger (feature branch)
