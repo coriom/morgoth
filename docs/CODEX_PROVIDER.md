@@ -34,12 +34,13 @@ unknown events, and then run one fixed text probe before considering a
 `SAFE_FOR_WORKLOADS=True` change. Do not use a flag or environment override
 to bypass this gate.
 
-The remaining sections describe **historical experiments** and deprecated
-Claude rollback options; they are not the supported target configuration.
+The remaining sections describe **historical experiments** and legacy
+configuration context; they are not the supported target configuration.
 
 For whole-lane selection use the [Project profile manager](LLM_PROFILES.md).
 The environment assignments below describe legacy mode only. `models use codex`
-is refused while NOT_QUALIFIED; a ready Claude profile can be explicitly selected.
+is refused while NOT_QUALIFIED; the historical Claude profile is unsupported
+and reports UNAVAILABLE.
 
 **NOT_QUALIFIED — inference remains blocked.** `SAFE_FOR_WORKLOADS=False`
 rejects workloads before spawning Codex; no environment variable can override it.
@@ -70,12 +71,10 @@ The task-specific THESIS setting takes precedence over legacy THESIS_GENERATOR.
 Production `.env` was neither inspected nor changed. Existing running processes
 retain their configuration; activation is a later operator decision.
 `morgoth reflect --provider codex-cli` selects the new engine explicitly.
-Rollback is explicit: use `claude-cli:default` in the task overrides above,
-`REFLECT_PROVIDER=claude-cli`, `SHADOW_PROVIDER=claude-cli`, or
-`morgoth reflect --provider claude-cli`. No reflection is required for verification.
+Historical Claude rollback instructions are no longer supported. No reflection
+is required for verification.
 
-The descending fallback is API → Codex → Ollama; explicitly selected Claude
-can fall to Ollama, but nothing automatically selects Claude. The existing
+The current supported fallback is Codex CLI → Ollama. The existing
 LLM_FALLBACK_ENABLED switch, event recording and local bottom rung are retained.
 No paid API is selected by default; OPENAI_API_KEY is neither used nor inherited.
 Heartbeat checks binary/version only, not login, quota or inference readiness.
