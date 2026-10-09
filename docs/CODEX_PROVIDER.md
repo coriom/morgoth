@@ -41,6 +41,39 @@ remains. A later separately authorized diagnostic must classify the CLI
 error without weakening the namespace or exposing raw events. No Weather
 research or external workload was run in this chantier.
 
+### Diagnostic attribution contract (0.162.0 feature branch)
+
+The current production path is `Brain` → registry → `CodexCliProvider` →
+`core/llm/codex_cli.py:_complete_owned` → `discover`/`capability_canary` →
+`_run` → `core/llm/codex_sandbox.py:build_sandbox_argv` → Bubblewrap → Codex.
+The OS boundary is created in `_run` before every Codex subprocess, including
+version and login checks. `_check_result` runs before `_validate_events`;
+therefore the prior `cli_diagnostic` implied process exit 0 but did not
+identify the cause, turn position, or tool activity. The production validator
+still rejects every diagnostic and every unrecognized event.
+
+For the reviewed CLI 0.162.0 JSONL contract, `item.type=error` is a nonfatal
+diagnostic item, distinct from top-level `type=error` and `turn.failed`.
+`turn.completed` establishes turn completion only; command/file/MCP/collab/web
+items are separate forbidden tool surfaces. The diagnostic-only
+`scripts/diagnose_codex_cli.py` reducer records fixed category, event kind and
+position, before/after-turn stage, counts, return code, completion, and
+outside-marker effects. It does not return raw JSONL, prompt, response,
+reasoning, error message, paths, account or credential material. The fixed
+categories are config, skill discovery, unsupported feature, sandbox resource,
+auth session, model service, network, and unknown. Signatures must identify a
+failure operation unambiguously; mixed or unmatched evidence remains UNKNOWN.
+Possible origins include configuration, skills, unsupported flags, missing
+sandbox resources, auth/session, model service and networking. None is assigned
+to the previous 0.162.0 run. The September 0.159.0 skill/config trace is
+historical and does not establish the current cause.
+
+The diagnostic script uses the existing restricted argv, `_run`, neutral
+workspace and synthetic outside read/write marker for at most one new canary.
+Its result is attribution only; `SAFE_FOR_WORKLOADS=False` throughout. The
+narrow read-only auth mount remains readable by Codex, and network is shared
+for service access. Human Gate 3 is unchanged.
+
 The remaining sections describe **historical experiments** and legacy
 configuration context; they are not the supported target configuration.
 

@@ -20,6 +20,16 @@ confinement and final text/event canaries pass. No production state was used.
 
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-09 — Codex diagnostic attribution (feature branch)
+
+Added a diagnostic-only, one-shot reducer for the existing Bubblewrap Codex
+canary. It distinguishes error items, top-level errors, failed/completed turns,
+forbidden tool items and unknown events using fixed safe categories and
+bounded lifecycle metadata. Production event rejection and
+`SAFE_FOR_WORKLOADS=False` remain unchanged. No new dependency, API endpoint,
+Desktop change, provider key, research run or production state was added.
+See `docs/CODEX_PROVIDER.md` for the event contract and final one-shot result.
+
 ## 2026-10-09 — Project-local work-cycle failure ledger (feature branch)
 
 The autonomous loop now records bounded objective/attempt/stage/exception-class
