@@ -1,6 +1,6 @@
 """Boundary enforcement of the objectives.status enum.
 
-Documented lifecycle: pending → in_progress → done, plus the system-set
+Documented lifecycle: pending → in_progress → done/failed, plus the system-set
 terminal `stale_timeout` written by the freshness sweep. Any other value
 (free-text from the 8B: "completed", "ongoing", "progressing", "active")
 must be coerced by the synonym table or rejected with a usable error.
@@ -16,8 +16,8 @@ from memory.persistent import PersistentMemory
 
 class TestNormalizeStatus:
     @pytest.mark.parametrize("val", [
-        "pending", "in_progress", "done", "stale_timeout",
-        "PENDING", "In_Progress", "DONE", "Stale_Timeout",
+        "pending", "in_progress", "done", "failed", "stale_timeout",
+        "PENDING", "In_Progress", "DONE", "FAILED", "Stale_Timeout",
         "  pending  ",  # trimmed
     ])
     def test_canonical_values_pass_through(self, val):
@@ -64,11 +64,11 @@ class TestNormalizeStatus:
             PersistentMemory.normalize_objective_status(42)  # type: ignore[arg-type]
 
     def test_canonical_set_matches_documented_lifecycle(self):
-        # Grep-lock: the canonical set is intentionally exactly these four.
+        # Grep-lock: the canonical set is intentionally exactly these five.
         # Adding a new terminal status requires touching this test — that's
         # a wanted friction point.
         assert PersistentMemory.CANONICAL_STATUSES == frozenset({
-            "pending", "in_progress", "done", "stale_timeout",
+            "pending", "in_progress", "done", "failed", "stale_timeout",
         })
 
 

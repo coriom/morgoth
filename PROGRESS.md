@@ -1,5 +1,19 @@
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-09 — Project-local work-cycle failure ledger (feature branch)
+
+The autonomous loop now records bounded objective/attempt/stage/exception-class
+metadata for work failures, including caught payload and episodic writes.
+MAX_CYCLES with no committed cycle payload marks the objective `failed` and
+does not invoke synthesis or thesis extraction; one or more committed payloads
+retain canonical finalization. The attempt counter and cadence are unchanged.
+Runtime schema initialization owns the Project-isolated ledger; `init_db`
+inherits it without duplicate DDL. No dependency, UI endpoint, raw exception
+message, production state, provider inference or Codex activation was added.
+See `docs/DESKTOP_RESEARCH_RUNTIME.md` for the stage contract.
+Canonical hermetic: 2069 passed, 2 skipped, exit 0; focused cycle/finalizer
+selection: 114 passed; affected `morgoth_test` SQL selection: 6 passed.
+
 ## 2026-10-08 — Desktop runtime liveness (feature branch)
 
 Added token-protected `/api/runtime/v1/liveness` for cheap identity/task

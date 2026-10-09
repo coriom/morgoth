@@ -778,6 +778,12 @@ async def test_extraction_failure_does_not_block_completion(monkeypatch) -> None
     )
     brain._episodic_memory.query = AsyncMock(return_value=[])
 
+    brain._persistent_memory.get_objective = AsyncMock(return_value={
+        "evidence": [{"type": "cycle_payload", "cycle": 1,
+                      "tool_results": [{"tool": "get_news", "success": True,
+                                        "result": {"headline": "fixture"}}]}],
+    })
+
     with patch.object(brain, "_write_log_file", new=AsyncMock()):
         with pytest.raises(asyncio.CancelledError):
             await brain.run_autonomous_cycle()

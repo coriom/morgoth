@@ -15,8 +15,8 @@ from core.config import load_config
 from memory.persistent import PersistentMemory
 
 # PersistentMemory.initialize() applies TABLE_STATEMENTS, including the
-# Project-local objectives and temporal_facts tables. Keep this entrypoint on
-# that one schema authority rather than duplicating runtime DDL here.
+# Project-local objectives, objective_cycle_failures and temporal_facts tables.
+# Keep this entrypoint on that one schema authority, without duplicate DDL.
 
 
 EXTRA_TABLE_STATEMENTS: Sequence[str] = (

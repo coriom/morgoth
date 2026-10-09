@@ -274,6 +274,14 @@ def build_test_brain(llm_client, monkeypatch, *, config_overrides=None):
     persistent_memory.get_sources_used = AsyncMock(return_value=[])
     persistent_memory.get_theses_by_objective = AsyncMock(return_value=[])
     persistent_memory.get_objective = AsyncMock(return_value=None)
+    async def _has_committed_payload(objective_id):
+        row = await persistent_memory.get_objective(objective_id)
+        return bool(row and any(
+            isinstance(entry, dict) and entry.get("type") == "cycle_payload"
+            for entry in row.get("evidence", [])
+        ))
+    persistent_memory.has_durable_cycle_payload = AsyncMock(side_effect=_has_committed_payload)
+    persistent_memory.record_objective_cycle_failure = AsyncMock()
     persistent_memory.get_active_campaign = AsyncMock(return_value=None)
     persistent_memory.get_active_focus = AsyncMock(return_value=None)
     persistent_memory.get_last_cycle_time = AsyncMock(return_value=0)

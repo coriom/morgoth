@@ -157,6 +157,11 @@ async def test_synthesis_failure_does_not_block_completion(monkeypatch) -> None:
     brain._persistent_memory.get_sources_used = AsyncMock(
         return_value=["web_search", "get_news"]
     )
+    brain._persistent_memory.get_objective = AsyncMock(return_value={
+        "evidence": [{"type": "cycle_payload", "cycle": 1,
+                      "tool_results": [{"tool": "get_news", "success": True,
+                                        "result": {"headline": "fixture"}}]}],
+    })
     brain._episodic_memory.query = AsyncMock(return_value=[
         _fake_match("finding A"),
     ])

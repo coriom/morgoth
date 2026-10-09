@@ -600,6 +600,9 @@ class Brain:
             logger.warning("session_gap startup probe failed: {}", _gap_exc)
 
         while True:
+            active_objective_id: str | None = None
+            active_cycle: int | None = None
+            cycle_stage = "PROMPT_PREPARE"
             try:
                 logger.info("Autonomous cycle starting")
                 self._feed_append("SYSTEM", "autonomous cycle started")
@@ -738,14 +741,30 @@ class Brain:
                     obj_id = str(obj["objective_id"])
 
                     new_count = await self._persistent_memory.increment_cycle_count(obj_id)
+                    active_objective_id = obj_id
+                    active_cycle = new_count
                     if new_count >= self._config.max_cycles_per_objective:
-                        await self._finalize_objective(obj, new_count, forced=True)
-                        action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
-                        logger.info("Objective {} auto-completed after {} cycles", obj_id, new_count)
+                        cycle_stage = "MODEL_FINALIZATION"
+                        if await self._persistent_memory.has_durable_cycle_payload(obj_id):
+                            await self._finalize_objective(obj, new_count, forced=True)
+                            action_desc = f"auto-completed objective {obj.get('title', obj_id)}"
+                            logger.info("Objective {} auto-completed after {} cycles", obj_id, new_count)
+                            feed_level = "OK"
+                        else:
+                            await self._persistent_memory.update_objective(
+                                obj_id, status="failed", evidence={
+                                    "type": "work_failure",
+                                    "reason": "no_durable_cycle_payload",
+                                    "attempts": new_count,
+                                },
+                            )
+                            action_desc = f"objective {obj_id[:8]} failed without durable work evidence"
+                            logger.warning("Objective {} failed after {} attempts without cycle evidence", obj_id, new_count)
+                            feed_level = "ERROR"
                         self._total_cycles_completed += 1
                         self._last_cycle_at = datetime.now(timezone.utc).isoformat()
                         self._last_cycle_action = action_desc
-                        self._feed_append("OK", action_desc)
+                        self._feed_append(feed_level, action_desc)
                         await self._sleep_between_cycles()
                         continue
 
@@ -916,6 +935,8 @@ class Brain:
                 # action is create_objective and stray data-tool fires
                 # bloat the prompt with 15 unused schemas.
                 _tool_names_for_cycle = None if objectives else GENERATION_TOOL_NAMES
+                if objectives:
+                    cycle_stage = "WORK_INFERENCE"
                 try:
                     result = await self.process_message(
                         prompt, user_id="morgoth_autonomous",
@@ -932,6 +953,7 @@ class Brain:
                 # touches gates/apply/thesis-flow — only the cycle-slot
                 # accounting for a network-dead cycle.
                 if objectives:
+                    cycle_stage = "OUTAGE_GUARD"
                     from core.outage_guard import (
                         cycle_is_all_network_outage as _is_outage,
                         outage_abort_cycles as _abort_at,
@@ -968,6 +990,7 @@ class Brain:
                         )
 
                 if objectives:
+                    cycle_stage = "PAYLOAD_PERSIST"
                     obj = objectives[0]
                     obj_id = str(obj["objective_id"])
                     # 2026-09-22: also persist the FULL per-cycle tool
@@ -997,9 +1020,11 @@ class Brain:
                         )
                         payload_persisted = True
                     except Exception as _pl_exc:
-                        logger.warning("cycle_payload persist failed: {}", _pl_exc)
+                        await self._record_cycle_failure(obj_id, new_count, cycle_stage, _pl_exc)
+                        logger.warning("cycle_payload persist failed: {}", type(_pl_exc).__name__)
                     # PostgreSQL evidence is authoritative for finalization;
                     # Chroma recall is auxiliary and cannot block the terminal path.
+                    cycle_stage = "EPISODIC_PERSIST"
                     try:
                         await self._episodic_memory.add_text(
                             "conversations",
@@ -1010,7 +1035,9 @@ class Brain:
                             objective_id=obj_id,
                         )
                     except Exception as exc:
-                        logger.warning("objective episodic recall write failed: {}", exc)
+                        await self._record_cycle_failure(obj_id, new_count, cycle_stage, exc)
+                        logger.warning("objective episodic recall write failed: {}", type(exc).__name__)
+                    cycle_stage = "MODEL_FINALIZATION"
                     model_completed_this_cycle = any(
                         tr.get("tool") == "update_objective"
                         and isinstance(tr.get("result"), dict)
@@ -1068,8 +1095,12 @@ class Brain:
                 logger.info("Autonomous cycle cancelled (body)")
                 raise
             except Exception as e:
-                logger.error("Autonomous cycle error: {}", e)
-                self._feed_append("ERROR", f"cycle error: {e}")
+                if active_objective_id is not None and active_cycle is not None:
+                    await self._record_cycle_failure(
+                        active_objective_id, active_cycle, cycle_stage, e,
+                    )
+                logger.error("Autonomous cycle error: {}", type(e).__name__)
+                self._feed_append("ERROR", f"cycle error: {type(e).__name__}")
             # Inter-cycle sleep at the BOTTOM (was at TOP pre-fix). Ensures
             # steady-state cadence but eliminates the post-restart idle wait.
             # 2026-09-27 CANCELLATION contract: exit the loop cleanly on
@@ -1077,6 +1108,17 @@ class Brain:
             # (`morgoth restart` / asyncio.wait_for / shutdown depend on
             # this). Swallowing CancelledError would break shutdown.
             await self._sleep_between_cycles()
+
+    async def _record_cycle_failure(
+        self, objective_id: str, cycle: int, stage: str, exc: Exception,
+    ) -> None:
+        """Best-effort Project-local failure record with no exception contents."""
+        try:
+            await self._persistent_memory.record_objective_cycle_failure(
+                objective_id, cycle, stage, type(exc).__name__,
+            )
+        except Exception as ledger_exc:
+            logger.warning("objective cycle failure ledger unavailable: {}", type(ledger_exc).__name__)
 
     async def _sleep_between_cycles(self) -> None:
         """Apply the one cancellable inter-cycle cadence after completed work."""

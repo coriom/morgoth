@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 import json
+import re
 from typing import Any
 
 import asyncpg
@@ -18,6 +19,12 @@ from core.temporal_facts import TemporalFact
 
 
 CREATE_EXTENSION_SQL = 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
+
+CYCLE_FAILURE_STAGES = frozenset({
+    "PROMPT_PREPARE", "WORK_INFERENCE", "OUTAGE_GUARD",
+    "PAYLOAD_PERSIST", "EPISODIC_PERSIST", "MODEL_FINALIZATION",
+})
+_ERROR_CLASS_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 
 
 class TemporalFactQueryOverflow(ValueError):
@@ -139,6 +146,20 @@ TABLE_STATEMENTS = (
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         completed_at TIMESTAMPTZ,
         user_id VARCHAR(100) NOT NULL DEFAULT 'default'
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS objective_cycle_failures (
+        failure_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        objective_id UUID NOT NULL REFERENCES objectives(objective_id),
+        cycle INTEGER NOT NULL CHECK (cycle >= 1),
+        stage VARCHAR(32) NOT NULL CHECK (stage IN (
+            'PROMPT_PREPARE', 'WORK_INFERENCE', 'OUTAGE_GUARD',
+            'PAYLOAD_PERSIST', 'EPISODIC_PERSIST', 'MODEL_FINALIZATION'
+        )),
+        error_class VARCHAR(64) NOT NULL
+            CHECK (error_class ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'),
+        occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     """,
 )
@@ -1067,7 +1088,7 @@ class PersistentMemory:
             )
         return [dict(row) for row in rows]
 
-    # Canonical objective statuses. `pending`, `in_progress`, `done` are the
+    # Canonical objective statuses. `pending`, `in_progress`, `done`, `failed` are the
     # documented lifecycle. `stale_timeout` is the system-set terminal
     # status written by the freshness sweep at core/brain initialize. Any
     # other value reaching this method (usually free-text from the 8B —
@@ -1075,7 +1096,7 @@ class PersistentMemory:
     # SYNONYMS or rejected with ValueError. All writers go through here so
     # system-set values are also validated (a canonical value passes untouched).
     CANONICAL_STATUSES: frozenset[str] = frozenset({
-        "pending", "in_progress", "done", "stale_timeout",
+        "pending", "in_progress", "done", "failed", "stale_timeout",
     })
     CANONICAL_STATUS_SYNONYMS: dict[str, str] = {
         # → done
@@ -1140,7 +1161,7 @@ class PersistentMemory:
                 set_clauses.append(f"status = ${idx}")
                 params.append(status)
                 idx += 1
-                if status == "done":
+                if status in {"done", "failed"}:
                     set_clauses.append("completed_at = NOW()")
 
             if evidence is not None:
@@ -1564,6 +1585,57 @@ class PersistentMemory:
                 _uuid.UUID(str(objective_id)),
             )
         return row["cycle_count"] if row else 0
+
+    async def has_durable_cycle_payload(self, objective_id: str) -> bool:
+        """Check committed objective evidence in this Project's schema."""
+        from uuid import UUID
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            found = await conn.fetchval(
+                "SELECT evidence @> '[{\"type\":\"cycle_payload\"}]'::jsonb "
+                "FROM objectives WHERE objective_id = $1",
+                UUID(str(objective_id)),
+            )
+        return bool(found)
+
+    async def record_objective_cycle_failure(
+        self, objective_id: str, cycle: int, stage: str, error_class: str,
+    ) -> None:
+        """Persist bounded failure metadata, never an exception message."""
+        from uuid import UUID
+
+        if stage not in CYCLE_FAILURE_STAGES:
+            raise ValueError("unknown cycle failure stage")
+        if not isinstance(error_class, str) or not _ERROR_CLASS_PATTERN.fullmatch(error_class):
+            raise ValueError("invalid cycle failure class")
+        if not isinstance(cycle, int) or isinstance(cycle, bool) or cycle < 1:
+            raise ValueError("invalid cycle number")
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO objective_cycle_failures "
+                "(objective_id, cycle, stage, error_class) VALUES ($1,$2,$3,$4)",
+                UUID(str(objective_id)), cycle, stage, error_class,
+            )
+
+    async def list_objective_cycle_failures(
+        self, objective_id: str, *, limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return at most twenty Project-local records in deterministic order."""
+        from uuid import UUID
+
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
+            raise ValueError("cycle failure limit must be 1..20")
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT failure_id, objective_id, cycle, stage, error_class, occurred_at "
+                "FROM objective_cycle_failures WHERE objective_id = $1 "
+                "ORDER BY occurred_at, failure_id LIMIT $2",
+                UUID(str(objective_id)), limit,
+            )
+        return [dict(row) for row in rows]
 
     async def reclaim_orphan_objectives(
         self,

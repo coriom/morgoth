@@ -162,6 +162,22 @@ then takes the normal cancellable inter-cycle sleep. Model completion likewise
 sleeps before another claim. An empty-queue `create_objective` success remains
 the intentional exception: it chains immediately into work on the new row.
 
+`cycle_count` is an attempt counter allocated **before** the work pass. A
+pre-payload exception can therefore consume a slot without creating a
+`cycle_payload`. The Project-local `objective_cycle_failures` table records
+only objective ID, attempt number, one fixed stage (`PROMPT_PREPARE`,
+`WORK_INFERENCE`, `OUTAGE_GUARD`, `PAYLOAD_PERSIST`, `EPISODIC_PERSIST`, or
+`MODEL_FINALIZATION`), bounded Python exception class name, and timestamp.
+It never stores exception messages, tracebacks, prompts, or provider payloads.
+Failure-ledger writes are best-effort and cannot themselves kill the loop.
+When MAX_CYCLES is reached with **zero committed cycle payloads**, Brain marks
+the objective `failed` with bounded `work_failure/no_durable_cycle_payload`
+evidence, skips synthesis and thesis extraction, then takes the normal
+cancellable sleep. With at least one committed payload, the existing
+finalization path remains. This makes a zero-evidence terminal objective an
+explicit failure rather than a successful `done`; it does not change the
+attempt budget or automatically retry a failed provider call.
+
 The objective prompt's achievable minimum is
 `min(MIN_DISTINCT_SOURCES, len(DATA_SOURCE_TOOLS))`. Crypto retains its
 three-source minimum; Weather has two measurement sources (`get_weather_forecast_met` and
