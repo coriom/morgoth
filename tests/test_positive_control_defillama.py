@@ -315,7 +315,8 @@ class TestPytestArgvSingleSource:
         import inspect
         from self_modify import canonical_runner
         src = inspect.getsource(canonical_runner)
-        assert "HERMETIC_PYTEST_EXTRA_ARGS" in src
+        assert "gates._build_pytest_argv(" in src
+        assert "isolated=True, confined=True, cgroup_bound=True" in src
 
 
 class TestGatePreflightDefault:

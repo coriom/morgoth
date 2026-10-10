@@ -46,6 +46,7 @@ def test_apply_argv_carries_marker_exclusion_socket_cut_and_timeout(tmp_path, mo
         "isolated": True, "confined": True, "cgroup_bound": True,
         "ok": True, "reason": "",
     })
+    monkeypatch.setattr(G, "_SANDBOX_ROOT", tmp_path / "sandboxes")
     calls: list[list[str]] = []
     def _spy(argv, *a, **kw):
         calls.append(argv)

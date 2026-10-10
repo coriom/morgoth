@@ -787,3 +787,28 @@ Log files:
   items, zero critical events, zero tool events and no observed outside effect.
   The old critical exit did not recur; cause remains UNKNOWN. No retry or
   separate text inference. Workloads remain BLOCKED.
+
+## 2026-10-10 — Canonical runner provenance and teardown recovery
+
+- The old canonical runner always copied `/home/corio/Morgoth/morgoth`, even
+  when invoked from a feature worktree. That checkout was `e3952430` while
+  the requested base was `f6db1f15`; two selected Codex diagnostic files
+  existed only in the feature tree. Historical canonical counts cannot be
+  attributed to feature branches without independent copy evidence. The old
+  clean-base timeout comparison used the same hardcoded source and was not a
+  distinct-tree canonical comparison.
+- The runner now derives its source from its own module, requires the expected
+  Git origin, clean worktree and stable HEAD, verifies selected copied file
+  hashes, and prints requested/tested source SHAs. Its pytest command uses
+  `gates._build_pytest_argv` with the same loadfile xdist schedule, socket and
+  marker restrictions, Bubblewrap/net namespace, and systemd cgroup wrapper.
+  `.git`, `.env`, data, vault, backups and the gate's other exclusions remain.
+- `tests/test_apply.py::test_baseline_timeout_leaves_row_at_approved_pending_apply`
+  passes its assertions, then hangs in Python 3.12 default-executor teardown
+  inside the agent tool sandbox. A minimal `asyncio.run(asyncio.to_thread(...))`
+  also times out there, but exits normally outside that tool sandbox. The
+  isolated node passes in both separate clean-base and feature worktrees
+  outside it. This supports a host tool-sandbox teardown cause; it is not
+  evidence of nested pytest, an application task leak, or an xdist defect.
+  Full canonical acceptance must use the runner's own isolation and verified
+  feature copy; its result is recorded separately below when available.
