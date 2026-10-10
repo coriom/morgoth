@@ -306,3 +306,38 @@ exercise both, plus partial failures, unknown events, output leaks and writes
 preceding timeouts. The original coarse tool_activity observation was insufficient
 in either direction; the deployment gate stays False. No production workloads,
 reflect/shadow, market-data calls, service operations or campaign reads/writes.
+
+## 2026-10-10 — 0.162.1 critical-exit attribution (diagnostic only)
+
+The exact `rust-v0.162.1` exec source separates warning items from critical
+events. `exec/src/event_processor_with_jsonl_output.rs:426-436` maps
+`ServerNotification::Error` to top-level JSONL `type=error`; `:517-541` maps a
+failed/interrupted turn to `turn.failed` or shutdown. In
+`exec/src/lib.rs:1291-1314`, a nonretryable Error on the primary turn or that
+turn's Failed/Interrupted completion sets `error_seen`; `:1351-1357` exits 1.
+Other pre-event bootstrap exits exist (`:336-358`, `:2132-2152`). Exit 1 alone
+does not identify which path occurred. Pre-turn `item.type=error` warnings are
+not proof of the terminal cause.
+
+`scripts/codex_critical_errors.py` reads JSONL and stderr privately in memory,
+and publishes only bounded event positions/counts, fixed source-template codes,
+and synthetic outside-effect facts. The classifier uses exact strings from the
+tagged `codex-rs/protocol/src/error.rs:84-202`; several categories intentionally
+have no template, so uncertain or mixed evidence stays `CODEX_FATAL_UNKNOWN`.
+It is diagnostic only: `core/llm/codex_cli.py:_validate_events` remains strict
+and `SAFE_FOR_WORKLOADS=False`. No warning-timing whitelist is introduced.
+
+The standalone ELF is mounted alone (`core/llm/codex_sandbox.py:73-85`), with
+read-only `/usr`, libraries, DNS and TLS files, a private writable invocation
+directory and a narrow read-only ChatGPT auth-file mount (`:98-120`). Confined
+login proves that the auth file is discoverable; it does not prove that token
+refresh, model-service connectivity or model-turn state writes work. Host
+networking remains shared. The Codex process can read its mounted credential.
+
+The canonical `tests/test_apply.py` timeout also reproduces on the clean
+`ed68bd3` base: the isolated new-file node and full-suite baseline-timeout node
+reach `apply_proposal`'s synthetic baseline runner, then wait in asyncio
+teardown. This is baseline-reproduced, not a new Codex-branch regression;
+the exact host/plugin cause is unresolved, so canonical acceptance remains
+**NOT PASS**. The test's `_PytestBaselineDiff` substitutes for nested pytest;
+no actual nested test subprocess was observed in that node.

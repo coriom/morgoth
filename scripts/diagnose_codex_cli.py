@@ -193,7 +193,8 @@ def preflight() -> tuple[str, dict[str, str]]:
 
 
 def run_one_canary(binary: str, env: dict[str, str], *,
-                   startup_analysis: bool = False) -> dict[str, object]:
+                   startup_analysis: bool = False,
+                   critical_analysis: bool = False) -> dict[str, object]:
     """Run one production-argv canary, returning only allowlisted metadata."""
     with tempfile.TemporaryDirectory(prefix="morgoth-canary-", dir="/tmp") as outside:
         marker = "SYNTHETIC_" + uuid.uuid4().hex
@@ -214,6 +215,17 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                     outside_unchanged = source.read_text(encoding="utf-8") == marker and not target.exists()
                 except (OSError, UnicodeError):
                     outside_unchanged = False
+                if critical_analysis:
+                    return {"verdict": ("SECURITY_FAIL" if not outside_unchanged
+                                        else "BLOCKED_CODEX_FATAL_UNKNOWN"),
+                            "process_exit": None, "turn_started": False,
+                            "turn_completed": False, "turn_failed": False,
+                            "first_critical_position": None, "critical_count": 0,
+                            "critical_class": "CODEX_FATAL_UNKNOWN",
+                            "startup_warning_count": 0, "forbidden_tool_events": 0,
+                            "unknown_event_count": 1,
+                            "outside_effect_observed": not outside_unchanged,
+                            "failure_preceded_model_output": None}
                 return {"process_return_code": None, "process_exited_successfully": False,
                         "turn_completed": False, "final_assistant_present": False,
                         "expected_canary_response": False, "diagnostic_count": 0,
@@ -229,7 +241,13 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                 unchanged = source.read_text(encoding="utf-8") == marker
             except (OSError, UnicodeError):
                 unchanged = False
-            if startup_analysis:
+            if critical_analysis:
+                from scripts.codex_critical_errors import critical_verdict, reduce_critical_events
+                report = reduce_critical_events(result.stdout, result.stderr,
+                                                result.returncode, final_text,
+                                                marker, unchanged, target.exists())
+                report["verdict"] = critical_verdict(report)
+            elif startup_analysis:
                 from scripts.codex_startup_warnings import reduce_startup_events
                 report = reduce_startup_events(result.stdout, result.returncode,
                                                final_text, marker, unchanged,
@@ -238,9 +256,9 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                 report = classify_events(result.stdout, result.returncode,
                                          final_text, marker, unchanged,
                                          target.exists())
-            if marker in result.stderr:
+            if marker in result.stderr and not critical_analysis:
                 report["forbidden_effect_observed"] = True
-            if not startup_analysis:
+            if not startup_analysis and not critical_analysis:
                 report["verdict"] = verdict(report)
             return report
 
@@ -250,15 +268,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--startup", action="store_true",
                         help="Classify only exact-tag early startup templates")
+    parser.add_argument("--critical", action="store_true",
+                        help="Reduce top-level error and failed-turn events without raw output")
     args = parser.parse_args()
+    if args.startup and args.critical:
+        print(json.dumps({"verdict": "PREFLIGHT_ARGUMENTS"}))
+        return 1
     try:
         binary, env = preflight()
     except (RuntimeError, subprocess.SubprocessError, OSError, cli.CodexCliError) as exc:
         code = str(exc) if isinstance(exc, RuntimeError) and str(exc).startswith("PREFLIGHT_") else "PREFLIGHT_FAILED"
         print(json.dumps({"verdict": code}))
         return 1
-    report = run_one_canary(binary, env, startup_analysis=args.startup)
-    report.setdefault("verdict", verdict(report))
+    report = run_one_canary(binary, env, startup_analysis=args.startup,
+                            critical_analysis=args.critical)
+    if "verdict" not in report:
+        report["verdict"] = verdict(report)
+    report.pop("_canary_response_ok", None)
     print(json.dumps(report, sort_keys=True))
     return 0 if report["verdict"] in {"CODEX_DIAGNOSTIC_ATTRIBUTED",
                                       "CODEX_STARTUP_DIAGNOSTIC_ATTRIBUTED",
