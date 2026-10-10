@@ -76,7 +76,9 @@ def test_malformed_unknown_and_forbidden_events_remain_visible_as_counts() -> No
 
 def test_warning_only_and_incomplete_turn_never_count_as_clean() -> None:
     warning = _stream({"type": "item.completed", "item": {"type": "error", "message": "warning"}})
-    assert critical_verdict(_reduce(warning, rc=0)) == "BLOCKED_CODEX_FATAL_UNKNOWN"
+    report = _reduce(warning, rc=0)
+    assert report["critical_count"] == 0 and report["critical_class"] is None
+    assert critical_verdict(report) == "BLOCKED_CODEX_STARTUP_UNKNOWN"
     incomplete = _reduce(_stream({"type": "turn.started"}), rc=0)
     assert incomplete["turn_completed"] is False
     assert critical_verdict(incomplete) == "BLOCKED_CODEX_FATAL_UNKNOWN"

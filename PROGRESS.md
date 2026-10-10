@@ -770,3 +770,20 @@ Log files:
   second early unknown, later critical errors unknown), zero tool events and
   no outside-file effect. Verdict `BLOCKED_CODEX_STARTUP_UNKNOWN`; no retry or
   text inference. Focused: 117 hermetic + 3 host integration passed.
+
+## 2026-10-10 — Codex 0.162.1 critical-exit diagnosis (workloads blocked)
+
+- Added diagnostic-only reduction for top-level JSONL `error` and `turn.failed`,
+  separate from startup warning items. Conservative exact-tag templates produce
+  fixed codes; mixed/unmatched content stays UNKNOWN. Raw CLI text is neither
+  persisted nor printed. Production validator and `SAFE_FOR_WORKLOADS=False`
+  remain unchanged.
+- Canonical `test_apply` timeout reproduced on the exact clean `ed68bd3` base;
+  the synthetic baseline runner is reached, then pytest-asyncio teardown times
+  out. Classification: `CANONICAL_BASELINE_REPRODUCED`; host/plugin root cause
+  unresolved, full canonical suite **NOT PASS**. No nested pytest subprocess
+  was observed in the isolated new-file node.
+- One new confined canary exited 0 with a completed turn, two startup warning
+  items, zero critical events, zero tool events and no observed outside effect.
+  The old critical exit did not recur; cause remains UNKNOWN. No retry or
+  separate text inference. Workloads remain BLOCKED.

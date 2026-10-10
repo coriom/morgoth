@@ -341,3 +341,14 @@ teardown. This is baseline-reproduced, not a new Codex-branch regression;
 the exact host/plugin cause is unresolved, so canonical acceptance remains
 **NOT PASS**. The test's `_PytestBaselineDiff` substitutes for nested pytest;
 no actual nested test subprocess was observed in that node.
+
+One authorized confined 0.162.1 canary ran after the static and structural
+gates. It exited **0**, saw `turn.started` and `turn.completed`, saw **zero**
+top-level critical errors and `turn.failed` events, and observed **zero** tool
+events or outside-marker changes. It emitted **two** warning items. The
+diagnostic verdict is `BLOCKED_CODEX_STARTUP_UNKNOWN`, not a fatal attribution
+or a workload pass. The bounded public output of this run did not retain the
+expected-response boolean, so a clean canary cannot be claimed from it.
+The prior exit-1 event's cause remains unknown because raw events were not
+retained and this one permitted run did not reproduce that failure. No retry,
+text-only probe, Weather research or production workload was performed.

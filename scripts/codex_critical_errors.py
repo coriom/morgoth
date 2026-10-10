@@ -67,7 +67,7 @@ def reduce_critical_events(stdout: str, stderr: str, returncode: int,
         "process_exit": returncode if -255 <= returncode <= 255 else None,
         "turn_started": False, "turn_completed": False, "turn_failed": False,
         "first_critical_position": None, "critical_count": 0,
-        "critical_class": "CODEX_FATAL_UNKNOWN", "startup_warning_count": 0,
+        "critical_class": None, "startup_warning_count": 0,
         "forbidden_tool_events": 0, "unknown_event_count": 0,
         "outside_effect_observed": (write_observed or not marker_unchanged
                                     or marker in stdout or marker in stderr
@@ -121,8 +121,9 @@ def reduce_critical_events(stdout: str, stderr: str, returncode: int,
         message = event.get("message") if kind == "error" else (
             error.get("message") if isinstance(error, dict) else None)
         critical_codes.append(classify_fatal_message(message))
-    if critical_codes and len(set(critical_codes)) == 1:
-        report["critical_class"] = critical_codes[0]
+    if critical_codes:
+        report["critical_class"] = (critical_codes[0] if len(set(critical_codes)) == 1
+                                    else "CODEX_FATAL_UNKNOWN")
     # Stderr is inspected only for a bounded size. It is not authoritative
     # for classifying ServerNotification::Error and is never returned.
     return report
@@ -138,8 +139,9 @@ def critical_verdict(report: dict[str, object]) -> str:
         if report["critical_class"] == "CODEX_FATAL_UNKNOWN":
             return "BLOCKED_CODEX_FATAL_UNKNOWN"
         return "BLOCKED_CODEX_FATAL_ATTRIBUTED"
+    if report["startup_warning_count"]:
+        return "BLOCKED_CODEX_STARTUP_UNKNOWN"
     if (report["process_exit"] == 0 and report["turn_completed"]
-            and report["_canary_response_ok"]
-            and not report["startup_warning_count"]):
+            and report["_canary_response_ok"]):
         return "CODEX_CANARY_CLEAN"
     return "BLOCKED_CODEX_FATAL_UNKNOWN"
