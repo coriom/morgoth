@@ -383,7 +383,7 @@ async def test_codex_only_catalog_never_probes_claude(monkeypatch, tmp_path):
     assert [p.id for p in P.list_profiles(project)] == ['legacy', 'codex']
     assert P.provider_status('claude-cli', None)[0] == 'UNAVAILABLE'
     assert C.SAFE_FOR_WORKLOADS is False
-    assert C.VERSION == 'codex-cli 0.162.0'
+    assert C.VERSION == 'codex-cli 0.162.1'
     monkeypatch.setattr(E, '_probe_claude_cli', lambda: (_ for _ in ()).throw(AssertionError('Claude probe')))
     monkeypatch.setattr(heartbeat, 'probe_claude_cli', lambda: (_ for _ in ()).throw(AssertionError('Claude heartbeat')))
     monkeypatch.setattr(E.asyncio, 'to_thread', AsyncMock(side_effect=lambda fn: fn()))

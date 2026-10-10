@@ -753,3 +753,16 @@ Log files:
   `morgoth_test` proof covers fresh and migrated Project-local `llm_calls`.
 - Canonical hermetic: 2077 passed, 2 skipped, wall 33.1 s, exit 0.
   Focused provider/SQL selection: 30 passed, wall 1.68 s, exit 0.
+
+## 2026-10-10 — Codex 0.162.1 standalone confinement requalification
+
+- A new backend-only branch targets the installed `codex-cli 0.162.1`; the
+  earlier 0.162.0 diagnostic remains UNKNOWN. The exact standalone release
+  mounts its executable file only through the mandatory Bubblewrap envelope;
+  the npm layout remains supported. No HOME/config mount was broadened.
+- Exact version/flags/features and confined ChatGPT login passed without
+  inference. Host structural read/write and process cleanup tests passed.
+  `SAFE_FOR_WORKLOADS=False`; strict JSONL validator unchanged.
+- The full hermetic suite is currently blocked by unrelated `test_apply`
+  nested-test hangs in this execution environment; focused Codex tests pass.
+  One diagnostic canary remains gated on a clean committed preflight.

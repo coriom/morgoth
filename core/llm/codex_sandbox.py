@@ -38,17 +38,6 @@ def build_sandbox_argv(binary: str, cwd: str, env: dict[str, str],
         raise SandboxUnavailable("sandbox_linux_required")
     bwrap = _regular(Path("/usr/bin/bwrap"), executable=True)
     codex = _regular(Path(binary), executable=True)
-    if codex.name != "codex.js" or codex.parent.name != "bin":
-        raise SandboxUnavailable("sandbox_codex_layout_invalid")
-    package = codex.parent.parent
-    if not (package / "package.json").is_file():
-        raise SandboxUnavailable("sandbox_codex_layout_invalid")
-    native = package / "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
-    _regular(native, executable=True)
-    node_name = shutil.which("node", path=env.get("PATH", ""))
-    if node_name is None:
-        raise SandboxUnavailable("sandbox_node_missing")
-    node = _regular(Path(node_name), executable=True)
     home_name = env.get("CODEX_HOME") or str(Path(env.get("HOME", "")) / ".codex")
     home = Path(home_name)
     if not home.is_absolute() or ".." in home.parts:
@@ -67,6 +56,35 @@ def build_sandbox_argv(binary: str, cwd: str, env: dict[str, str],
             or info.st_mode & 0o077 or parent.st_mode & 0o022
             or info.st_nlink != 1):
         raise SandboxUnavailable("sandbox_auth_unsafe")
+    if codex.name == "codex.js" and codex.parent.name == "bin":
+        package = codex.parent.parent
+        if not (package / "package.json").is_file():
+            raise SandboxUnavailable("sandbox_codex_layout_invalid")
+        native = package / "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+        _regular(native, executable=True)
+        node_name = shutil.which("node", path=env.get("PATH", ""))
+        if node_name is None:
+            raise SandboxUnavailable("sandbox_node_missing")
+        node = _regular(Path(node_name), executable=True)
+        runtime_mounts = ["--ro-bind", str(package), "/opt/codex",
+                          "--dir", "/opt/node", "--ro-bind", str(node), "/opt/node/node"]
+        runtime_path = "/opt/node:/usr/bin:/bin"
+        confined_binary = "/opt/codex/bin/codex.js"
+    elif (codex.name == "codex" and codex.parent.name == "bin"
+          and codex.parent.parent.name == "0.162.1-x86_64-unknown-linux-musl"
+          and codex.parent.parent.parent.name == "releases"
+          and codex.parent.parent.parent.parent.name == "standalone"
+          and codex.parent.parent.parent.parent.parent.name == "packages"
+          and codex.parent.parent.parent.parent.parent.parent.name == ".codex"
+          and codex.parent.parent.parent.parent.parent.parent.stat().st_uid == os.getuid()):
+        # Exact reviewed standalone release. Mount the ELF itself, never
+        # the containing installation, auth or config tree.
+        runtime_mounts = ["--dir", "/opt/codex", "--dir", "/opt/codex/bin",
+                          "--ro-bind", str(codex), "/opt/codex/bin/codex"]
+        runtime_path = "/usr/bin:/bin"
+        confined_binary = "/opt/codex/bin/codex"
+    else:
+        raise SandboxUnavailable("sandbox_codex_layout_invalid")
     workspace = Path(cwd)
     try:
         workspace_info = workspace.lstat()
@@ -89,15 +107,15 @@ def build_sandbox_argv(binary: str, cwd: str, env: dict[str, str],
         command += ["--ro-bind", path, path]
     command += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
                 "--dir", str(workspace), "--bind", str(workspace), str(workspace),
-                "--dir", "/opt", "--ro-bind", str(package), "/opt/codex",
-                "--dir", "/opt/node", "--ro-bind", str(node), "/opt/node/node",
+                "--dir", "/opt",
+                *runtime_mounts,
                 "--dir", "/home", "--dir", "/home/codex",
                 "--dir", "/home/codex/.codex",
                 "--ro-bind", str(auth), "/home/codex/.codex/auth.json",
                 "--chdir", str(workspace), "--clearenv",
                 "--setenv", "HOME", "/home/codex",
                 "--setenv", "CODEX_HOME", "/home/codex/.codex",
-                "--setenv", "PATH", "/opt/node:/usr/bin:/bin",
+                "--setenv", "PATH", runtime_path,
                 "--setenv", "LANG", "C.UTF-8",
-                "--", "/opt/codex/bin/codex.js", *cli_args]
+                "--", confined_binary, *cli_args]
     return command, {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}

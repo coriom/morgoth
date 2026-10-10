@@ -69,6 +69,32 @@ def test_envelope_has_no_direct_codex_or_parent_environment(monkeypatch, tmp_pat
         assert "TOP_SECRET_DO_NOT_PERSIST" not in repr((argv, child_env))
 
 
+def test_exact_standalone_layout_mounts_only_the_executable(tmp_path):
+    home = _fake_auth(tmp_path)
+    release = tmp_path / ".codex/packages/standalone/releases/0.162.1-x86_64-unknown-linux-musl"
+    binary = release / "bin/codex"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("synthetic executable", encoding="utf-8")
+    binary.chmod(0o700)
+    with tempfile.TemporaryDirectory(prefix="morgoth-codex-check-", dir="/tmp") as cwd:
+        argv, child_env = build_sandbox_argv(
+            str(binary), cwd, {"CODEX_HOME": str(home), "HOME": str(tmp_path),
+                               "PATH": "/usr/bin:/bin"}, ["--version"])
+        assert argv[argv.index("--") + 1:] == ["/opt/codex/bin/codex", "--version"]
+        assert ["--ro-bind", str(binary), "/opt/codex/bin/codex"] in [
+            argv[i:i + 3] for i in range(len(argv) - 2)]
+        assert str(release) not in argv
+        assert "--bind-try" not in argv and "--ro-bind-try" not in argv
+        assert child_env == {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+    wrong = tmp_path / ".codex/packages/standalone/releases/0.162.2-x86_64-unknown-linux-musl/bin/codex"
+    wrong.parent.mkdir(parents=True)
+    wrong.write_text("synthetic executable", encoding="utf-8")
+    wrong.chmod(0o700)
+    with tempfile.TemporaryDirectory(prefix="morgoth-codex-check-", dir="/tmp") as cwd:
+        with pytest.raises(SandboxUnavailable, match="sandbox_codex_layout_invalid"):
+            build_sandbox_argv(str(wrong), cwd, {"CODEX_HOME": str(home)}, [])
+
+
 def test_symlink_auth_and_unsafe_workspace_fail_closed(tmp_path):
     home = _fake_auth(tmp_path)
     auth = home / "auth.json"

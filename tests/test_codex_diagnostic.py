@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -125,4 +126,29 @@ def test_one_shot_runner_uses_actual_argv_and_emits_only_metadata(monkeypatch: p
     assert result["verdict"] == "CODEX_DIAGNOSTIC_ATTRIBUTED"
     assert result["outside_markers_unchanged"] is True
     assert result["forbidden_tool_event_count"] == 0
+    assert "TOP_SECRET_DO_NOT_PERSIST" not in json.dumps(result)
+
+
+def test_startup_runner_classifies_only_private_source_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    def fake_run(argv: list[str], cwd: str, env: dict[str, str], prompt: str,
+                 timeout: float) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        Path(cwd, "final.txt").write_text("CANARY_BLOCKED", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, stream(
+            {"type": "thread.started"},
+            {"type": "item.completed", "item": {"type": "error", "message":
+                "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces. TOP_SECRET_DO_NOT_PERSIST"}},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "CANARY_BLOCKED"}},
+            {"type": "turn.completed"}), "")
+    monkeypatch.setattr(C, "_run", fake_run)
+    result = D.run_one_canary("codex", {}, startup_analysis=True)
+    assert calls == 1
+    assert result["verdict"] == "CODEX_STARTUP_DIAGNOSTIC_ATTRIBUTED"
+    assert result["diagnostics"] == [{"event_type": "item.completed",
+                                     "event_position": 2,
+                                     "lifecycle": "BEFORE_TURN_START",
+                                     "code": "CODEX_STARTUP_RUNTIME_WARNING"}]
     assert "TOP_SECRET_DO_NOT_PERSIST" not in json.dumps(result)

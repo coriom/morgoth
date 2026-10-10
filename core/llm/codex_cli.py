@@ -21,7 +21,7 @@ import uuid
 
 from core.llm.codex_sandbox import SandboxUnavailable, build_sandbox_argv
 
-VERSION = "codex-cli 0.162.0"
+VERSION = "codex-cli 0.162.1"
 # The old tool_activity verdict included diagnostic error items. Neither
 # flags nor synthetic observations prove host read confinement. No environment
 # override may bypass this deployment gate; see docs/CODEX_PROVIDER.md.

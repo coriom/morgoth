@@ -1,4 +1,4 @@
-"""Exact-tag Codex 0.162.0 startup templates; attribution only, never a gate bypass.
+"""Codex 0.162.0/0.162.1 startup templates; attribution only, never a gate bypass.
 
 Sources are pinned in docs/CODEX_PROVIDER.md. JSONL does not preserve the
 originating notification variant, so a match establishes a probable family.
@@ -16,7 +16,7 @@ STARTUP_CODES = frozenset({
     "CODEX_STARTUP_RUNTIME_WARNING", "CODEX_STARTUP_UNKNOWN",
 })
 
-# Each prefix or sentence is copied from a tagged 0.162.0 source producer.
+# Each prefix or sentence is copied from reviewed tagged startup producers.
 # Skill-loader scan errors are logged, not proven to reach JSONL, so the skill
 # category intentionally has no pattern. Generic topic words are insufficient.
 TEMPLATES: dict[str, tuple[re.Pattern[str], ...]] = {

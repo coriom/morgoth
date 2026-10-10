@@ -1,5 +1,38 @@
 # Internal LLM migration
 
+## Installed 0.162.1 confinement qualification (2026-10-10)
+
+The operator selected a separate 0.162.1 qualification after the active CLI
+changed from the earlier reviewed 0.162.0. This branch descends from the
+0.162.0 early-warning diagnostic branch; its historical canary remains
+UNKNOWN and is not reclassified. The [exact 0.162.1 release](https://github.com/openai/codex/releases/tag/rust-v0.162.1)
+lists a startup feature-compatibility fix. The tagged [JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L427-L494)
+still projects noncritical warning variants to error items and critical errors
+to top-level errors; an error item remains blocked by Morgoth's validator.
+The tagged [exec startup path](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/lib.rs#L698-L743)
+still publishes startup warnings. A historical 0.162.0 event cannot be
+attributed from a new-version source review alone.
+
+The active 0.162.1 is a standalone static ELF behind the native `codex`
+symlink; its hash equals the native executable embedded in the installed npm
+package. `core/llm/codex_sandbox.py` accepts only the exact reviewed standalone
+release layout under an operator-owned `.codex` tree and mounts **one executable
+file** read-only at `/opt/codex/bin/codex`. The existing npm `codex.js` layout
+continues to work. No containing installation/config directory is mounted for
+the standalone path. The private, read-only `auth.json` mount is unchanged and
+remains readable by Codex. Host networking is shared; there is no network or
+credential isolation claim. Discovery checks exact `codex-cli 0.162.1`, fixed
+flags/features and confined ChatGPT login. Structural outside read/write,
+fake-key, symlink, workspace cleanup, timeout and cancellation tests must pass
+before any diagnostic canary. `SAFE_FOR_WORKLOADS=False` and strict production
+event rejection remain unchanged.
+
+The one-shot `scripts/diagnose_codex_cli.py --startup` path uses the same
+production sandbox and argv. It publishes only bounded event metadata and
+exact-template categories. A matched template indicates a probable source
+family, not a structurally preserved notification variant. No Weather,
+standalone text inference or Desktop update belongs to this branch.
+
 ## Current target (Codex-only external provider, 2026-10-09)
 
 `CLAUDE_RUNTIME_REQUIRED = false`. The supported managed catalog contains

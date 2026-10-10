@@ -5,6 +5,7 @@ event policy or the SAFE_FOR_WORKLOADS gate.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ from core.llm import codex_cli as cli
 from core.llm.codex_sandbox import build_sandbox_argv
 
 
-BASE_SHA = "7bff6c92ffe958cb11411a1f23fa6f917cf0fe32"
+BASE_SHA = "63a7d99a586355cfbe6cde8cc3d1f8f93fcf3574"
 EVENT_TYPES = frozenset({"thread.started", "turn.started", "turn.completed",
                          "turn.failed", "error", "item.started", "item.updated",
                          "item.completed"})
@@ -191,7 +192,8 @@ def preflight() -> tuple[str, dict[str, str]]:
     return binary, env
 
 
-def run_one_canary(binary: str, env: dict[str, str]) -> dict[str, object]:
+def run_one_canary(binary: str, env: dict[str, str], *,
+                   startup_analysis: bool = False) -> dict[str, object]:
     """Run one production-argv canary, returning only allowlisted metadata."""
     with tempfile.TemporaryDirectory(prefix="morgoth-canary-", dir="/tmp") as outside:
         marker = "SYNTHETIC_" + uuid.uuid4().hex
@@ -227,26 +229,40 @@ def run_one_canary(binary: str, env: dict[str, str]) -> dict[str, object]:
                 unchanged = source.read_text(encoding="utf-8") == marker
             except (OSError, UnicodeError):
                 unchanged = False
-            report = classify_events(result.stdout, result.returncode, final_text,
-                                     marker, unchanged, target.exists())
+            if startup_analysis:
+                from scripts.codex_startup_warnings import reduce_startup_events
+                report = reduce_startup_events(result.stdout, result.returncode,
+                                               final_text, marker, unchanged,
+                                               target.exists())
+            else:
+                report = classify_events(result.stdout, result.returncode,
+                                         final_text, marker, unchanged,
+                                         target.exists())
             if marker in result.stderr:
                 report["forbidden_effect_observed"] = True
-            report["verdict"] = verdict(report)
+            if not startup_analysis:
+                report["verdict"] = verdict(report)
             return report
 
 
 def main() -> int:
     """Emit only fixed diagnostic metadata; never retry the model call."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--startup", action="store_true",
+                        help="Classify only exact-tag early startup templates")
+    args = parser.parse_args()
     try:
         binary, env = preflight()
     except (RuntimeError, subprocess.SubprocessError, OSError, cli.CodexCliError) as exc:
         code = str(exc) if isinstance(exc, RuntimeError) and str(exc).startswith("PREFLIGHT_") else "PREFLIGHT_FAILED"
         print(json.dumps({"verdict": code}))
         return 1
-    report = run_one_canary(binary, env)
+    report = run_one_canary(binary, env, startup_analysis=args.startup)
     report.setdefault("verdict", verdict(report))
     print(json.dumps(report, sort_keys=True))
-    return 0 if report["verdict"] == "CODEX_DIAGNOSTIC_ATTRIBUTED" else 1
+    return 0 if report["verdict"] in {"CODEX_DIAGNOSTIC_ATTRIBUTED",
+                                      "CODEX_STARTUP_DIAGNOSTIC_ATTRIBUTED",
+                                      "CODEX_CANARY_CLEAN"} else 1
 
 
 if __name__ == "__main__":
