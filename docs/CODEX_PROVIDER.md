@@ -33,6 +33,26 @@ exact-template categories. A matched template indicates a probable source
 family, not a structurally preserved notification variant. No Weather,
 standalone text inference or Desktop update belongs to this branch.
 
+**One-shot 0.162.1 result:** process exit 1; no completed turn, final answer,
+or expected canary response. There were 14 diagnostic items: the first early
+`item.completed/error` at position 2 matched a config-warning source template;
+the second early item at position 3 did not match, and the later top-level
+errors and `turn.failed` were unclassified. Zero forbidden tool events and
+zero observed outside-file effects; both synthetic markers stayed unchanged.
+Verdict `BLOCKED_CODEX_STARTUP_UNKNOWN`. The config family is a **TEMPLATE
+MATCH**, while the unknown early item and critical turn failure have **NO
+PROVEN CAUSE**. This is not a clean canary or evidence of workload safety.
+The private event stream was discarded. Do not reclassify the earlier 0.162.0
+attempt, suppress errors, retry inference, or enable workloads. The next
+corrective chantier must isolate the critical turn failure with a new
+explicitly authorized, safe diagnostic; the early config match alone cannot
+explain exit 1.
+
+This branch's focused Codex tests: 117 hermetic passed, 3 host Bubblewrap
+integration passed. The full canonical hermetic run hung in an unrelated
+`test_apply` nested-test case and was interrupted; it is **not** a canonical
+PASS. No SQL, research, Weather or standalone text inference ran.
+
 ## Current target (Codex-only external provider, 2026-10-09)
 
 `CLAUDE_RUNTIME_REQUIRED = false`. The supported managed catalog contains

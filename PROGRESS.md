@@ -765,4 +765,8 @@ Log files:
   `SAFE_FOR_WORKLOADS=False`; strict JSONL validator unchanged.
 - The full hermetic suite is currently blocked by unrelated `test_apply`
   nested-test hangs in this execution environment; focused Codex tests pass.
-  One diagnostic canary remains gated on a clean committed preflight.
+  One diagnostic canary ran after a clean committed preflight: process exit 1,
+  no turn completion, 14 diagnostics (first early config-template match,
+  second early unknown, later critical errors unknown), zero tool events and
+  no outside-file effect. Verdict `BLOCKED_CODEX_STARTUP_UNKNOWN`; no retry or
+  text inference. Focused: 117 hermetic + 3 host integration passed.
