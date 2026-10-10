@@ -92,7 +92,33 @@ early-start diagnostic emission paths and define an exact safe signature for
 the unknown event family before any further model call; it must not relax
 confinement or the production event validator.
 
-The remaining sections describe **historical experiments** and legacy
+### Codex 0.162.0 early-startup warning trace (2026-10-10)
+
+This review is pinned to upstream tag `rust-v0.162.0`:
+
+| Source | Notification | JSONL projection |
+| --- | --- | --- |
+| [exec `config.startup_warnings`](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/exec/src/lib.rs#L698-L743), [initialize replay](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server/src/request_processors/initialize_processor.rs#L236-L251) | `ConfigWarning` | `item.completed`, `item.type=error` |
+| [core session startup](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/core/src/session/session.rs#L1260-L1292) | `Warning` or `DeprecationNotice` | Same error-item shape |
+| [model reroute](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L494-L520) | `ModelRerouted` | Same error-item shape |
+| [critical notification](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L446-L458) | `Error` | Top-level `type=error` |
+
+The [mapper](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L427-L494) discards the originating notification variant for these noncritical error items. The [exec filter](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/exec/src/lib.rs#L1673-L1681) explicitly notes possible duplicate startup warnings; two JSONL items alone do not prove duplication. `ConfigWarning`, general `Warning`, and deprecation can precede `turn.started`; model rerouting is tied to a selected thread/turn and is a weaker early-start candidate.
+
+**Source-confirmed candidate paths, not matches to the discarded prior events:**
+
+- Current `build_argv()` enables `skip_host_skill_discovery`. The [0.162.0 feature registry](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/features/src/lib.rs#L1567-L1576) marks it under development; [session initialization](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/core/src/session/session.rs#L1282-L1291) can emit the exact [under-development warning template](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/features/src/lib.rs#L2010-L2054). Whether it was one of the prior two messages remains unknown.
+- Morgoth's outer Bubblewrap command has `--disable-userns`. Codex [probes an inner user namespace](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/sandboxing/src/bwrap.rs#L45-L90); the app-server [forwards its warning](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server/src/lib.rs#L687-L704). Its exact fixed user-namespace warning is a probable runtime family, not an observed template match.
+- The tagged [ignored-config](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/config/src/strict_config.rs#L238-L327), [deprecation](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/features/src/lib.rs#L751-L801), [state-rebuild](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/app-server/src/lib.rs#L669-L679) and [event-lag](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/exec/src/lib.rs#L1667-L1670) templates are other classifiable families. Strict CLI overrides reject unknown fields before a turn. The neutral workspace and `--ignore-user-config` reduce project/user config exposure but do not establish that these families are absent. Skill-loader scan warnings are [logged](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/ext/skills/src/loader/host.rs#L172-L186); a direct JSONL skill-warning template was not proven and the classifier leaves that category unmatched.
+
+`scripts/codex_startup_warnings.py` recognizes only these exact source-derived templates. A match indicates a **probable family**, not a structurally proven notification variant. Generic topic words, mixed matches, critical top-level errors, post-turn diagnostics, tool events and unknown shapes remain blocked. The production `_validate_events()` and `SAFE_FOR_WORKLOADS=False` are unchanged.
+
+**No new model canary ran.** The active operator binary had drifted to `codex-cli 0.162.1` and a standalone layout; the reviewed transport requires exact 0.162.0 and rejected the current layout with `sandbox_codex_layout_invalid`. No retained 0.162.0 executable was found in the installed standalone release directory. The previous two diagnostics therefore remain **UNKNOWN**, not template matches. The next correction is a separate version/layout audit and confinement requalification for the installed CLI (or a verified existing 0.162.0 installation), followed by one newly authorized canary under that exact reviewed contract. Do not remove the user-namespace restriction or suppress warning items based on timing.
+Removing `skip_host_skill_discovery` could restore host skill discovery, and removing `--disable-userns` could widen sandbox authority; neither is an acceptable warning-suppression shortcut. No minimal configuration correction is proven by the discarded prior messages.
+
+Verification on this branch: canonical hermetic 2113 passed, 2 skipped; focused Codex/parser/template selection 78 passed; source-template selection alone 14 passed. The three host Bubblewrap structural/auth/timeout-cancellation integration tests were attempted but each failed before its assertion on `sandbox_codex_layout_invalid` after the operator CLI moved to the standalone 0.162.1 installation. Their earlier 0.162.0 passes are historical evidence, not a current qualification. No PostgreSQL connection or model inference was used by these tests.
+
+The remaining sections describe historical experiments and legacy
 configuration context; they are not the supported target configuration.
 
 For whole-lane selection use the [Project profile manager](LLM_PROFILES.md).

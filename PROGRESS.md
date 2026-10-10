@@ -20,6 +20,25 @@ confinement and final text/event canaries pass. No production state was used.
 
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-10 — Codex 0.162.0 startup-warning source review (feature branch)
+
+Pinned upstream tracing shows config, general, deprecation and reroute
+notifications can collapse to `item.type=error`, while critical errors remain
+top-level. A diagnostic-only exact-template classifier covers verified config,
+deprecation, state and runtime warning strings; no skill JSONL template was
+proven. Two plausible pre-turn producers are the under-development
+`skip_host_skill_discovery` feature and nested Bubblewrap user-namespace probe,
+but the prior private messages were discarded, so neither is a template match.
+No new inference: installed Codex drifted to 0.162.1 and its standalone layout
+fails the pinned production sandbox contract. `SAFE_FOR_WORKLOADS=False` and
+production event rejection remain unchanged. No dependency, Desktop change,
+production state, Weather run or service restart. See `docs/CODEX_PROVIDER.md`.
+Canonical hermetic: 2113 passed, 2 skipped. Focused Codex selection: 78
+passed, including 14 source-template tests. Three host Bubblewrap tests were
+attempted but failed before their assertions because the active standalone
+Codex 0.162.1 layout is rejected by the pinned 0.162.0 transport. No SQL test
+was needed or run.
+
 ## 2026-10-09 — Codex diagnostic attribution (feature branch)
 
 Added a diagnostic-only, one-shot reducer for the existing Bubblewrap Codex

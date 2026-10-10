@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Callable
 
 from core.llm import codex_cli as cli
 from core.llm.codex_sandbox import build_sandbox_argv
@@ -75,7 +76,9 @@ def classify_message(message: object) -> str:
 
 def classify_events(stdout: str, returncode: int, final_text: str,
                     marker: str, marker_unchanged: bool,
-                    write_observed: bool) -> dict[str, object]:
+                    write_observed: bool, *,
+                    classifier: Callable[[object], str] = classify_message,
+                    startup_only: bool = False) -> dict[str, object]:
     """Reduce private JSONL to bounded, fixed-vocabulary process facts."""
     report: dict[str, object] = {
         "process_return_code": returncode if -255 <= returncode <= 255 else None,
@@ -142,8 +145,11 @@ def classify_events(stdout: str, returncode: int, final_text: str,
         if message is not None or (kind in {"error", "turn.failed"}) or (kind.startswith("item.") and item_type == "error"):
             report["diagnostic_count"] = int(report["diagnostic_count"]) + 1
             if len(diagnostics) < 20:
+                code = (classifier(message) if not startup_only or
+                        (kind == "item.completed" and phase == "BEFORE_TURN_START")
+                        else "CODEX_STARTUP_UNKNOWN")
                 diagnostics.append({"event_type": kind, "event_position": position,
-                                    "lifecycle": phase, "code": classify_message(message)})
+                                    "lifecycle": phase, "code": code})
     report["diagnostics"] = diagnostics
     return report
 
