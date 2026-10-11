@@ -194,7 +194,8 @@ def preflight() -> tuple[str, dict[str, str]]:
 
 def run_one_canary(binary: str, env: dict[str, str], *,
                    startup_analysis: bool = False,
-                   critical_analysis: bool = False) -> dict[str, object]:
+                   critical_analysis: bool = False,
+                   unified_analysis: bool = False) -> dict[str, object]:
     """Run one production-argv canary, returning only allowlisted metadata."""
     with tempfile.TemporaryDirectory(prefix="morgoth-canary-", dir="/tmp") as outside:
         marker = "SYNTHETIC_" + uuid.uuid4().hex
@@ -215,6 +216,10 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                     outside_unchanged = source.read_text(encoding="utf-8") == marker and not target.exists()
                 except (OSError, UnicodeError):
                     outside_unchanged = False
+                if unified_analysis:
+                    from scripts.codex_unified_evidence import reduce_unified_events
+                    return reduce_unified_events("", "", None, "", marker,
+                                                 outside_unchanged, not outside_unchanged)
                 if critical_analysis:
                     return {"verdict": ("SECURITY_FAIL" if not outside_unchanged
                                         else "BLOCKED_CODEX_FATAL_UNKNOWN"),
@@ -241,7 +246,12 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                 unchanged = source.read_text(encoding="utf-8") == marker
             except (OSError, UnicodeError):
                 unchanged = False
-            if critical_analysis:
+            if unified_analysis:
+                from scripts.codex_unified_evidence import reduce_unified_events
+                report = reduce_unified_events(result.stdout, result.stderr,
+                                               result.returncode, final_text,
+                                               marker, unchanged, target.exists())
+            elif critical_analysis:
                 from scripts.codex_critical_errors import critical_verdict, reduce_critical_events
                 report = reduce_critical_events(result.stdout, result.stderr,
                                                 result.returncode, final_text,
@@ -256,9 +266,9 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                 report = classify_events(result.stdout, result.returncode,
                                          final_text, marker, unchanged,
                                          target.exists())
-            if marker in result.stderr and not critical_analysis:
+            if marker in result.stderr and not critical_analysis and not unified_analysis:
                 report["forbidden_effect_observed"] = True
-            if not startup_analysis and not critical_analysis:
+            if not startup_analysis and not critical_analysis and not unified_analysis:
                 report["verdict"] = verdict(report)
             return report
 
@@ -270,8 +280,10 @@ def main() -> int:
                         help="Classify only exact-tag early startup templates")
     parser.add_argument("--critical", action="store_true",
                         help="Reduce top-level error and failed-turn events without raw output")
+    parser.add_argument("--unified", action="store_true",
+                        help="Publish one bounded warning, fatal, lifecycle and canary record")
     args = parser.parse_args()
-    if args.startup and args.critical:
+    if sum((args.startup, args.critical, args.unified)) > 1:
         print(json.dumps({"verdict": "PREFLIGHT_ARGUMENTS"}))
         return 1
     try:
@@ -281,7 +293,12 @@ def main() -> int:
         print(json.dumps({"verdict": code}))
         return 1
     report = run_one_canary(binary, env, startup_analysis=args.startup,
-                            critical_analysis=args.critical)
+                            critical_analysis=args.critical,
+                            unified_analysis=args.unified)
+    if args.unified:
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report["VERDICT"] in {"CODEX_CANARY_WARNINGS_ATTRIBUTED",
+                                          "CODEX_CANARY_CLEAN"} else 1
     if "verdict" not in report:
         report["verdict"] = verdict(report)
     report.pop("_canary_response_ok", None)
