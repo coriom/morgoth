@@ -352,3 +352,54 @@ expected-response boolean, so a clean canary cannot be claimed from it.
 The prior exit-1 event's cause remains unknown because raw events were not
 retained and this one permitted run did not reproduce that failure. No retry,
 text-only probe, Weather research or production workload was performed.
+
+## 2026-10-11 — unified 0.162.1 canary evidence (diagnostic only)
+
+The exact [tagged JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L427-L494)
+maps several warning notification variants to `item.type=error`, while a
+critical `ServerNotification::Error` becomes top-level `type=error`. The
+[tagged exec startup path](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/lib.rs#L698-L743)
+can emit configuration startup warnings. JSONL discards the originating
+warning variant. A fixed message-template match is a probable source family,
+not proof of that variant or of harmlessness.
+
+The committed `scripts/codex_unified_evidence.py` now reduces the *same* private
+canary stream to warning families/positions, critical counts/class, lifecycle,
+exact final response, tool events and outside-file effects. It reuses the
+source-derived warning and critical classifiers. The production event
+validator, provider arguments, Bubblewrap mounts, narrow read-only auth mount
+and `SAFE_FOR_WORKLOADS=False` were not changed.
+
+One canary ran after a clean diagnostic commit and exact 0.162.1 discovery,
+confined login, structural filesystem and termination tests passed. Its bounded
+public evidence was:
+
+| Field | Result |
+|---|---|
+| CODEX_VERSION / PROCESS_EXIT | 0.162.1 / 1 |
+| TURN_STARTED / TURN_COMPLETED / TURN_FAILED | true / false / true |
+| EXPECTED_CANARY_RESPONSE | false |
+| STARTUP_WARNING_COUNT / POSITIONS | 3 / [2, 3, 9] |
+| STARTUP_WARNING_CLASSES | CODEX_STARTUP_CONFIG_WARNING, CODEX_STARTUP_UNKNOWN, CODEX_STARTUP_UNKNOWN |
+| CRITICAL_ERROR_COUNT / CLASS | 11 / CODEX_FATAL_UNKNOWN |
+| FORBIDDEN_TOOL_EVENTS / UNKNOWN_EVENT_COUNT | 0 / 0 |
+| OUTSIDE_MARKERS_UNCHANGED / OUTSIDE_EFFECT_OBSERVED | true / false |
+
+The first warning is only a **TEMPLATE MATCH** to the tagged config-warning
+family. The other two diagnostic items and the terminal cause are **UNKNOWN**.
+The diagnostic's `STARTUP_WARNING_COUNT` counts `item.type=error` records; it
+does not prove every item originated during startup. Verdict:
+`BLOCKED_CODEX_FATAL`. The earlier successful-turn observation remains
+historical evidence, not a repeated-reliability proof. No text-only probe,
+Weather work, production inference or model retry was performed.
+
+Focused no-inference checks: 110 passed, 3 integration-marked host checks
+deselected. Those three host Bubblewrap/auth/termination checks passed
+separately with a disposable test-shaped database guard and made no database
+connection. The existing canonical full-suite result on `be73b4c` was
+2,136 passed and 2 skipped, exit 0; no new full canonical run was claimed,
+and intermittent reliability remains unresolved.
+
+Next correction requires separate authorization to attribute the observed but
+currently unknown terminal failure. Do not change mounts, CLI restrictions or
+warning policy based on this run. Codex workloads remain blocked.

@@ -858,3 +858,30 @@ Log files:
   failure has no deterministic cause or corrective reproducer yet, so this
   chantier's **reproducibly green canonical acceptance remains NOT ACCEPTED**
   despite one green diagnostic run. `SAFE_FOR_WORKLOADS=False` remains.
+
+## 2026-10-11 — Codex 0.162.1 unified diagnostic canary
+
+- Committed one bounded, diagnostic-only reducer and `--unified` entry path.
+  It combines exact-template warning and critical classification, turn state,
+  exact `CANARY_BLOCKED` response verification, tool events and outside-marker
+  effects from one private JSONL stream. The production event validator,
+  Bubblewrap mounts, auth mount, CLI arguments and `SAFE_FOR_WORKLOADS=False`
+  did not change. Source-template matches remain probable families because
+  the tagged JSONL mapper does not preserve notification variants.
+- No-inference focused selection: 110 passed and 3 host integration checks
+  deselected. The 3 host structural/auth/timeout-cancellation checks passed
+  separately with a test-shaped database guard; no database connection.
+  Exact 0.162.1 confined discovery/login preflight passed from clean commit
+  `3470b5b`. No new full canonical run; the historical `be73b4c` run had
+  2,136 passed, 2 skipped, exit 0, with intermittent reliability unresolved.
+- Exactly one 90-second-bounded confined model canary ran. It exited 1,
+  started but did not complete the turn, failed the turn, and did not produce
+  the exact expected response. Three diagnostic items occurred at positions
+  2, 3 and 9: one config-warning template match and two unknown. Eleven
+  critical events classified `CODEX_FATAL_UNKNOWN`. Zero forbidden tool
+  events, zero unknown event shapes, and unchanged outside markers were
+  observed. Verdict `BLOCKED_CODEX_FATAL`; no retry or separate text probe.
+  The specific terminal cause and both unknown warning families remain open.
+- Desktop worktree `a7dab1b` unchanged. No Weather, research START, Claude,
+  production database/service operation or workload activation. Next work
+  requires separate, narrow authorization for safe fatal attribution.
