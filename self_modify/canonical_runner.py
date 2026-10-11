@@ -7,8 +7,11 @@ Pytest argv and all confinement layers come from the reviewed gate builder.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -64,10 +67,17 @@ def verified_source(module_file: Path) -> tuple[Path, str]:
 
 def copy_verified_source(source: Path, destination: Path, expected_sha: str,
                          files: tuple[str, ...] = _PROVENANCE_FILES) -> dict[str, tuple[str, str]]:
-    """Copy excluded source and verify representative bytes and HEAD stability."""
+    """Copy excluded source without symlinks and verify every copied file."""
     if _git(source, "rev-parse", "HEAD") != expected_sha:
         raise SourceProvenanceError("source_head_changed")
-    shutil.copytree(source, destination, ignore=gates._SANDBOX_IGNORE)
+    before = _tree_manifest(source)
+    # Preserve links instead of following them if a source entry changes
+    # between the preflight walk and copy; the post-copy walk then rejects it.
+    shutil.copytree(source, destination, ignore=gates._SANDBOX_IGNORE,
+                    symlinks=True)
+    after = _tree_manifest(destination)
+    if before != after:
+        raise SourceProvenanceError("source_copy_mismatch")
     digests: dict[str, tuple[str, str]] = {}
     for name in files:
         rel = Path(name)
@@ -81,17 +91,125 @@ def copy_verified_source(source: Path, destination: Path, expected_sha: str,
         if source_digest != copied_digest:
             raise SourceProvenanceError("source_copy_mismatch")
         digests[name] = (source_digest, copied_digest)
+    tree_digest = hashlib.sha256()
+    for name, digest in sorted(before.items()):
+        tree_digest.update(name.encode("utf-8") + b"\0" + digest.encode("ascii") + b"\n")
+    digests["TREE_MANIFEST"] = (tree_digest.hexdigest(), tree_digest.hexdigest())
     if (_git(source, "rev-parse", "HEAD") != expected_sha
             or _git(source, "status", "--porcelain", "--untracked-files=all")):
         raise SourceProvenanceError("source_changed_during_copy")
     return digests
 
 
+def _tree_manifest(root: Path) -> dict[str, str]:
+    """Hash included regular files; fail closed on any included symlink/type."""
+    manifest: dict[str, str] = {}
+
+    def visit(directory: Path) -> None:
+        entries = list(os.scandir(directory))
+        ignored = gates._SANDBOX_IGNORE(str(directory), [entry.name for entry in entries])
+        for entry in entries:
+            if entry.name in ignored:
+                continue
+            mode = entry.stat(follow_symlinks=False).st_mode
+            if stat.S_ISLNK(mode):
+                raise SourceProvenanceError("source_symlink_rejected")
+            path = Path(entry.path)
+            if stat.S_ISDIR(mode):
+                visit(path)
+            elif stat.S_ISREG(mode):
+                manifest[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+            else:
+                raise SourceProvenanceError("source_type_rejected")
+
+    visit(root)
+    return manifest
+
+
 def _run_canonical_command(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
-    """Execute one bounded exact gate command with a scrubbed environment."""
-    return subprocess.run(argv, env=gates._hardened_outer_env(),
-                          timeout=gates.PYTEST_BUDGET_SECS,
-                          start_new_session=True)
+    """Execute the owned gate process and report only its numerical scope data."""
+    child = subprocess.Popen(argv, env=gates._hardened_outer_env(),
+                             start_new_session=True)
+    deadline = time.monotonic() + gates.PYTEST_BUDGET_SECS
+    scope: Path | None = None
+    peak_bytes = 0
+    max_pids = 0
+    oom_kill = 0
+    pids_limit_hits = 0
+    try:
+        while child.poll() is None:
+            scope = scope or _owned_scope(child.pid)
+            if scope is not None:
+                peak_bytes = max(peak_bytes, _numeric_file(scope / "memory.peak"))
+                max_pids = max(max_pids, _numeric_file(scope / "pids.current"))
+                oom_kill = max(oom_kill, _event_count(scope / "memory.events", "oom_kill"))
+                pids_limit_hits = max(pids_limit_hits,
+                                      _event_count(scope / "pids.events", "max"))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, gates.PYTEST_BUDGET_SECS)
+            try:
+                child.wait(timeout=min(remaining, 0.5))
+            except subprocess.TimeoutExpired:
+                pass
+        if scope is not None:
+            peak_bytes = max(peak_bytes, _numeric_file(scope / "memory.peak"))
+            max_pids = max(max_pids, _numeric_file(scope / "pids.current"))
+            oom_kill = max(oom_kill, _event_count(scope / "memory.events", "oom_kill"))
+            pids_limit_hits = max(pids_limit_hits,
+                                  _event_count(scope / "pids.events", "max"))
+        return subprocess.CompletedProcess(argv, child.returncode)
+    except BaseException:
+        _terminate_owned_group(child)
+        raise
+    finally:
+        print(f"OWNED_SCOPE_MEMORY_PEAK_BYTES={peak_bytes if scope else 'UNKNOWN'} "
+              f"OWNED_SCOPE_MAX_PIDS={max_pids if scope else 'UNKNOWN'} "
+              f"OWNED_SCOPE_OOM_KILLS={oom_kill if scope else 'UNKNOWN'} "
+              f"OWNED_SCOPE_PIDS_LIMIT_HITS={pids_limit_hits if scope else 'UNKNOWN'}",
+              flush=True)
+
+
+def _owned_scope(pid: int) -> Path | None:
+    """Locate only the systemd scope containing our exact launcher PID."""
+    try:
+        rows = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+        for row in rows:
+            hierarchy, _, relative = row.split(":", 2)
+            if hierarchy == "0" and relative.endswith(".scope"):
+                result = Path("/sys/fs/cgroup") / relative.lstrip("/")
+                if result.name.startswith("run-") and result.is_dir():
+                    return result
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _numeric_file(path: Path) -> int:
+    try:
+        return max(0, int(path.read_text().strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def _event_count(path: Path, key: str) -> int:
+    try:
+        for row in path.read_text().splitlines():
+            name, value = row.split()
+            if name == key:
+                return max(0, int(value))
+    except (OSError, ValueError):
+        return 0
+    return 0
+
+
+def _terminate_owned_group(child: subprocess.Popen[bytes]) -> None:
+    """Kill and reap only the launcher's dedicated process group."""
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    child.wait()
 
 
 def _junit_scoreboard(path: Path) -> str:

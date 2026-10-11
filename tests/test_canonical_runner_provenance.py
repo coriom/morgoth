@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ def test_module_checkout_wins_over_cwd_and_historical_tree(tmp_path: Path,
     assert "FEATURE_ONLY" in (copied / "tests/test_codex_critical_errors.py").read_text()
     assert "HISTORICAL_ONLY" not in (copied / "tests/test_codex_critical_errors.py").read_text()
     assert all(original == sandbox for original, sandbox in digests.values())
+    assert len(digests["TREE_MANIFEST"][0]) == 64
     assert not (copied / ".git").exists()
 
 
@@ -130,3 +132,58 @@ def test_junit_scoreboard_distinguishes_results_from_missing_report(tmp_path: Pa
     assert runner._junit_scoreboard(report) == (
         "collected=5 passed=2 failed=1 skipped=1 errors=1"
     )
+
+
+def test_included_symlink_cannot_copy_outside_secret(tmp_path: Path) -> None:
+    module, sha = _repo(tmp_path / "feature", "SAFE")
+    outside = tmp_path / "outside-secret"
+    outside.write_text("TOP_SECRET_DO_NOT_COPY", encoding="utf-8")
+    (module.parent.parent / "extra_link").symlink_to(outside)
+    destination = tmp_path / "sandbox"
+    with pytest.raises(runner.SourceProvenanceError, match="source_symlink_rejected"):
+        runner.copy_verified_source(module.parent.parent, destination, sha)
+    assert not destination.exists()
+
+
+def test_full_manifest_rejects_mutated_unselected_file(tmp_path: Path,
+                                                      monkeypatch) -> None:
+    module, sha = _repo(tmp_path / "feature", "SAFE")
+    source = module.parent.parent
+    extra = source / "tests" / "other.py"
+    extra.write_text("EXPECTED\n", encoding="utf-8")
+    real_copy = runner.shutil.copytree
+    def mutated_copy(src, dst, *args, **kwargs):
+        result = real_copy(src, dst, *args, **kwargs)
+        if Path(src) == source:
+            (Path(dst) / "tests" / "other.py").write_text("MUTATED\n")
+        return result
+    monkeypatch.setattr(runner.shutil, "copytree", mutated_copy)
+    with pytest.raises(runner.SourceProvenanceError, match="source_copy_mismatch"):
+        runner.copy_verified_source(source, tmp_path / "sandbox", sha)
+
+
+def test_timeout_reaps_owned_process_group_only(tmp_path: Path, monkeypatch) -> None:
+    marker = tmp_path / "owned-child-pid"
+    script = (
+        "import pathlib,subprocess,time,sys; "
+        "p=subprocess.Popen(['sleep','60']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(60)"
+    )
+    unrelated = subprocess.Popen(["sleep", "60"])
+    monkeypatch.setattr(gates, "PYTEST_BUDGET_SECS", 1)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            runner._run_canonical_command([sys.executable, "-c", script, str(marker)])
+        assert marker.is_file()
+        owned_pid = int(marker.read_text())
+        for _ in range(20):
+            stat_path = Path(f"/proc/{owned_pid}/stat")
+            if not stat_path.exists() or stat_path.read_text().split()[2] == "Z":
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("owned descendant remained running after timeout")
+        assert unrelated.poll() is None
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
