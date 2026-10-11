@@ -811,4 +811,16 @@ Log files:
   outside it. This supports a host tool-sandbox teardown cause; it is not
   evidence of nested pytest, an application task leak, or an xdist defect.
   Full canonical acceptance must use the runner's own isolation and verified
-  feature copy; its result is recorded separately below when available.
+  feature copy.
+- Committed source `ec9997e` passed the isolated problem node in the canonical
+  four-worker sandbox (1/1). The full canonical run verified matching source
+  SHA and selected file hashes, then failed: 1917 passed, 2 skipped, four
+  worker-crash errors, exit 1, 175.3 s. The four affected nodes passed
+  together when isolated under the same sandbox (9/9). The serial diagnostic
+  run, with identical confinement and source but no xdist, had 2132 passed,
+  2 skipped, 220 deselected, and one 15-second child-process timeout in
+  `test_fresh_process_binds_only_selected_project_token`; that node passed
+  alone under the canonical sandbox. No deterministic repository-level fix is
+  established for these full-suite interactions. Canonical acceptance remains
+  **NOT PASS**; focused Codex/Bubblewrap hermetic tests passed 150/150 with
+  three PostgreSQL-gated integration tests excluded by the canonical marker.
