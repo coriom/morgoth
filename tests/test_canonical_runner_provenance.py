@@ -135,22 +135,29 @@ def test_junit_scoreboard_distinguishes_results_from_missing_report(tmp_path: Pa
 
 
 def test_included_symlink_cannot_copy_outside_secret(tmp_path: Path) -> None:
-    module, sha = _repo(tmp_path / "feature", "SAFE")
+    module, _ = _repo(tmp_path / "feature", "SAFE")
+    source = module.parent.parent
     outside = tmp_path / "outside-secret"
     outside.write_text("TOP_SECRET_DO_NOT_COPY", encoding="utf-8")
-    (module.parent.parent / "extra_link").symlink_to(outside)
+    (source / "extra_link").symlink_to(outside)
+    _git(source, "add", "extra_link")
+    _git(source, "commit", "-q", "-m", "fixture link")
+    sha = _git(source, "rev-parse", "HEAD")
     destination = tmp_path / "sandbox"
     with pytest.raises(runner.SourceProvenanceError, match="source_symlink_rejected"):
-        runner.copy_verified_source(module.parent.parent, destination, sha)
+        runner.copy_verified_source(source, destination, sha)
     assert not destination.exists()
 
 
 def test_full_manifest_rejects_mutated_unselected_file(tmp_path: Path,
                                                       monkeypatch) -> None:
-    module, sha = _repo(tmp_path / "feature", "SAFE")
+    module, _ = _repo(tmp_path / "feature", "SAFE")
     source = module.parent.parent
     extra = source / "tests" / "other.py"
     extra.write_text("EXPECTED\n", encoding="utf-8")
+    _git(source, "add", "tests/other.py")
+    _git(source, "commit", "-q", "-m", "fixture extra file")
+    sha = _git(source, "rev-parse", "HEAD")
     real_copy = runner.shutil.copytree
     def mutated_copy(src, dst, *args, **kwargs):
         result = real_copy(src, dst, *args, **kwargs)

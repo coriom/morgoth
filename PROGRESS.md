@@ -824,3 +824,37 @@ Log files:
   established for these full-suite interactions. Canonical acceptance remains
   **NOT PASS**; focused Codex/Bubblewrap hermetic tests passed 150/150 with
   three PostgreSQL-gated integration tests excluded by the canonical marker.
+
+## 2026-10-11 — Canonical full-suite reliability investigation
+
+- Exact inherited parallel crash nodes: `test_cli_json_and_fresh_process_runtime_resolution`
+  on gw0, `test_ui_no_backend_skips_health_and_execs_dev_sh` on gw1,
+  `test_factory_never_imports_engine_server` on gw2, and
+  `test_failure_stage_attribution_and_secret_exclusion[WORK_INFERENCE]` on
+  gw3. Their exit signals and old cgroup counters were not retained. The
+  inherited serial failure was the 15-second child timeout in
+  `test_fresh_process_binds_only_selected_project_token`; the child stage was
+  not retained. These are distinct observations, with no proven shared cause.
+- The canonical runner now rejects all included source symlinks, copies with
+  symlink following disabled, and verifies a hash manifest of every included
+  copied regular file. Synthetic outside-secret and unselected-file mutation
+  tests fail under the old behavior and pass now; a clean tracked-symlink
+  fixture confirmed the old runner copied synthetic outside content while the
+  new runner rejected the link before copying. On timeout, it kills and
+  reaps only its dedicated launch process group; a disposable user-scope
+  sleeper confirmed no owned child survived. Existing source and gate policy
+  checks, exclusions, Bubblewrap, netns, cgroup and pytest selection remain.
+- Targeted diagnosis: full authority module serial 10 passed; the four crash
+  modules together under 4-worker loadfile scheduling 55 passed; combined
+  provenance/apply/authority/crash-module selection 86 passed. One bounded
+  parallel diagnostic from clean candidate `be73b4c` copied the same SHA and
+  passed 2136 with 2 skipped, exit 0, wall 48.3 s. Its own scope peaked at
+  700182528 bytes and 87 PIDs, with zero OOM kills and zero PID-limit hits.
+  This run did not reproduce the old failure; it does not prove that old host
+  resource exhaustion or cross-test contamination was absent then.
+- Focused Codex/Bubblewrap hermetic selection: 150 passed, 3 PostgreSQL-gated
+  integration tests deselected. No model inference, production data, provider
+  gate, event validator or sandbox authority changed. The historical full-suite
+  failure has no deterministic cause or corrective reproducer yet, so this
+  chantier's **reproducibly green canonical acceptance remains NOT ACCEPTED**
+  despite one green diagnostic run. `SAFE_FOR_WORKLOADS=False` remains.
