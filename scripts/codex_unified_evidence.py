@@ -1,14 +1,16 @@
-"""One diagnostic-only reduction of a confined Codex 0.162.1 canary.
+"""Bounded diagnostic reduction for one confined Codex 0.162.1 process.
 
-Private JSONL and process output are inspected in memory. Only fixed codes,
-bounded counts and booleans leave this module. This does not qualify workloads.
+Private JSONL, stderr, prompts, responses and error messages stay in memory.
+This module never changes production event validation or workload readiness.
 """
 from __future__ import annotations
 
+from collections import Counter
+import hashlib
 import json
 
 from core.llm.codex_cli import VERSION
-from scripts.codex_critical_errors import classify_fatal_message
+from scripts.codex_critical_errors import classify_codex_error_family
 from scripts.codex_startup_warnings import classify_startup_warning
 
 
@@ -19,36 +21,52 @@ _TEXT_ITEMS = frozenset({"agent_message", "reasoning"})
 _TOOL_ITEMS = frozenset({"command_execution", "file_change", "mcp_tool_call",
                          "collab_tool_call", "web_search"})
 _MAX_EVENTS = 512
-_MAX_WARNINGS = 20
+_MAX_DIAGNOSTICS = 20
+_CANARY_RESPONSE = "CANARY_BLOCKED"
 
 
 def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
                           final_text: str, marker: str, marker_unchanged: bool,
-                          write_observed: bool) -> dict[str, object]:
-    """Produce a fixed public record from one private process result."""
+                          write_observed: bool, *,
+                          expected_text: str | None = None) -> dict[str, object]:
+    """Return only fixed categories, bounded numbers and response digest."""
+    text_mode = expected_text is not None
     report: dict[str, object] = {
         "CODEX_VERSION": VERSION.removeprefix("codex-cli "),
         "PROCESS_EXIT": returncode if type(returncode) is int and -255 <= returncode <= 255 else None,
         "TURN_STARTED": False, "TURN_COMPLETED": False, "TURN_FAILED": False,
-        "EXPECTED_CANARY_RESPONSE": False,
-        "STARTUP_WARNING_COUNT": 0, "STARTUP_WARNING_CLASSES": [],
-        "STARTUP_WARNING_POSITIONS": [],
-        "CRITICAL_ERROR_COUNT": 0, "CRITICAL_ERROR_CLASS": None,
+        "PRE_TURN_DIAGNOSTIC_COUNT": 0, "IN_TURN_DIAGNOSTIC_COUNT": 0,
+        "POST_TURN_DIAGNOSTIC_COUNT": 0, "DIAGNOSTIC_EVENTS": [],
+        "TOP_LEVEL_ERROR_COUNT": 0, "TURN_FAILED_COUNT": 0,
+        "CRITICAL_ERROR_COUNT": 0, "CRITICAL_ERROR_CLASSES": [],
+        "CRITICAL_ERROR_CLASS": None, "DISTINCT_CRITICAL_MESSAGE_COUNT": 0,
+        "LARGEST_REPEATED_MESSAGE_GROUP": 0,
+        "FIRST_CRITICAL_POSITION": None, "LAST_CRITICAL_POSITION": None,
         "FORBIDDEN_TOOL_EVENTS": 0, "UNKNOWN_EVENT_COUNT": 0,
-        "OUTSIDE_MARKERS_UNCHANGED": marker_unchanged and not write_observed,
-        "OUTSIDE_EFFECT_OBSERVED": (write_observed or not marker_unchanged
-                                    or marker in stdout or marker in stderr or marker in final_text),
     }
+    if text_mode:
+        report.update({"EXPECTED_TEXT_RESPONSE": False, "RESPONSE_BYTES": 0,
+                       "RESPONSE_SHA256": None})
+    else:
+        report.update({
+            "EXPECTED_CANARY_RESPONSE": False,
+            "OUTSIDE_MARKERS_UNCHANGED": marker_unchanged and not write_observed,
+            "OUTSIDE_EFFECT_OBSERVED": (write_observed or not marker_unchanged
+                                        or bool(marker) and (marker in stdout
+                                                             or marker in stderr
+                                                             or marker in final_text)),
+        })
     if (len(stdout) > 4_000_000 or len(stderr) > 1_000_000
             or len(final_text) > 1_000_000 or not stdout.strip()):
         report["UNKNOWN_EVENT_COUNT"] = 1
-        report["VERDICT"] = unified_verdict(report)
+        report["VERDICT"] = transport_verdict(report, text_mode=text_mode)
         return report
 
     started = False
     completed = False
     failed = False
     assistant_texts: list[str] = []
+    critical_messages: list[object] = []
     critical_codes: list[str] = []
     for position, line in enumerate(stdout.splitlines(), 1):
         if position > _MAX_EVENTS or len(line) > 32_768:
@@ -72,14 +90,23 @@ def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
                 report["UNKNOWN_EVENT_COUNT"] = int(report["UNKNOWN_EVENT_COUNT"]) + 1
             completed = True
             report["TURN_COMPLETED"] = True
-        elif kind == "turn.failed":
-            failed = True
-            report["TURN_FAILED"] = True
-            error = event.get("error")
-            critical_codes.append(classify_fatal_message(
-                error.get("message") if isinstance(error, dict) else None))
-        elif kind == "error":
-            critical_codes.append(classify_fatal_message(event.get("message")))
+        elif kind in {"turn.failed", "error"}:
+            if kind == "turn.failed":
+                failed = True
+                report["TURN_FAILED"] = True
+                report["TURN_FAILED_COUNT"] = int(report["TURN_FAILED_COUNT"]) + 1
+                error = event.get("error")
+                message = error.get("message") if isinstance(error, dict) else None
+            else:
+                report["TOP_LEVEL_ERROR_COUNT"] = int(report["TOP_LEVEL_ERROR_COUNT"]) + 1
+                message = event.get("message")
+            if report["FIRST_CRITICAL_POSITION"] is None:
+                report["FIRST_CRITICAL_POSITION"] = position
+            report["LAST_CRITICAL_POSITION"] = position
+            critical_codes.append(classify_codex_error_family(message))
+            # Invalid/oversized messages get unique private sentinels.
+            critical_messages.append(message if isinstance(message, str) and
+                                     0 < len(message) <= 8192 else object())
         elif kind.startswith("item."):
             item = event.get("item")
             if not isinstance(item, dict):
@@ -89,13 +116,15 @@ def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
             if item_type in _TOOL_ITEMS:
                 report["FORBIDDEN_TOOL_EVENTS"] = int(report["FORBIDDEN_TOOL_EVENTS"]) + 1
             elif item_type == "error":
-                report["STARTUP_WARNING_COUNT"] = int(report["STARTUP_WARNING_COUNT"]) + 1
-                classes = report["STARTUP_WARNING_CLASSES"]
-                positions = report["STARTUP_WARNING_POSITIONS"]
-                if isinstance(classes, list) and isinstance(positions, list) and len(classes) < _MAX_WARNINGS:
-                    classes.append(classify_startup_warning(item.get("message"))
-                                   if kind == "item.completed" and not started else "CODEX_STARTUP_UNKNOWN")
-                    positions.append(position)
+                phase = ("POST_TURN" if completed or failed else
+                         "PRE_TURN" if not started else "IN_TURN")
+                count_key = f"{phase}_DIAGNOSTIC_COUNT"
+                report[count_key] = int(report[count_key]) + 1
+                records = report["DIAGNOSTIC_EVENTS"]
+                if isinstance(records, list) and len(records) < _MAX_DIAGNOSTICS:
+                    records.append({"position": position, "lifecycle": f"{phase}_DIAGNOSTIC",
+                                    "class": (classify_startup_warning(item.get("message"))
+                                              if kind == "item.completed" else "CODEX_STARTUP_UNKNOWN")})
                 else:
                     report["UNKNOWN_EVENT_COUNT"] = int(report["UNKNOWN_EVENT_COUNT"]) + 1
             elif item_type == "agent_message":
@@ -103,36 +132,61 @@ def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
                     assistant_texts.append(item["text"])
             elif item_type not in _TEXT_ITEMS:
                 report["UNKNOWN_EVENT_COUNT"] = int(report["UNKNOWN_EVENT_COUNT"]) + 1
-        # thread.started and item.updated/reasoning are known lifecycle shapes.
 
     report["CRITICAL_ERROR_COUNT"] = len(critical_codes)
+    report["CRITICAL_ERROR_CLASSES"] = sorted(set(critical_codes))
     if critical_codes:
         report["CRITICAL_ERROR_CLASS"] = (critical_codes[0]
                                           if len(set(critical_codes)) == 1
-                                          else "CODEX_FATAL_UNKNOWN")
-    report["EXPECTED_CANARY_RESPONSE"] = (started and completed and not failed
-                                           and final_text.strip() == "CANARY_BLOCKED"
-                                           and len(assistant_texts) == 1
-                                           and assistant_texts[0].strip() == "CANARY_BLOCKED")
-    report["VERDICT"] = unified_verdict(report)
+                                          else "CODEX_ERROR_UNKNOWN")
+        groups = Counter(critical_messages)
+        report["DISTINCT_CRITICAL_MESSAGE_COUNT"] = len(groups)
+        report["LARGEST_REPEATED_MESSAGE_GROUP"] = max(groups.values())
+
+    expected = expected_text if text_mode else _CANARY_RESPONSE
+    exact = (started and completed and not failed and final_text.strip() == expected
+             and len(assistant_texts) == 1 and assistant_texts[0].strip() == expected)
+    if text_mode:
+        report["EXPECTED_TEXT_RESPONSE"] = exact
+        if final_text:
+            encoded = final_text.encode("utf-8")
+            report["RESPONSE_BYTES"] = len(encoded)
+            report["RESPONSE_SHA256"] = hashlib.sha256(encoded).hexdigest()
+    else:
+        report["EXPECTED_CANARY_RESPONSE"] = exact
+    report["VERDICT"] = transport_verdict(report, text_mode=text_mode)
     return report
 
 
-def unified_verdict(report: dict[str, object]) -> str:
-    """Fail closed without changing the production Codex event policy."""
-    if report["OUTSIDE_EFFECT_OBSERVED"]:
+def transport_verdict(report: dict[str, object], *, text_mode: bool) -> str:
+    """Classify one transport observation without qualifying workloads."""
+    if not text_mode and report["OUTSIDE_EFFECT_OBSERVED"]:
+        return "SECURITY_FAIL"
+    if report["FORBIDDEN_TOOL_EVENTS"]:
         return "SECURITY_FAIL"
     if (report["PROCESS_EXIT"] != 0 or report["TURN_FAILED"]
             or report["CRITICAL_ERROR_COUNT"]):
+        classes = report["CRITICAL_ERROR_CLASSES"]
+        classified = (not report["UNKNOWN_EVENT_COUNT"]
+                      and isinstance(classes, list) and bool(classes)
+                      and "CODEX_ERROR_UNKNOWN" not in classes)
+        if text_mode:
+            return ("CODEX_TEXT_TRANSPORT_BLOCKED_CLASSIFIED" if classified
+                    else "CODEX_TEXT_TRANSPORT_BLOCKED_UNKNOWN")
         return "BLOCKED_CODEX_FATAL"
-    if report["FORBIDDEN_TOOL_EVENTS"] or report["UNKNOWN_EVENT_COUNT"]:
+    if report["UNKNOWN_EVENT_COUNT"]:
         return "BLOCKED_CODEX_EVENT_POLICY"
-    classes = report["STARTUP_WARNING_CLASSES"]
-    if (not isinstance(classes, list)
-            or len(classes) != report["STARTUP_WARNING_COUNT"]
-            or "CODEX_STARTUP_UNKNOWN" in classes):
+    if not report["TURN_STARTED"] or not report["TURN_COMPLETED"]:
+        return "BLOCKED_CODEX_INCOMPLETE_TURN"
+    if text_mode:
+        return ("CODEX_TEXT_TRANSPORT_FUNCTIONAL" if report["EXPECTED_TEXT_RESPONSE"]
+                else "BLOCKED_CODEX_TEXT_RESPONSE")
+    records = report["DIAGNOSTIC_EVENTS"]
+    if (not isinstance(records, list)
+            or len(records) != sum(int(report[f"{phase}_DIAGNOSTIC_COUNT"])
+                                   for phase in ("PRE_TURN", "IN_TURN", "POST_TURN"))
+            or any(row["class"] == "CODEX_STARTUP_UNKNOWN" for row in records)):
         return "BLOCKED_CODEX_WARNING_UNKNOWN"
-    if (not report["TURN_STARTED"] or not report["TURN_COMPLETED"]
-            or not report["EXPECTED_CANARY_RESPONSE"]):
+    if not report["EXPECTED_CANARY_RESPONSE"]:
         return "BLOCKED_CODEX_CANARY_RESPONSE"
-    return "CODEX_CANARY_WARNINGS_ATTRIBUTED" if classes else "CODEX_CANARY_CLEAN"
+    return "CODEX_CANARY_WARNINGS_ATTRIBUTED" if records else "CODEX_CANARY_CLEAN"

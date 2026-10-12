@@ -58,6 +58,35 @@ def classify_fatal_message(message: object) -> str:
     return next(iter(matches)) if len(matches) == 1 else "CODEX_FATAL_UNKNOWN"
 
 
+def classify_codex_error_family(message: object) -> str:
+    """Classify exact 0.162.1 CodexErr display forms, never dynamic content.
+
+    The generic stream prefix is only a transport symptom; it does not
+    identify the underlying network, service, or authentication cause.
+    """
+    if not isinstance(message, str) or not message or len(message) > 8192:
+        return "CODEX_ERROR_UNKNOWN"
+    exact = {
+        "stream disconnected before completion: Incomplete response returned, reason: content_filter":
+            "CODEX_ERROR_CONTENT_FILTER",
+        "request timed out": "CODEX_ERROR_REQUEST_TIMEOUT",
+        "Selected model is at capacity. Please try a different model.":
+            "CODEX_ERROR_SERVER_OVERLOADED",
+        "Quota exceeded. Check your plan and billing details.":
+            "CODEX_ERROR_QUOTA",
+    }
+    if message in exact:
+        return exact[message]
+    for prefix, code in (
+        ("rate limit exceeded: ", "CODEX_ERROR_RATE_LIMIT_REPORTED"),
+        ("stream disconnected before completion: ", "CODEX_ERROR_STREAM_DISCONNECTED"),
+        ("Connection failed: ", "CODEX_ERROR_CONNECTION_FAILED"),
+    ):
+        if message.startswith(prefix) and message[len(prefix):].strip():
+            return code
+    return "CODEX_ERROR_UNKNOWN"
+
+
 def reduce_critical_events(stdout: str, stderr: str, returncode: int,
                            final_text: str, marker: str,
                            marker_unchanged: bool,

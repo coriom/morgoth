@@ -192,6 +192,51 @@ def preflight() -> tuple[str, dict[str, str]]:
     return binary, env
 
 
+def preflight_text_runtime(binary: str, env: dict[str, str]) -> None:
+    """Check confined resolver, trust and workspace resources without inference."""
+    probe = ("import os,pathlib,ssl,sys; "
+             "p=ssl.get_default_verify_paths(); "
+             "trust=bool((p.cafile and pathlib.Path(p.cafile).is_file()) or "
+             "(p.capath and pathlib.Path(p.capath).is_dir())); "
+             "resolv=pathlib.Path('/etc/resolv.conf').is_file(); "
+             "home=pathlib.Path('/home/codex/.codex/auth.json').is_file(); "
+             "scratch=pathlib.Path.cwd()/'preflight-write'; "
+             "scratch.write_text('ok'); writable=scratch.read_text()=='ok'; "
+             "sys.exit(0 if trust and resolv and home and writable else 5)")
+    with tempfile.TemporaryDirectory(prefix="morgoth-codex-check-", dir="/tmp") as cwd:
+        wrapped, child_env = build_sandbox_argv(binary, cwd, env, ["--version"])
+        argv = wrapped[:wrapped.index("--") + 1] + ["/usr/bin/python3", "-c", probe]
+        try:
+            result = subprocess.run(argv, cwd=cwd, env=child_env, capture_output=True,
+                                    text=True, timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise RuntimeError("PREFLIGHT_RUNTIME_RESOURCE") from None
+        if result.returncode != 0:
+            raise RuntimeError("PREFLIGHT_RUNTIME_RESOURCE")
+
+
+def run_one_text_probe(binary: str, env: dict[str, str]) -> dict[str, object]:
+    """Use the unchanged confined transport for one fixed text-only request."""
+    from scripts.codex_unified_evidence import reduce_unified_events
+
+    prompt = "Reply with exactly CODEX_PROVIDER_OK."
+    with tempfile.TemporaryDirectory(prefix="morgoth-codex-", dir="/tmp") as cwd:
+        final = Path(cwd) / "final.txt"
+        try:
+            result = cli._run(cli.build_argv(binary, "default", str(final)), cwd,
+                              env, prompt, 90)
+        except cli.CodexCliError:
+            return reduce_unified_events("", "", None, "", "", True, False,
+                                         expected_text="CODEX_PROVIDER_OK")
+        try:
+            final_text = final.read_text(encoding="utf-8") if final.is_file() else ""
+        except (OSError, UnicodeError):
+            final_text = ""
+        return reduce_unified_events(result.stdout, result.stderr, result.returncode,
+                                     final_text, "", True, False,
+                                     expected_text="CODEX_PROVIDER_OK")
+
+
 def run_one_canary(binary: str, env: dict[str, str], *,
                    startup_analysis: bool = False,
                    critical_analysis: bool = False,
@@ -282,8 +327,10 @@ def main() -> int:
                         help="Reduce top-level error and failed-turn events without raw output")
     parser.add_argument("--unified", action="store_true",
                         help="Publish one bounded warning, fatal, lifecycle and canary record")
+    parser.add_argument("--text", action="store_true",
+                        help="Run one fixed, confined text-transport diagnostic")
     args = parser.parse_args()
-    if sum((args.startup, args.critical, args.unified)) > 1:
+    if sum((args.startup, args.critical, args.unified, args.text)) > 1:
         print(json.dumps({"verdict": "PREFLIGHT_ARGUMENTS"}))
         return 1
     try:
@@ -292,6 +339,15 @@ def main() -> int:
         code = str(exc) if isinstance(exc, RuntimeError) and str(exc).startswith("PREFLIGHT_") else "PREFLIGHT_FAILED"
         print(json.dumps({"verdict": code}))
         return 1
+    if args.text:
+        try:
+            preflight_text_runtime(binary, env)
+        except (RuntimeError, subprocess.SubprocessError, OSError, cli.CodexCliError):
+            print(json.dumps({"verdict": "PREFLIGHT_RUNTIME_RESOURCE"}))
+            return 1
+        report = run_one_text_probe(binary, env)
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report["VERDICT"] == "CODEX_TEXT_TRANSPORT_FUNCTIONAL" else 1
     report = run_one_canary(binary, env, startup_analysis=args.startup,
                             critical_analysis=args.critical,
                             unified_analysis=args.unified)
