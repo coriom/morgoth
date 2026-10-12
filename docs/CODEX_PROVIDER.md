@@ -403,3 +403,54 @@ and intermittent reliability remains unresolved.
 Next correction requires separate authorization to attribute the observed but
 currently unknown terminal failure. Do not change mounts, CLI restrictions or
 warning policy based on this run. Codex workloads remain blocked.
+
+## 2026-10-12 — Codex 0.162.1 text transport isolation
+
+Diagnostic code commit `a24df60` changed only scripts and hermetic tests.
+The production `core/llm/codex_cli.py` validator, fixed argv, Bubblewrap
+mounts, cleared environment and `SAFE_FOR_WORKLOADS=False` did not change.
+The reviewed [0.162.1 error variants](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/protocol/src/error.rs#L2180-L2338)
+support exact timeout, overload, quota and content-filter strings plus
+dynamic rate-limit and stream-disconnect prefixes. A stream-disconnect
+classification would identify a transport symptom, not its DNS, TLS,
+authentication or service root cause. The [JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L426-L494)
+still maps nonfatal diagnostic items separately from top-level errors.
+
+The unified reducer now distinguishes pre-turn, in-turn and post-turn
+diagnostic items. It groups critical messages by equality privately in
+memory, publishing counts and fixed classes only. Equal strings do not prove
+that the same request was retried. No raw event, message, stderr or response
+was retained. Focused hermetic tests: 124 passed, 3 host integration checks
+deselected. Separate exact Bubblewrap outside-file, confined-login and
+timeout/cancellation checks: 3 passed. Clean committed preflight confirmed
+Codex CLI 0.162.1, ChatGPT login, reviewed standalone layout, and readable
+resolver/trust files plus a writable invocation workspace. It did **not**
+establish model-service reachability or perform an authenticated HTTP request.
+
+Exactly one 90-second-bounded text-only probe ran through the unchanged
+`build_argv()` → `_run()` → `build_sandbox_argv()` path with a fixed, non-secret
+prompt. Its sanitized evidence:
+
+| Field | Result |
+|---|---|
+| PROCESS_EXIT / TURN_STARTED / TURN_COMPLETED / TURN_FAILED | 1 / true / false / true |
+| EXPECTED_TEXT_RESPONSE / RESPONSE_BYTES / RESPONSE_SHA256 | false / 0 / null |
+| PRE_TURN / IN_TURN / POST_TURN diagnostics | 2 / 1 / 0 |
+| Diagnostic families | config-template match; unknown; unknown |
+| TOP_LEVEL_ERROR_COUNT / TURN_FAILED_COUNT | 10 / 1 |
+| CRITICAL_ERROR_COUNT / DISTINCT_CRITICAL_MESSAGE_COUNT | 11 / 6 |
+| LARGEST_REPEATED_MESSAGE_GROUP | 2 |
+| FIRST_CRITICAL_POSITION / LAST_CRITICAL_POSITION | 5 / 16 |
+| CRITICAL_ERROR_CLASSES | CODEX_ERROR_UNKNOWN |
+| FORBIDDEN_TOOL_EVENTS / UNKNOWN_EVENT_COUNT | 0 / 0 |
+
+Verdict `CODEX_TEXT_TRANSPORT_BLOCKED_UNKNOWN`. This failed simple text
+request shows that the failure is not limited to the adversarial file/tool
+prompt in this attempt. The private error contents were discarded, so no
+network, service, quota or authentication cause can be claimed. The smallest
+next investigation is a separately authorized, bounded private classifier
+for the exact top-level error text emitted by this pinned CLI; do not change
+sandbox mounts or model restrictions on the present evidence. No retry,
+Weather, synthesis/thesis or production workload ran. The last full canonical
+PASS remains the historical `be73b4c` run (2,136 passed, 2 skipped), with
+intermittent full-suite reliability unresolved. Codex workloads remain blocked.

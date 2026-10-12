@@ -885,3 +885,35 @@ Log files:
 - Desktop worktree `a7dab1b` unchanged. No Weather, research START, Claude,
   production database/service operation or workload activation. Next work
   requires separate, narrow authorization for safe fatal attribution.
+
+## 2026-10-12 — Codex 0.162.1 text transport isolation
+
+- Diagnostic-only changes committed at `a24df60`: the unified reducer now
+  distinguishes pre-turn/in-turn/post-turn diagnostic items and privately
+  groups repeated critical error messages. Exact-tag fixed error families
+  were added for request timeout, overload, quota, content filter, rate-limit
+  report, stream-disconnect symptom and connection-failed display. Unknown
+  text remains `CODEX_ERROR_UNKNOWN`. No raw messages, error-message hashes,
+  response text or retry payloads leave the reducer; the permitted fixed
+  text-response SHA-256 is reported. Production provider/validator and
+  Bubblewrap code remain unchanged; `SAFE_FOR_WORKLOADS=False`.
+- No-inference focused selection 124 passed, 3 host integration checks
+  deselected. The three host confinement/auth/cleanup checks passed separately
+  with a test-shaped database guard and no DB connection. Clean exact-CLI
+  preflight and confined resolver/trust/workspace checks passed; no external
+  model-service reachability claim was made. No new full canonical run; the
+  historical `be73b4c` success was 2,136 passed and 2 skipped, with prior
+  intermittent full-suite failures unresolved.
+- Exactly one fixed-prompt, 90-second-bounded text inference ran through
+  the unchanged confined transport. It exited 1, started and failed the turn,
+  produced no response, emitted 10 top-level errors plus one failed-turn
+  record, and had six distinct private critical messages (largest equal group
+  two). All critical messages remained unclassified. Diagnostic items:
+  pre-turn 2 (config-template, unknown), in-turn 1 (unknown), post-turn 0.
+  Tool events and unknown event shapes: zero. Verdict
+  `CODEX_TEXT_TRANSPORT_BLOCKED_UNKNOWN`. No second inference or file/tool
+  canary was run. The result shows this attempt's failure was not limited to
+  an adversarial prompt; its underlying cause is still unknown.
+- No Desktop, production checkout, main branch, Weather, START, synthesis,
+  thesis or Claude change. Next work must narrowly attribute the pinned CLI's
+  actual top-level error family before changing runtime resources or policy.
