@@ -11,10 +11,12 @@ from scripts.codex_startup_warnings import classify_startup_warning, reduce_star
 
 @pytest.mark.parametrize(("message", "expected"), [
     ("Under-development features enabled: skip_host_skill_discovery. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in PRIVATE_PATH.", "CODEX_STARTUP_CONFIG_WARNING"),
-    ("Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings.\nPRIVATE_PATH", "CODEX_STARTUP_CONFIG_WARNING"),
+    ("Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings.", "CODEX_STARTUP_CONFIG_WARNING"),
+    ("Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings.\nTOP_SECRET_DO_NOT_PERSIST", "CODEX_STARTUP_UNKNOWN"),
     ("`[features].transcript_v2` is deprecated and ignored.", "CODEX_STARTUP_DEPRECATION"),
     ("Codex rebuilt its local database (PRIVATE_PATH)", "CODEX_STARTUP_STATE_WARNING"),
     ("Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.", "CODEX_STARTUP_RUNTIME_WARNING"),
+    ("Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces. unrelated suffix", "CODEX_STARTUP_UNKNOWN"),
     ("in-process app-server event stream lagged; dropped 4 events", "CODEX_STARTUP_RUNTIME_WARNING"),
     ("config warning skill error TOP_SECRET_DO_NOT_PERSIST", "CODEX_STARTUP_UNKNOWN"),
     ("failed to scan skill path PRIVATE_PATH", "CODEX_STARTUP_UNKNOWN"),
@@ -41,7 +43,7 @@ def test_early_item_template_is_attributed_without_leaking_private_message() -> 
     raw = _stream(
         {"type": "thread.started", "private": "TOP_SECRET_DO_NOT_PERSIST"},
         {"type": "item.completed", "item": {"type": "error", "message":
-         "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces. TOP_SECRET_DO_NOT_PERSIST"}},
+         "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."}},
         {"type": "turn.started"},
         {"type": "item.completed", "item": {"type": "agent_message", "text": "CANARY_BLOCKED"}},
         {"type": "turn.completed"},

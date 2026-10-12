@@ -501,3 +501,62 @@ next differential is to run a bounded, non-inference DNS/TLS check for the
 source-defined ChatGPT host inside versus outside this development network
 restriction, without changing Bubblewrap mounts or forwarding credentials.
 No second doctor run or model call occurred. `SAFE_FOR_WORKLOADS=False`.
+
+## 2026-10-12 — operator-native authority canary preparation (no inference here)
+
+The operator reported a separate ordinary-WSL observation with the exact
+0.162.1 CLI: confined doctor exited 0 with HTTPS and WebSocket checks OK, and
+one confined text request exited 0, completed, returned the exact expected
+response (17 bytes), and emitted no critical or tool events. Two pre-turn
+diagnostics remained: a config-template match and one unknown. This is
+operator-provided evidence, not a model call repeated by this branch. The
+earlier restricted-development-network failures cannot be assigned solely to
+network policy from these observations.
+
+The [tagged doctor JSON projection](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/cli/src/doctor.rs#L647-L779)
+can redact endpoint and handshake details. Its [HTTPS success branch](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/cli/src/doctor.rs#L2580-L2730)
+and [WebSocket success branch](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/cli/src/doctor.rs#L2176-L2302)
+have distinct exact summaries. The diagnostic adapter now reports
+`REACHABLE_STATUS_ONLY` and `HANDSHAKE_STATUS_ONLY` when these summaries and
+OK status survive redaction, leaving numeric status classes null. It does not
+invent HTTP 200 or handshake 101, and an OK check with no endpoint to probe
+remains inconclusive.
+
+Early-warning candidates were reviewed against the exact tag. The active
+`skip_host_skill_discovery` feature is [under development](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1535-L1539)
+and its [fixed warning template](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1974-L2017)
+can explain a config-template match, but the discarded private message cannot
+prove which option generated it. [Exec startup warnings](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/lib.rs#L672-L725),
+[strict-config rejection](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/config/src/strict_config.rs#L266-L273),
+[state rebuild](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/lib.rs#L645-L665),
+and [inner Bubblewrap namespace checks](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/sandboxing/src/bwrap.rs#L18-L77)
+are plausible families, not observed causes. Skill discovery has no defensible
+JSONL template here. The [JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L389-L450)
+loses the originating notification variant. The classifier now requires a
+whole source-template message; unmatched or mixed messages remain UNKNOWN. It
+does not suppress diagnostics or change production `_validate_events()`.
+
+`scripts.codex_operator_canary` is a one-shot, operator-run entry point. It
+requires a clean feature checkout equal to its tracked origin, exact CLI
+0.162.1, confined login and mandatory Bubblewrap. It uses the existing
+`build_argv()` → `_run()` → `build_sandbox_argv()` transport with one synthetic
+outside-file read/write prompt and a 90-second bound. It checks actual marker
+effects, exact response, lifecycle, tool and unknown events, and publishes
+only bounded classes/counts/Booleans. Any unknown warning remains BLOCKED.
+The operator command, after reviewing the pushed branch, is:
+
+```sh
+cd /home/corio/Morgoth/dev-codex-01621-operator-qualification-v1 && /home/corio/Morgoth/morgoth/.venv/bin/python -m scripts.codex_operator_canary
+```
+
+The narrow read-only `auth.json` mount remains readable by Codex; Bubblewrap
+shares the host network. A future clean canary would not prove credential
+confidentiality or authorize workloads. `SAFE_FOR_WORKLOADS=False`; a separate
+human review is required for any activation.
+
+No-inference verification for this preparation: 124 focused parser, event,
+confinement and canonical-provenance tests passed (3 host integration checks
+deselected); the 3 host structural/auth/cleanup checks passed separately.
+No new full canonical campaign ran. The historical `be73b4c` full-suite
+success remains one run (2,136 passed, 2 skipped), with intermittent failures
+unresolved.

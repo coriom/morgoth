@@ -17,6 +17,8 @@ from scripts.diagnose_codex_cli import preflight, preflight_text_runtime
 PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
                "http_proxy", "https_proxy", "all_proxy", "no_proxy")
 STATUS = frozenset({"ok", "warning", "fail"})
+HTTPS_SUCCESS_SUMMARY = "active provider endpoints are reachable over HTTP"
+WEBSOCKET_SUCCESS_SUMMARY = "Responses WebSocket handshake succeeded"
 REACHABLE = re.compile(r"^https://chatgpt\.com/backend-api/codex/responses reachable \(HTTP ([1-5][0-9]{2})\)$")
 HANDSHAKE = re.compile(r"^HTTP ([1-5][0-9]{2})$")
 
@@ -74,15 +76,19 @@ def reduce_doctor(stdout: str, exit_code: int | None) -> dict[str, object]:
         report["HTTPS_CHECK_PRESENT"] = True
         status = https.get("status")
         report["HTTPS_CHECK_STATUS"] = status.upper() if status in STATUS else "INVALID"
+        if status == "ok" and https.get("summary") == HTTPS_SUCCESS_SUMMARY:
+            # The exact tagged success path has probed at least one endpoint;
+            # the separate no-endpoints path has a different summary.
+            report["HTTPS_CHECK_STATUS"] = "REACHABLE_STATUS_ONLY"
         # The tagged doctor labels its source-defined ChatGPT endpoint this way.
         # A 401/403 demonstrates reachability, not valid authentication.
         value = _detail(https, "ChatGPT inference URL")
         match = REACHABLE.fullmatch(value or "")
-        if match:
+        if match and status == "ok" and https.get("summary") == HTTPS_SUCCESS_SUMMARY:
             code = int(match.group(1))
             report["HTTPS_HTTP_STATUS_CLASS"] = _http_class(code)
             report["HTTPS_CHECK_STATUS"] = ("REACHABLE_UNAUTHENTICATED" if code in (401, 403)
-                                             else "REACHABLE" if status == "ok" else "INVALID")
+                                             else "REACHABLE")
     if isinstance(ws, dict) and ws.get("id") == "network.websocket_reachability":
         report["WEBSOCKET_CHECK_PRESENT"] = True
         status = ws.get("status")
@@ -96,18 +102,27 @@ def reduce_doctor(stdout: str, exit_code: int | None) -> dict[str, object]:
         report["WEBSOCKET_IMMEDIATE_CLOSE"] = _detail(ws, "immediate close code") is not None
         if supported == "false":
             report["WEBSOCKET_CHECK_STATUS"] = "UNAVAILABLE"
-        elif status == "ok" and ws.get("summary") == "Responses WebSocket handshake succeeded" and handshake:
-            report["WEBSOCKET_CHECK_STATUS"] = "HANDSHAKE_OK"
+        elif status == "ok" and ws.get("summary") == WEBSOCKET_SUCCESS_SUMMARY and (
+                (handshake and int(handshake.group(1)) != 101)
+                or report["WEBSOCKET_IMMEDIATE_CLOSE"]):
+            report["WEBSOCKET_CHECK_STATUS"] = "INVALID"
+        elif status == "ok" and ws.get("summary") == WEBSOCKET_SUCCESS_SUMMARY:
+            # The tagged success branch requires WebSocket support and no
+            # immediate close. Redacted details need not retain HTTP 101.
+            report["WEBSOCKET_ENABLED"] = True
+            report["WEBSOCKET_CHECK_STATUS"] = ("HANDSHAKE_OK" if handshake
+                                                else "HANDSHAKE_STATUS_ONLY")
         elif ws.get("summary") == "Responses WebSocket closed immediately after handshake":
             report["WEBSOCKET_CHECK_STATUS"] = "IMMEDIATE_CLOSE"
     if (not report["HTTPS_CHECK_PRESENT"] or not report["WEBSOCKET_CHECK_PRESENT"]
             or report["HTTPS_CHECK_STATUS"] in ("INVALID", "MISSING", "OK")
-            or report["WEBSOCKET_CHECK_STATUS"] in ("INVALID", "MISSING")
+            or report["WEBSOCKET_CHECK_STATUS"] in ("INVALID", "MISSING", "OK")
             or report["WEBSOCKET_ENABLED"] is None):
         verdict = "CODEX_DOCTOR_INCONCLUSIVE"
-    elif report["HTTPS_CHECK_STATUS"] not in ("REACHABLE", "REACHABLE_UNAUTHENTICATED"):
+    elif report["HTTPS_CHECK_STATUS"] not in ("REACHABLE", "REACHABLE_UNAUTHENTICATED",
+                                               "REACHABLE_STATUS_ONLY"):
         verdict = "CODEX_HTTPS_REACHABILITY_BLOCKED"
-    elif report["WEBSOCKET_CHECK_STATUS"] != "HANDSHAKE_OK":
+    elif report["WEBSOCKET_CHECK_STATUS"] not in ("HANDSHAKE_OK", "HANDSHAKE_STATUS_ONLY"):
         verdict = "CODEX_WEBSOCKET_REACHABILITY_BLOCKED"
     else:
         verdict = "CODEX_NON_INFERENCE_CONNECTIVITY_PASS"

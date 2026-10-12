@@ -941,3 +941,29 @@ Log files:
   Desktop change. `SAFE_FOR_WORKLOADS=False`. Smallest next differential:
   bounded DNS/TLS inside versus outside the development network restriction,
   without changing mounts, provider restrictions or credentials.
+
+## 2026-10-12 — operator-native Codex authority-canary preparation
+
+- Operator-reported ordinary-WSL evidence: exact confined 0.162.1 doctor
+  exited 0 with HTTPS/WebSocket checks OK; one confined text request completed
+  with the exact 17-byte response and no critical/tool events. One of two
+  pre-turn diagnostics was a config-template match; the other remains UNKNOWN.
+  The prior development-network failures are not proven to have one cause.
+- Diagnostic-only doctor parser now accepts the tagged exact HTTPS/WebSocket
+  success summaries when JSON redacts numeric details, reports status-only
+  success without inventing HTTP/handshake codes, and rejects a no-endpoint
+  OK check as inconclusive. Startup templates require whole-message matches;
+  current `skip_host_skill_discovery`, config, state and inner-sandbox warnings
+  were investigated as candidate families, without claiming the unknown
+  message's cause or changing production event validation.
+- Added an operator-only, one-shot authority-canary entry point. It checks a
+  clean tracked-origin-equal feature checkout and confined exact-CLI login,
+  uses the unchanged 90-second production transport and synthetic outside
+  markers, and emits only fixed verdicts/counts/Booleans. Unknown warnings
+  still block. The command is documented in `docs/CODEX_PROVIDER.md`.
+- No inference, doctor call, Weather, START or production-state operation ran
+  in this development chantier. Bubblewrap mounts, CLI flags, narrow readable
+  auth mount, host networking and `SAFE_FOR_WORKLOADS=False` are unchanged.
+- No-inference focused checks: 124 passed, 3 host integration deselected;
+  separate structural/auth/cleanup checks: 3 passed. No full canonical rerun;
+  historical `be73b4c` pass remains one run with intermittent failures open.

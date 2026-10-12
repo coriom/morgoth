@@ -20,7 +20,7 @@ def fixture(*, http: int = 200, ws_status: str = "ok", ws_summary: str =
         "checks": {
             "network.provider_reachability": {
                 "id": "network.provider_reachability", "status": "ok",
-                "summary": SECRET,
+                "summary": doctor.HTTPS_SUCCESS_SUMMARY,
                 "details": {"ChatGPT inference URL":
                             f"https://chatgpt.com/backend-api/codex/responses reachable (HTTP {http})",
                             "other": SECRET},
@@ -45,6 +45,49 @@ def test_success_and_nonzero_overall_exit() -> None:
     assert report["HTTPS_HTTP_STATUS_CLASS"] == "2XX"
     assert report["WEBSOCKET_HANDSHAKE_STATUS_CLASS"] == "1XX"
     assert SECRET not in json.dumps(report)
+
+
+def test_redacted_success_has_status_only_not_invented_http_codes() -> None:
+    """The tagged JSON output can redact URL and numeric handshake details."""
+    data = json.loads(fixture())
+    data["checks"]["network.provider_reachability"]["details"] = {
+        "ChatGPT inference URL": "[redacted]", "other": SECRET}
+    data["checks"]["network.websocket_reachability"]["details"] = {
+        "other": SECRET}
+    report = doctor.reduce_doctor(json.dumps(data), 0)
+    assert report["VERDICT"] == "CODEX_NON_INFERENCE_CONNECTIVITY_PASS"
+    assert report["HTTPS_CHECK_STATUS"] == "REACHABLE_STATUS_ONLY"
+    assert report["WEBSOCKET_CHECK_STATUS"] == "HANDSHAKE_STATUS_ONLY"
+    assert report["WEBSOCKET_ENABLED"] is True
+    assert report["HTTPS_HTTP_STATUS_CLASS"] is None
+    assert report["WEBSOCKET_HANDSHAKE_STATUS_CLASS"] is None
+    assert SECRET not in json.dumps(report)
+
+
+def test_ok_without_endpoint_probe_is_not_reachability_success() -> None:
+    data = json.loads(fixture())
+    data["checks"]["network.provider_reachability"]["summary"] = (
+        "active provider has no HTTP endpoint to probe")
+    data["checks"]["network.provider_reachability"]["details"] = {}
+    assert doctor.reduce_doctor(json.dumps(data), 0)["VERDICT"] == "CODEX_DOCTOR_INCONCLUSIVE"
+
+
+def test_ok_websocket_without_success_summary_is_not_a_handshake() -> None:
+    data = json.loads(fixture())
+    data["checks"]["network.websocket_reachability"]["summary"] = (
+        "Responses WebSocket is not enabled for the active provider")
+    data["checks"]["network.websocket_reachability"]["details"] = {}
+    assert doctor.reduce_doctor(json.dumps(data), 0)["VERDICT"] == "CODEX_DOCTOR_INCONCLUSIVE"
+
+
+def test_contradictory_websocket_success_details_fail_closed() -> None:
+    data = json.loads(fixture())
+    ws = data["checks"]["network.websocket_reachability"]
+    ws["details"]["handshake result"] = "HTTP 500"
+    assert doctor.reduce_doctor(json.dumps(data), 0)["VERDICT"] == "CODEX_DOCTOR_INCONCLUSIVE"
+    ws["details"]["handshake result"] = "HTTP 101"
+    ws["details"]["immediate close code"] = "1008"
+    assert doctor.reduce_doctor(json.dumps(data), 0)["VERDICT"] == "CODEX_DOCTOR_INCONCLUSIVE"
 
 
 @pytest.mark.parametrize("status", [401, 403])
