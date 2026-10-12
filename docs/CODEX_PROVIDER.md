@@ -454,3 +454,50 @@ sandbox mounts or model restrictions on the present evidence. No retry,
 Weather, synthesis/thesis or production workload ran. The last full canonical
 PASS remains the historical `be73b4c` run (2,136 passed, 2 skipped), with
 intermittent full-suite reliability unresolved. Codex workloads remain blocked.
+
+## 2026-10-12 — Confined Codex doctor connectivity diagnosis
+
+The exact [0.162.1 doctor implementation](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/cli/src/doctor.rs#L300-L493)
+loads configuration and checks installation, auth, state/database integrity,
+MCP configuration, provider HTTPS reachability and an authenticated Responses
+WebSocket handshake. It is non-inference, but **not offline**. The MCP checker
+does not launch configured stdio commands; it can probe configured HTTP MCP
+endpoints. The production Bubblewrap mount exposes only the narrow read-only
+auth file, not operator config or repository; a confined `mcp list --json`
+preflight also verified zero configured servers before the sole doctor run.
+Doctor's [ChatGPT plan](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/cli/src/doctor.rs#L2429-L2547)
+uses the source-defined provider URL. Its [HTTPS probe](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/cli/src/doctor.rs#L2580-L2625)
+uses HEAD; a 401/403 would demonstrate server reachability without proving
+authentication. Its [WebSocket probe](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/cli/src/doctor.rs#L2176-L2302)
+can perform an authenticated handshake and records an immediate close.
+
+Diagnostic code commit `2496320` changed only `scripts/` and hermetic tests.
+It runs the fixed `codex doctor --json` via the production `_run()` and
+`build_sandbox_argv()`, bounds it to 90 seconds, discards the complete report
+and stderr, and exports only known check IDs and fixed statuses. Tests:
+97 focused no-inference passed (3 host integration deselected); the three
+separate structural confinement, confined-login and exact-child cleanup
+checks passed. No new full canonical run was attempted.
+
+Exactly **one** doctor run, after a clean diagnostic commit, returned:
+
+| Sanitized field | Observation |
+|---|---|
+| Codex version / doctor exit / JSON valid | 0.162.1 / 1 / true |
+| Provider HTTPS check | present / fail / no HTTP status class |
+| WebSocket check | present / warning / enabled / no handshake status class |
+| WebSocket immediate close | false (no successful handshake observed) |
+| Proxy environment names inside the cleared child | all absent |
+| Verdict | `CODEX_HTTPS_REACHABILITY_BLOCKED` |
+
+The doctor's overall exit can reflect other sandbox-specific checks; this
+verdict comes from its **individual provider HTTPS check**. The run did not
+show an HTTP 401/403, a completed WebSocket handshake or any model inference.
+The failure is observed inside the current nested development execution
+environment. Because Bubblewrap shares that environment's network namespace,
+these facts alone do not establish that DNS, TLS, proxy, credentials or the
+production host network caused the failure. A separately authorized, smallest
+next differential is to run a bounded, non-inference DNS/TLS check for the
+source-defined ChatGPT host inside versus outside this development network
+restriction, without changing Bubblewrap mounts or forwarding credentials.
+No second doctor run or model call occurred. `SAFE_FOR_WORKLOADS=False`.

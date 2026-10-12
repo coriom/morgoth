@@ -917,3 +917,27 @@ Log files:
 - No Desktop, production checkout, main branch, Weather, START, synthesis,
   thesis or Claude change. Next work must narrowly attribute the pinned CLI's
   actual top-level error family before changing runtime resources or policy.
+
+## 2026-10-12 — Codex confined connectivity diagnosis
+
+- Feature branch from clean `ca106ade`; diagnostic script/tests committed as
+  `2496320` before a single non-inference `codex doctor --json` run.
+- Exact 0.162.1 doctor source shows HEAD provider reachability plus authenticated
+  Responses WebSocket handshake, state checks, and MCP configuration checks.
+  Confined `mcp list --json` showed zero configured servers before doctor.
+  No user config or repository was mounted; Bubblewrap and provider code were
+  unchanged. Doctor is not an offline-only check.
+- Focused no-inference selection: 97 passed, 3 host integration deselected.
+  Separate structural confinement, confined login and process cleanup checks:
+  3 passed. No full canonical run; historical `be73b4c` 2,136 passed and 2
+  skipped remains a single success amid unresolved intermittent failures.
+- One doctor run: exit 1, valid JSON; individual HTTPS provider check FAIL
+  without a reported HTTP status; WebSocket check WARNING with no successful
+  handshake/status. WebSocket enabled; no immediate-close indication. Child
+  proxy environment names all absent. Verdict
+  `CODEX_HTTPS_REACHABILITY_BLOCKED` in the nested development network.
+  DNS/TLS/proxy/auth and production-network root cause are not established.
+- No model inference, retry, Weather, research START, production state or
+  Desktop change. `SAFE_FOR_WORKLOADS=False`. Smallest next differential:
+  bounded DNS/TLS inside versus outside the development network restriction,
+  without changing mounts, provider restrictions or credentials.
