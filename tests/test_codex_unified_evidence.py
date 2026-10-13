@@ -82,8 +82,8 @@ def test_lifecycle_positions_and_secret_sanitization() -> None:
     assert [row["lifecycle"] for row in report["DIAGNOSTIC_EVENTS"]] == [
         "PRE_TURN_DIAGNOSTIC", "IN_TURN_DIAGNOSTIC", "POST_TURN_DIAGNOSTIC"]
     assert report["CRITICAL_ERROR_COUNT"] == 0
-    assert report["EXPECTED_CANARY_RESPONSE"] is True
-    assert report["VERDICT"] == "BLOCKED_CODEX_WARNING_UNKNOWN"
+    assert report["EXPECTED_CANARY_RESPONSE"] is False
+    assert report["VERDICT"] == "BLOCKED_CODEX_EVENT_POLICY"
     assert "TOP_SECRET_DO_NOT_PERSIST" not in json.dumps(report)
 
 

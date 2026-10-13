@@ -614,3 +614,70 @@ No-inference verification: 141 focused response, warning, event, confinement
 and provenance tests passed (3 host checks deselected). The 3 separate host
 structural/auth/timeout-cancellation checks passed. No full canonical rerun;
 the historical single `be73b4c` pass and its intermittent-failure limit remain.
+
+## 2026-10-13 — final-message semantics and warning review (no inference)
+
+The latest operator-reported ordinary-WSL canary completed with an exact
+`CANARY_BLOCKED` final file, two completed assistant items, zero tool/critical/
+unknown event shapes and no outside-file effects. The previous diagnostic
+required exactly one completed assistant item and required **all** messages to
+equal the final file. That explains its false `EXPECTED_CANARY_RESPONSE` result;
+it does **not** retroactively prove that the last JSONL assistant item agreed
+with the final file, nor resolve the unknown pre-turn diagnostic. Its private
+stream was discarded.
+
+The tagged [JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L337-L382)
+can emit multiple completed `AgentMessage` items and chooses the last one from
+the completed turn's items for the final output. The diagnostic-only reducer
+now accepts one valid completed turn with **at least one** completed assistant
+item, requires the last item to match `CANARY_BLOCKED` and the readable final
+file after whitespace trimming, and keeps earlier items in the private stream
+for marker disclosure, tool-event and malformed-event checks. It exports
+`INTERMEDIATE_ASSISTANT_ITEM_COUNT`, `LAST_ASSISTANT_ITEM_EXACT` and
+`LAST_ASSISTANT_MATCHES_FINAL_FILE`, plus simultaneous fixed response-failure
+classes; it never exports message text. Post-turn items and duplicate lifecycle
+events fail closed. The production event validator is unchanged.
+
+The pinned mapper collapses
+[ConfigWarning, Warning and DeprecationNotice](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L389-L451)
+and [ModelRerouted](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L473-L485)
+into the same error-shaped JSONL item; the original variant is lost. The
+[exact local diagnostic-log-write warnings](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/log_write_warning.rs#L11-L55)
+now map to the fixed state-warning family but remain `BLOCKED_CODEX_STATE_WARNING`:
+a matching template would indicate a probable persistence failure, not a
+harmless advisory. The mapper's exact reroute format and the pinned
+[`HighRiskCyberActivity` reason](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/protocol/src/protocol.rs#L1979-L1990)
+map to `CODEX_STARTUP_MODEL_REROUTE`, which remains
+`BLOCKED_CODEX_MODEL_REROUTE` pending review. These are **template matches**,
+not structural proof of notification origin. The config/under-development
+feature path, state initialization, inner Linux namespace warning, transport
+fallback and skill discovery remain candidate families; the previous unknown
+item has no retained private message and cannot be assigned to any one of
+them. The dynamic [transport fallback notice](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/responses_retry.rs#L112-L130)
+and unproven skill notices remain UNKNOWN under the full-template policy.
+
+The smallest next attribution step is a **single** operator-local canary that
+classifies its private stream in memory. If its warning remains UNKNOWN, stop
+repeating canaries: a local human review of that one private diagnostic or a
+future structured-notification transport is needed. Neither raw messages nor
+credentials belong in a public report. Even a diagnostically clean canary
+cannot enable production workloads while
+[`_validate_events()`](../core/llm/codex_cli.py) rejects every error-shaped item;
+any narrowly reviewed advisory policy is a separate future decision.
+
+After explicit operator approval, from ordinary Ubuntu WSL run exactly once
+on the clean pushed branch:
+
+```sh
+cd /home/corio/Morgoth/dev-codex-01621-final-message-semantics-v1 && /home/corio/Morgoth/morgoth/.venv/bin/python -m scripts.codex_operator_canary
+```
+
+That entry point verifies exact CLI 0.162.1, clean origin-equal checkout and
+confined login, then uses the unchanged 90-second `build_argv()` → `_run()` →
+mandatory Bubblewrap path and synthetic outside read/write markers. It does
+not retry or enable workloads. The read-only `auth.json` mount remains readable
+by Codex; the process shares host networking. No model call occurred in this
+development branch. Focused no-inference tests: 141 passed, 3 deselected;
+host structural/auth/cleanup checks: 3 passed. No full canonical rerun;
+the historical one-run `be73b4c` result and intermittent reliability limit
+remain unchanged. `SAFE_FOR_WORKLOADS=False`.

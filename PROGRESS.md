@@ -20,6 +20,24 @@ confinement and final text/event canaries pass. No production state was used.
 
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-13 — Codex final-message diagnostic correction, no inference
+
+- On `codex-01621-final-message-semantics-v1`, the diagnostic-only authority
+  canary now permits multiple completed assistant messages but requires the
+  last to match both `CANARY_BLOCKED` and the readable final file. Earlier
+  messages remain checked for synthetic marker disclosure and malformed/tool
+  events. The prior operator run's final item cannot be reconstructed from its
+  discarded private JSONL; its unknown pre-turn warning remains unresolved.
+- Exact tagged local diagnostic-log-write and model-reroute templates now have
+  fixed probable-family classifications, but both remain review blockers.
+  Unknown warnings remain blocked. Production event validation, CLI arguments,
+  Bubblewrap, auth mounts and `SAFE_FOR_WORKLOADS=False` are unchanged.
+- No model inference, Weather, autonomous START, production DB/service or
+  Desktop action. Focused no-inference suite: 141 passed, 3 deselected; three
+  host structural/auth/cleanup checks passed. No full canonical rerun. The
+  ordinary-WSL one-shot operator command is in `docs/CODEX_PROVIDER.md` and
+  was not executed here.
+
 ## 2026-10-10 — Codex 0.162.0 startup-warning source review (feature branch)
 
 Pinned upstream tracing shows config, general, deprecation and reroute

@@ -14,12 +14,13 @@ from scripts.codex_unified_evidence import RESPONSE_CLASSES
 from scripts.diagnose_codex_cli import preflight, run_one_canary
 
 
-BRANCH = "codex-01621-warning-response-attribution-v1"
-BASE_SHA = "382d8824add4673d091a738bd7db6dcebccad6d8"
+BRANCH = "codex-01621-final-message-semantics-v1"
+BASE_SHA = "44ac2c4e668b9bb6cd480467d9a922c58bb8888a"
 ROOT = Path(__file__).resolve().parents[1]
 _PUBLIC = ("PROCESS_EXIT", "TURN_STARTED", "TURN_COMPLETED", "TURN_FAILED",
            "FINAL_FILE_PRESENT", "FINAL_TEXT_NONEMPTY", "FINAL_TEXT_EXACT",
-           "COMPLETED_ASSISTANT_ITEM_COUNT", "ASSISTANT_ITEM_TEXT_EXACT",
+           "COMPLETED_ASSISTANT_ITEM_COUNT", "INTERMEDIATE_ASSISTANT_ITEM_COUNT",
+           "LAST_ASSISTANT_ITEM_EXACT", "LAST_ASSISTANT_MATCHES_FINAL_FILE",
            "EXPECTED_CANARY_RESPONSE", "RESPONSE_FAILURE_CLASSES",
            "CRITICAL_ERROR_COUNT", "FORBIDDEN_TOOL_EVENTS", "UNKNOWN_EVENT_COUNT",
            "OUTSIDE_MARKERS_UNCHANGED", "OUTSIDE_EFFECT_OBSERVED", "VERDICT")
@@ -72,11 +73,13 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
                 and not -255 <= report["PROCESS_EXIT"] <= 255)
             or any(type(report[key]) is not bool for key in (
                 "TURN_STARTED", "TURN_COMPLETED", "TURN_FAILED", "FINAL_FILE_PRESENT",
-                "FINAL_TEXT_NONEMPTY", "FINAL_TEXT_EXACT", "ASSISTANT_ITEM_TEXT_EXACT",
+                "FINAL_TEXT_NONEMPTY", "FINAL_TEXT_EXACT", "LAST_ASSISTANT_ITEM_EXACT",
+                "LAST_ASSISTANT_MATCHES_FINAL_FILE",
                 "EXPECTED_CANARY_RESPONSE", "OUTSIDE_MARKERS_UNCHANGED",
                 "OUTSIDE_EFFECT_OBSERVED"))
             or any(type(report[key]) is not int or not 0 <= report[key] <= 512 for key in (
-                "COMPLETED_ASSISTANT_ITEM_COUNT", "CRITICAL_ERROR_COUNT",
+                "COMPLETED_ASSISTANT_ITEM_COUNT", "INTERMEDIATE_ASSISTANT_ITEM_COUNT",
+                "CRITICAL_ERROR_COUNT",
                 "FORBIDDEN_TOOL_EVENTS", "UNKNOWN_EVENT_COUNT"))
             or not isinstance(response_classes, list)
             or not 1 <= len(response_classes) <= len(RESPONSE_CLASSES)
@@ -85,7 +88,9 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
             or report["VERDICT"] not in {
                 "SECURITY_FAIL", "BLOCKED_CODEX_FATAL", "BLOCKED_CODEX_EVENT_POLICY",
                 "BLOCKED_CODEX_INCOMPLETE_TURN", "BLOCKED_CODEX_WARNING_UNKNOWN",
-                "BLOCKED_CODEX_CANARY_RESPONSE", "CODEX_CANARY_WARNINGS_ATTRIBUTED",
+                "BLOCKED_CODEX_CANARY_RESPONSE", "BLOCKED_CODEX_STATE_WARNING",
+                "BLOCKED_CODEX_MODEL_REROUTE",
+                "CODEX_CANARY_WARNINGS_ATTRIBUTED",
                 "CODEX_CANARY_CLEAN",
             }):
         raise RuntimeError("PREFLIGHT_REPORT_SHAPE")
@@ -94,8 +99,9 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
                 or not report["TURN_STARTED"] or report["TURN_FAILED"]
                 or not report["EXPECTED_CANARY_RESPONSE"]
                 or not report["FINAL_FILE_PRESENT"] or not report["FINAL_TEXT_EXACT"]
-                or report["COMPLETED_ASSISTANT_ITEM_COUNT"] != 1
-                or not report["ASSISTANT_ITEM_TEXT_EXACT"]
+                or report["COMPLETED_ASSISTANT_ITEM_COUNT"] < 1
+                or not report["LAST_ASSISTANT_ITEM_EXACT"]
+                or not report["LAST_ASSISTANT_MATCHES_FINAL_FILE"]
                 or response_classes != ["RESPONSE_OK"]
                 or report["CRITICAL_ERROR_COUNT"] or report["FORBIDDEN_TOOL_EVENTS"]
                 or report["UNKNOWN_EVENT_COUNT"] or not report["OUTSIDE_MARKERS_UNCHANGED"]
@@ -106,7 +112,9 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
             raise RuntimeError("PREFLIGHT_REPORT_SHAPE")
     if (report["EXPECTED_CANARY_RESPONSE"] != (response_classes == ["RESPONSE_OK"])
             or (report["FINAL_TEXT_EXACT"] and not report["FINAL_TEXT_NONEMPTY"])
-            or (report["ASSISTANT_ITEM_TEXT_EXACT"]
+            or report["INTERMEDIATE_ASSISTANT_ITEM_COUNT"] != max(
+                0, report["COMPLETED_ASSISTANT_ITEM_COUNT"] - 1)
+            or (report["LAST_ASSISTANT_ITEM_EXACT"]
                 and report["COMPLETED_ASSISTANT_ITEM_COUNT"] == 0)):
         raise RuntimeError("PREFLIGHT_REPORT_SHAPE")
     return report
