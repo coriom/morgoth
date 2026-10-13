@@ -1420,7 +1420,7 @@ async def _one_reflect_attempt(
     label = f"[retry_of={retry_of[:8]}]" if retry_of else "[first attempt]"
     log(f"engine: {provider} {label}")
     raw, _meta = await reflect_chat(prompt, config, provider, ollama_client=llm)
-    log(f"raw spec (first 400 chars): {_short(raw, 400)}")
+    log(f"model spec received (response_chars={len(raw)})")
 
     # Parse.
     spec = _parse_spec(raw)
@@ -1431,7 +1431,7 @@ async def _one_reflect_attempt(
                     "proposal_id": None, "pipeline_status": None, "spec": None}
         log("outcome: unparseable")
         return {"outcome": "unparseable",
-                "reason": f"could not parse spec: {_short(raw, 300)}",
+                "reason": "could not parse model spec",
                 "proposal_id": None, "pipeline_status": None, "spec": None}
 
     # Normalize URL fields BEFORE validation & smoke.

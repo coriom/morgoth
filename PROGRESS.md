@@ -20,6 +20,31 @@ confinement and final text/event canaries pass. No production state was used.
 
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-13 — Restricted Codex text qualification prepared, no inference
+
+- Audited pinned 0.162.1 model metadata precedence and CodeMode/CodeModeOnly
+  fallback semantics. The mutable `default` model and downstream structured
+  parsers remain separate live-qualification gates; no alternative model was
+  silently selected.
+- Added an explicit one-shot, production-policy synthetic qualifier. Its
+  default and `--preflight` paths cannot infer; operator `--execute-once` is
+  required for the single 90-second request after clean origin equality.
+  The final response, warnings and outside-file effects are checked without
+  publishing private CLI output. A successful synthetic result never enables
+  workloads.
+- Codex `json_mode=True` now rejects invalid JSON syntax with a fixed safe
+  error, without changing callers that do not request JSON mode. The syntax
+  check is not task-schema validation. Bubblewrap mounts, auth exposure,
+  shared network, CLI flags and source-grounded advisory policy are unchanged.
+- THESIS, REFLECT and SHADOW parse failures no longer copy raw model output
+  into log messages or diagnostic reasons; a secret-canary regression locks it.
+- The final-output reader is now bounded and rejects symlinks/non-regular files
+  in both production invocation and the synthetic qualifier.
+- `SAFE_FOR_WORKLOADS=False`; no model inference, Weather, research START,
+  production Project/DB/service, Desktop change, deployment, API key or Claude.
+  Focused and canonical results for this branch are recorded in the final
+  branch acceptance report below.
+
 ## 2026-10-13 — Codex final-message diagnostic correction, no inference
 
 - On `codex-01621-final-message-semantics-v1`, the diagnostic-only authority

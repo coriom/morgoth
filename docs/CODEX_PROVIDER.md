@@ -1,5 +1,94 @@
 # Internal LLM migration
 
+## Restricted text qualification preparation (2026-10-13)
+
+The `codex-01621-provider-qualification-v1` branch prepares one operator-native
+synthetic qualification. `SAFE_FOR_WORKLOADS=False` remains the actual provider
+gate. No inference, workload, deployment, database write, or Desktop change is
+part of the preparation. The operator command is deliberately inert unless
+`--execute-once` is supplied after reviewing the pushed clean branch.
+
+### Pinned model/tool-mode contract
+
+In [Codex 0.162.1 `requested_tool_mode`](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/mod.rs#L621-L661),
+model metadata's `tool_mode` takes precedence over disabled feature defaults.
+When metadata is absent, the disabled Code Mode features select Direct. If a
+model requests CodeMode and the host is unavailable, `effective_tool_mode`
+uses Direct only if in-process fallback is allowed. CodeModeOnly remains
+CodeModeOnly and fails closed. The [unavailable-host warning](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/code_mode/mod.rs#L1528-L1554)
+identifies a disabled tool path, not the model's complete capability set.
+The [models manager](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/models-manager/src/manager.rs#L2375-L2455)
+selects a default from the available catalog and applies remote model
+metadata. Thus `codex-cli:default` is not a permanent model or tool-mode pin.
+No account-accessible, explicitly named alternative has been qualified; routing
+is unchanged. A successful blocked-tool canary proves one text-only turn under
+its then-current metadata, not all future defaults or tool-mode requests.
+
+| Morgoth task | Provider contract | Output/consumer | Conservative status |
+| --- | --- | --- | --- |
+| CHAT | Ollama local tool loop | text plus Morgoth tool router | SUPPORTED_BY_DESIGN; outside Codex qualification |
+| SYNTHESIS | Codex text, no model tools | prose; cross-source evidence persisted | REQUIRES_LIVE_QUALIFICATION |
+| THESIS | Codex text, no model tools | JSON array, parsed and numeric-fidelity gated | REQUIRES_LIVE_QUALIFICATION |
+| REFLECT | Codex text, no model tools | JSON proposal or NONE; schema and human gates downstream | REQUIRES_LIVE_QUALIFICATION |
+| SHADOW | Codex text, no model tools | JSON verdict; defensive parser and corrective re-ask | REQUIRES_LIVE_QUALIFICATION |
+| SCOUT | reserved Codex route | current scout fetches/catalogs leads without an LLM call | UNKNOWN for Codex route; current scout is separately implemented |
+
+These call sites do not ask Codex to use shell, file, browser, web, MCP, app,
+plugin, or persistent CLI session authority. Reflect/Shadow/Scout application
+code may independently sample endpoints or read Project data before making a
+text prompt; that is **not** Codex tool authority. The Codex CLI
+`--ephemeral` invocation has no cross-call conversation context. THESIS,
+REFLECT and SHADOW require structured model text; their downstream parsers
+validate task-specific shapes. The provider `json_mode` parameter formerly
+did nothing. It now checks strict JSON syntax when requested and returns the
+original text; it does **not** promise schema conformance or Codex JSON mode.
+Current task call sites do not pass `json_mode=True`, so this correction does
+not silently change their format or fallback behavior.
+Parse failures in THESIS, REFLECT and SHADOW no longer echo raw model text into
+logs or diagnostic reasons; a synthetic secret regression covers these paths.
+Both production invocation and the qualifier now read the final-output file
+through the same bounded, no-symlink, owner-checked regular-file reader.
+
+`scripts/codex_provider_final_qualification.py` verifies clean tracked branch,
+exact CLI 0.162.1 flags/features, confined ChatGPT login, sandbox runtime
+resources and synthetic outside-file denial without inference. On explicit
+`--execute-once`, it makes exactly one 90-second synthetic authority request
+through `build_argv` → `_run`/Bubblewrap → production `_validate_events`.
+Only the two exact reviewed pre-turn advisories may pass; duplicates, unknown
+diagnostics, model reroutes, critical errors, malformed/incomplete turns,
+forbidden tool events, final-message mismatch, marker disclosure and actual
+outside write/read effects block. The report exports only fixed categories,
+counts and Booleans; raw prompt, response, JSONL and stderr stay in memory.
+`CODE_MODE_UNAVAILABLE_FAIL_CLOSED` is reported as a limitation, not hidden.
+The JSONL stream does not structurally expose the resolved model/tool mode, so
+the qualifier cannot certify that a mutable default will remain suitable.
+
+Even `TEXT_ONLY_QUALIFICATION_PASS` leaves `PRODUCTION_QUALIFIED=false` and
+`SAFE_FOR_WORKLOADS=False`. Before disposable `morgoth_test` acceptance,
+review the one-shot evidence, select a known model/metadata policy or establish
+an equivalent fail-closed drift check, and separately authorize the first
+workload. The proposed first workload is a **synthetic THESIS extraction**:
+one fabricated synthesis with two fabricated source observations, expected
+`[]` or a schema-valid grounded thesis, no real Weather/market data and no
+production Project. Use private temporary `MORGOTH_HOME`, disposable
+`morgoth_test`, one objective, fallback disabled, one Codex call, a hard
+90-second CLI bound and a fixed small prompt/response budget. Accept only a
+valid JSON array, a persisted/fidelity-reviewed result or explicit abstention,
+zero fallback/tool/critical events and exact child cleanup. Any failure stops,
+reaps the child and discards the disposable Project; it never retries into a
+favorable thesis. Human Gate 3 and deployment approval remain separate.
+
+Security boundary: Bubblewrap hides unrelated host HOME/repository paths and
+limits host writes to the private invocation directory. The confined Codex
+process **can read** its narrow read-only `auth.json` mount and **shares host
+networking**; there is no credential broker or network isolation. CLI tools
+are denied by reviewed flags and a strict event policy, with host filesystem
+denial independently enforced by Bubblewrap. Prompt/response confidentiality
+depends on the authorized Codex service and in-memory process handling; the
+synthetic test cannot prove universal confidentiality. Fallback still permits
+Codex → Ollama in normal configuration and records it; the future disposable
+acceptance must set `LLM_FALLBACK_ENABLED=false` to attribute the result.
+
 ## Installed 0.162.1 confinement qualification (2026-10-10)
 
 The operator selected a separate 0.162.1 qualification after the active CLI

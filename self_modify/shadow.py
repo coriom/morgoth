@@ -482,7 +482,7 @@ def parse_verdict(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
     if obj is None:
-        return _error_verdict(f"unparseable: {raw[:200]}")
+        return _error_verdict("unparseable model response")
 
     verdict = str(obj.get("verdict") or "").upper().strip()
     if verdict not in _VALID_VERDICTS:

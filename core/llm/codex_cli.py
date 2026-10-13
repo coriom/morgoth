@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -57,6 +58,7 @@ CONFIG = (
 _QUALIFIED: set[tuple] = set()
 _REJECTED: set[tuple] = set()
 _CANCEL_EVENT: ContextVar[threading.Event | None] = ContextVar("codex_cancel", default=None)
+MAX_FINAL_BYTES = 1_000_000
 
 
 class CodexCliError(RuntimeError):
@@ -192,6 +194,25 @@ def _check_result(result: subprocess.CompletedProcess[str]) -> None:
         raise CodexCliError("process_failed")
 
 
+def _read_final_text(path: Path) -> str:
+    """Read only a bounded, owned regular output file without following links."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_size > MAX_FINAL_BYTES):
+                raise CodexCliError("invalid_final_file")
+            payload = stream.read(MAX_FINAL_BYTES + 1)
+        if len(payload) > MAX_FINAL_BYTES:
+            raise CodexCliError("invalid_final_file")
+        return payload.decode("utf-8").strip()
+    except FileNotFoundError:
+        raise CodexCliError("missing_final") from None
+    except (OSError, UnicodeError):
+        raise CodexCliError("invalid_final_file") from None
+
+
 def discover(binary: str, cwd: str, env: dict[str, str]) -> None:
     """Bounded, non-inference capability discovery for the reviewed version."""
     for args, required in (
@@ -301,10 +322,7 @@ def invoke(binary: str, model: str, env: dict[str, str], prompt: str,
             raise CodexCliError("missing_safety_capability")
         result = _run(argv, cwd, env, prompt, timeout)
         _check_result(result)
-        try:
-            text = final.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeError):
-            raise CodexCliError("missing_final") from None
+        text = _read_final_text(final)
         if not text:
             raise CodexCliError("empty_final")
         _validate_events(result.stdout, final_text=text,
@@ -379,7 +397,7 @@ def _complete_owned(prompt: str, model: str, timeout: float) -> str:
     except CodexCliError as exc:
         if exc.code in ("tool_activity", "unexpected_event", "invalid_events",
                         "cli_diagnostic", "incomplete_turn", "final_mismatch",
-                        "missing_final", "empty_final", "canary_failed"):
+                        "missing_final", "invalid_final_file", "empty_final", "canary_failed"):
             _QUALIFIED.discard(key)
             _REJECTED.add(key)
         raise
@@ -395,7 +413,7 @@ class CodexCliProvider:
 
     async def complete(self, prompt: str, *, system: str | None = None,
                        json_mode: bool = False, timeout: int | None = None) -> str:
-        """Bounded call with no retries; the existing fallback owns degradation."""
+        """Bounded call; JSON mode validates syntax, not a task-specific schema."""
         budget = timeout if timeout is not None else int(os.environ.get("REFLECT_LLM_TIMEOUT_SECONDS") or 600)
         if budget <= 0 or budget > 3600:
             raise CodexCliError("invalid_timeout")
@@ -424,7 +442,13 @@ class CodexCliProvider:
         worker = threading.Thread(target=work, name="morgoth-codex-owned", daemon=True)
         worker.start()
         try:
-            return await result
+            value = await result
+            if json_mode:
+                try:
+                    json.loads(value)
+                except (TypeError, ValueError):
+                    raise CodexCliError("invalid_json_output") from None
+            return value
         except asyncio.CancelledError:
             cancel_event.set()
             deadline = loop.time() + 5

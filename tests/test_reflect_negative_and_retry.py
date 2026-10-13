@@ -321,6 +321,7 @@ def _mock_store() -> MagicMock:
     store.submit_terminal = AsyncMock(return_value="reject-1")
     store.submit = AsyncMock(return_value="prop-1")
     store.get = AsyncMock(return_value={"proposal_id": "prop-1"})
+    store.update_status = AsyncMock(return_value=None)
     return store
 
 

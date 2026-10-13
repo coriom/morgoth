@@ -1728,20 +1728,15 @@ class Brain:
         start = stripped.find("[")
         end = stripped.rfind("]")
         if start == -1 or end == -1 or end < start:
-            logger.warning(
-                "Thesis JSON parse: no array delimiters found in: {!r}",
-                text[:200],
-            )
+            logger.warning("Thesis JSON parse: no array delimiters (response_chars={})",
+                           len(text))
             return []
         candidate = stripped[start : end + 1]
         try:
             data = json.loads(candidate)
         except json.JSONDecodeError as exc:
-            logger.warning(
-                "Thesis JSON parse error: {}; raw: {!r}",
-                exc,
-                text[:200],
-            )
+            logger.warning("Thesis JSON parse error: {} (response_chars={})",
+                           type(exc).__name__, len(text))
             return []
         if not isinstance(data, list):
             return []
