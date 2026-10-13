@@ -1108,3 +1108,9 @@ Log files:
 - No inference, Weather, START, production DB/service, Desktop change,
   credential or sandbox change. `SAFE_FOR_WORKLOADS=False`; Human Gate 3
   remains human-only. See `docs/CODEX_PROVIDER.md` for security limits.
+- Candidate code commit `4b37cffb9b26d0bf1b1495d289af3d9fccb56342`
+  passed focused Codex/provenance tests 281/281 (3 host cases deselected),
+  host structural/auth/cleanup 3/3, and one provenance-aware full canonical
+  run: requested=tested SHA `4b37cffb9b26d0bf1b1495d289af3d9fccb56342`,
+  copied-tree manifests equal, 2,279 passed, 2 skipped, no failure/error,
+  exit 0, 59.7 s. No claim of repeated full-suite reliability is made.

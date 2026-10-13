@@ -909,3 +909,15 @@ fresh confined authority and text qualification with no unknown/tool/critical
 events, and model/tool-mode suitability for text-only tasks. Human Gate 3
 remains human-only. No research START or production deployment belongs to
 this branch.
+
+Verification of the committed implementation `4b37cffb9b26d0bf1b1495d289af3d9fccb56342`:
+the no-inference focused Codex/provenance selection passed 281 tests with
+three host integration tests deselected; those three structural/auth/cleanup
+checks passed separately. One full provenance-aware canonical run tested the
+same source SHA and matching whole-tree manifest: 2,281 collected, 2,279
+passed, two skipped, zero failures/errors, exit 0, 59.7 s. Its owned cgroup
+recorded zero OOM kills and zero PID-limit hits. The initial development-tool
+sandbox cgroup preflight could not start tests; the complete run used the
+available user cgroup while retaining Bubblewrap and network isolation. This
+is one successful full run, not proof that historical intermittent runner
+failures can no longer recur. No Codex model inference ran in this chantier.
