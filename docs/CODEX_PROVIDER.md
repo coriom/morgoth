@@ -89,6 +89,24 @@ synthetic test cannot prove universal confidentiality. Fallback still permits
 Codex → Ollama in normal configuration and records it; the future disposable
 acceptance must set `LLM_FALLBACK_ENABLED=false` to attribute the result.
 
+**Acceptance evidence for this branch:** code commit
+`7570bfcbf3a1d323239f35658cf06795d77226d7` was copied and verified by
+the provenance-aware canonical runner. Requested and tested source SHAs and
+whole-tree manifests matched. One full canonical run passed: 2,292 passed,
+2 skipped, 0 failures/errors, exit 0, 47.2 s wall time, 0 cgroup OOM kills.
+Focused modified-component selection passed 176 tests, including 3 host
+Bubblewrap/auth/cleanup checks. A separate broad direct pytest selection
+encountered `test_reflect_negative_and_retry.py::test_retry_fires_on_rejected_smoke`
+timing out under the development-agent process sandbox; the same node timed
+out on the clean base, while the verified canonical run passed it. Another
+direct test had a pre-existing `MagicMock.update_status` fixture error,
+reproduced on the clean base; its fixture is now corrected to `AsyncMock`.
+This single canonical pass is not proof that historical intermittent runner
+failures are permanently resolved. After the code commit was pushed, the
+script's non-inference `--preflight` returned `PREFLIGHT_PASS=true` from the
+clean, origin-equal branch. **No model inference ran in this development
+session.** The operator-native `--execute-once` qualification remains pending.
+
 ## Installed 0.162.1 confinement qualification (2026-10-10)
 
 The operator selected a separate 0.162.1 qualification after the active CLI

@@ -42,8 +42,15 @@ confinement and final text/event canaries pass. No production state was used.
   in both production invocation and the synthetic qualifier.
 - `SAFE_FOR_WORKLOADS=False`; no model inference, Weather, research START,
   production Project/DB/service, Desktop change, deployment, API key or Claude.
-  Focused and canonical results for this branch are recorded in the final
-  branch acceptance report below.
+  One provenance-aware canonical run on code SHA `7570bfcb` passed: 2,292
+  passed, 2 skipped, 0 errors, exit 0; requested/tested SHA and full copied
+  manifest matched. Focused modified-component selection: 176 passed,
+  including 3 host Bubblewrap/auth/cleanup tests. The clean, origin-equal
+  feature branch passed the non-inference operator preflight. A direct
+  `test_reflect_negative_and_retry` node timed out in the development-agent
+  process sandbox on both base and feature; the canonical run passed it.
+  Historical intermittent canonical failures are not declared resolved by
+  this single pass. Live operator qualification is still pending.
 
 ## 2026-10-13 — Codex final-message diagnostic correction, no inference
 
