@@ -146,9 +146,11 @@ def test_startup_runner_classifies_only_private_source_template(monkeypatch: pyt
     monkeypatch.setattr(C, "_run", fake_run)
     result = D.run_one_canary("codex", {}, startup_analysis=True)
     assert calls == 1
-    assert result["verdict"] == "CODEX_STARTUP_DIAGNOSTIC_ATTRIBUTED"
+    # The private canary suffix makes this an unknown whole message.  An
+    # otherwise recognizable prefix must not become an attributed warning.
+    assert result["verdict"] == "BLOCKED_CODEX_STARTUP_UNKNOWN"
     assert result["diagnostics"] == [{"event_type": "item.completed",
                                      "event_position": 2,
                                      "lifecycle": "BEFORE_TURN_START",
-                                     "code": "CODEX_STARTUP_RUNTIME_WARNING"}]
+                                     "code": "CODEX_STARTUP_UNKNOWN"}]
     assert "TOP_SECRET_DO_NOT_PERSIST" not in json.dumps(result)

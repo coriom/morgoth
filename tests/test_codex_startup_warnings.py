@@ -7,6 +7,7 @@ import pytest
 
 from core.llm.codex_cli import CodexCliError, _validate_events
 from scripts.codex_startup_warnings import classify_startup_warning, reduce_startup_events
+from scripts.codex_unified_evidence import reduce_unified_events
 
 
 @pytest.mark.parametrize(("message", "expected"), [
@@ -100,3 +101,43 @@ def test_clean_stream_is_diagnostic_only_and_production_still_rejects_error() ->
                           "message": "Codex rebuilt its local database"}})
     with pytest.raises(CodexCliError, match="cli_diagnostic"):
         _validate_events(diagnostic)
+
+
+def test_jsonl_warning_shape_cannot_prove_originating_notification() -> None:
+    """The tagged mapper discards ConfigWarning/Warning variant identity."""
+    private = "Under-development features enabled: skip_host_skill_discovery. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in PRIVATE_PATH."
+    raw = _stream(
+        {"type": "thread.started"},
+        {"type": "item.completed", "item": {"type": "error", "message": private}},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "CANARY_BLOCKED"}},
+        {"type": "turn.completed"},
+    )
+    report = reduce_unified_events(raw, "", 0, "CANARY_BLOCKED", "MARKER", True,
+                                   False, final_file_present=True)
+    assert report["DIAGNOSTIC_EVENTS"] == [
+        {"position": 2, "lifecycle": "PRE_TURN_DIAGNOSTIC",
+         "class": "CODEX_STARTUP_CONFIG_WARNING"}
+    ]
+    assert report["EXPECTED_CANARY_RESPONSE"] is True
+    assert report["VERDICT"] == "CODEX_CANARY_WARNINGS_ATTRIBUTED"
+    assert "notification_variant" not in json.dumps(report)
+    assert "PRIVATE_PATH" not in json.dumps(report)
+    with pytest.raises(CodexCliError, match="cli_diagnostic"):
+        _validate_events(raw)
+
+
+def test_unknown_warning_remains_blocked_after_exact_response() -> None:
+    raw = _stream(
+        {"type": "thread.started"},
+        {"type": "item.completed", "item": {"type": "error",
+         "message": "TOP_SECRET_DO_NOT_PERSIST"}},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "CANARY_BLOCKED"}},
+        {"type": "turn.completed"},
+    )
+    report = reduce_unified_events(raw, "", 0, "CANARY_BLOCKED", "MARKER", True,
+                                   False, final_file_present=True)
+    assert report["EXPECTED_CANARY_RESPONSE"] is True
+    assert report["VERDICT"] == "BLOCKED_CODEX_WARNING_UNKNOWN"
+    assert "TOP_SECRET_DO_NOT_PERSIST" not in json.dumps(report)

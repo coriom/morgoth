@@ -1008,3 +1008,36 @@ Log files:
 - Focused no-inference checks: 141 passed, 3 host checks deselected; separate
   host structural/auth/timeout-cancellation checks: 3 passed. Historical
   canonical evidence was not rerun or upgraded to repeated reliability.
+
+## 2026-10-13 — Codex 0.162.1 startup-warning provenance (no inference)
+
+- Began from clean `e09424decfed75e227cc702e2ab3984811d95470` on
+  `codex-01621-warning-provenance-v1`; Desktop was not changed. The latest
+  operator-reported canary's exact response, clean tool/effect observations
+  and remaining two pre-turn diagnostics are inherited evidence only.
+- Pinned-source trace: exec builds a warning list and starts an in-process
+  app-server with `SessionSource::Exec` and `log_db: None`; initialize can
+  replay config warnings before the turn. The JSONL mapper erases the
+  ConfigWarning/Warning/DeprecationNotice/ModelRerouted variant into one
+  error-shaped item; top-level Error stays distinct. Exact template matches
+  suggest families, not proven notification origins. The under-development
+  feature notice originates as WarningEvent despite its diagnostic label
+  `CODEX_STARTUP_CONFIG_WARNING`.
+- Standalone app-server initialization uses different config, session source,
+  state recovery, plugin-startup and log-DB paths. Its non-inference notices
+  cannot faithfully attribute the previous exec warning. Verdict:
+  `STARTUP_PROVENANCE_NOT_REPRODUCIBLE_WITHOUT_INFERENCE`. No app-server
+  diagnostic was implemented or run. A separately reviewed structured
+  notification transport in the exact exec path is the narrow future route;
+  raw messages must remain operator-local.
+- Added hermetic tests for origin loss, secret-free projection, production
+  diagnostic rejection and UNKNOWN-warning blocking after an exact response.
+  Corrected an inherited diagnostic test expectation: a private suffix makes
+  an otherwise exact template UNKNOWN. This failure reproduced on the clean
+  base; no classifier or production gate was relaxed.
+- Focused no-inference tests: 229 passed, 3 deselected. Separate host
+  structural/auth/timeout-cancellation tests: 3 passed. The first host run
+  stopped at the test-only URL guard; rerun with a disposable `_test` URL
+  shape passed and did not connect to PostgreSQL. No full canonical rerun,
+  model inference, Weather, START, production service/database or new
+  dependency. `SAFE_FOR_WORKLOADS=False`.

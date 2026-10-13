@@ -681,3 +681,71 @@ development branch. Focused no-inference tests: 141 passed, 3 deselected;
 host structural/auth/cleanup checks: 3 passed. No full canonical rerun;
 the historical one-run `be73b4c` result and intermittent reliability limit
 remain unchanged. `SAFE_FOR_WORKLOADS=False`.
+
+## 2026-10-13 — pinned 0.162.1 startup-notification provenance (no inference)
+
+The operator's latest confined authority canary exited 0, completed its turn,
+returned the exact `CANARY_BLOCKED` final file and matching last assistant
+item, and observed no critical errors, tool events or outside-file effects.
+Its two pre-turn diagnostic items remain a config-template match and UNKNOWN.
+The discarded private JSONL cannot retrospectively identify the second item.
+`SAFE_FOR_WORKLOADS=False`; this branch did not run another canary.
+
+The exact tagged [exec initialization](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/lib.rs#L672-L725)
+loads config and builds `config_warnings`, initializes state, then starts an
+in-process app-server with `SessionSource::Exec`, `log_db: None` and the
+prebuilt warning list. [Initialize](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/initialize_processor.rs#L219-L237)
+replays those warnings before `thread/start` and `turn/start`.
+The [exec notification filter](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/lib.rs#L1610-L1671)
+also admits thread-independent warnings. Timing alone identifies no cause.
+
+| Notification family | Pinned producer and possible pre-turn path | JSONL message structure and side effect |
+|---|---|---|
+| ConfigWarning | Config loading or initialize replay | `summary` plus optional parenthesized `details`; some are advisory, while state-recovery notices can imply writes. |
+| Warning | [Under-development feature validation](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1983-L2017) or thread-independent runtime warnings may enter the exec filter; [inner Bubblewrap probe](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/sandboxing/src/bwrap.rs#L18-L77) is another candidate | Raw warning `message`; namespace probe can test host capability. Neither producer is tied to the unknown item. |
+| DeprecationNotice | Configuration/feature deprecation notice, if emitted during startup | `summary` plus optional parenthesized `details`; no variant identity survives. |
+| ModelRerouted | Model selection/reroute notification, ordinarily turn-scoped | Fixed `model rerouted: FROM -> TO (REASON)` format; model selection changed, requiring review. |
+| Error | Critical app-server error; exec may fail the turn/process | `error.message` plus optional parenthesized `additional_details`; distinct top-level `type=error`. |
+
+The [JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L389-L485)
+collapses ConfigWarning, Warning, DeprecationNotice and ModelRerouted into
+`item.completed` / `item.type=error`; it does **not** preserve the originating
+notification variant. Critical Error maps to top-level `type=error`.
+In particular, the exact under-development feature template is produced as
+`WarningEvent` in the tagged feature source even though the existing bounded
+diagnostic labels its **topic** `CODEX_STARTUP_CONFIG_WARNING`; that label
+must not be read as proof of `ServerNotification::ConfigWarning` origin.
+The [diagnostic-log-write warning reporter](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/log_write_warning.rs#L11-L55)
+has exact state-warning templates, but the tagged exec wiring passes
+`log_db: None` to its in-process app-server, and the
+[reporter is attached only when a log DB exists](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/in_process.rs#L429-L439).
+The separate app-server path can
+initialize a log DB and emit messages absent from this exec wiring. The
+confined Codex home exposes only a narrow read-only auth file and no host
+state tree; state persistence may differ from an unconstrained CLI, but this
+is **not** established as the cause of the operator warning. A state-warning
+template, if observed,
+would be a probable persistence issue requiring review.
+
+An initialization-only `codex app-server` run cannot faithfully replay the
+existing `codex exec` startup: [standalone initialization](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/lib.rs#L410-L458)
+uses a different session source and startup options; its
+[config/state/log setup](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/lib.rs#L489-L705)
+loads configuration independently, may perform state recovery, and enables
+log persistence that exec leaves absent. Its default startup also enables
+plugin startup tasks, so matching exec's disabled user configuration and MCP
+authority cannot be assumed. It may emit a different warning set
+or write state. No `turn/start` would make it non-inference, but would not
+make its notices evidence for the completed exec canary. Verdict:
+`STARTUP_PROVENANCE_NOT_REPRODUCIBLE_WITHOUT_INFERENCE`. No live app-server
+diagnostic or operator command is offered from this branch.
+
+The defensible future route is a **separately reviewed** transport that
+preserves the structured notification variant inside the same pinned exec
+path, followed by one explicitly authorized operator-local observation.
+Any private message inspection would stay local to the operator and export
+fixed categories only; never paste raw warnings or JSONL into a chat or
+commit them. No warning whitelist, production `_validate_events()` change,
+sandbox/mount change, or workload activation is justified here. The read-only
+`auth.json` mount remains readable by Codex, and network access remains
+shared with the host.
