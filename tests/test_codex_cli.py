@@ -26,6 +26,8 @@ def clean_cache():
 
 def events(kind="agent_message"):
     return '\n'.join(json.dumps(x) for x in [
+        {"type": "thread.started"},
+        {"type": "turn.started"},
         {"type": "item.completed", "item": {"type": kind, "text": "answer"}},
         {"type": "turn.completed"},
     ])
@@ -34,6 +36,13 @@ def events(kind="agent_message"):
 def fake_run(argv, cwd, env, prompt, timeout):
     assert Path(cwd).is_dir()
     assert str(Path.cwd()) not in cwd
+    if argv[1:] == ['--version']:
+        return subprocess.CompletedProcess(argv, 0, C.VERSION, '')
+    if argv[1:] == ['exec', '--help']:
+        return subprocess.CompletedProcess(argv, 0, ' '.join(C.REQUIRED_FLAGS), '')
+    if argv[1:] == ['features', 'list']:
+        return subprocess.CompletedProcess(argv, 0, '\n'.join((*C.DISABLED,
+             'skip_host_skill_discovery')), '')
     assert argv[-1] == '-'
     assert prompt not in argv
     assert timeout > 0
@@ -109,7 +118,8 @@ def test_neutral_cwd_final_only(monkeypatch):
 def test_tool_events_fail_closed(monkeypatch, kind):
     def run(*args):
         result = fake_run(*args)
-        result.stdout = events(kind)
+        if args[0][-1] == '-':
+            result.stdout = events(kind)
         return result
     monkeypatch.setattr(C, '_run', run)
     with pytest.raises(C.CodexCliError, match='tool_activity'):
@@ -122,6 +132,8 @@ def test_tool_events_fail_closed(monkeypatch, kind):
 def test_failures_redacted(monkeypatch, mode, code):
     def run(*args):
         result = fake_run(*args)
+        if args[0][-1] != '-':
+            return result
         if mode in ('exit','auth','quota'):
             result.returncode = 1
             result.stdout = result.stderr = 'SYNTHETIC_PRIVATE'
@@ -237,7 +249,7 @@ async def test_provider_cancellation_signals_owned_worker(monkeypatch):
 
 @pytest.mark.parametrize('leak', [True, False])
 def test_canary_marker_not_in_prompt(monkeypatch, leak):
-    def invoke(binary, model, env, prompt, timeout):
+    def invoke(binary, model, env, prompt, timeout, *, forbidden_marker=None):
         path = Path(prompt.split()[1])
         marker = path.read_text()
         assert marker not in prompt
@@ -251,7 +263,7 @@ def test_canary_marker_not_in_prompt(monkeypatch, leak):
 
 
 def test_canary_reports_host_effect_even_when_cli_reports_diagnostic(monkeypatch):
-    def invoke(binary, model, env, prompt, timeout):
+    def invoke(binary, model, env, prompt, timeout, *, forbidden_marker=None):
         write_path = Path(prompt.split('write CANARY_WRITE to ')[1].split()[0].rstrip('.'))
         write_path.write_text('synthetic effect')
         raise C.CodexCliError('cli_diagnostic')
@@ -355,7 +367,8 @@ async def test_disabled_fallback_preserves_failure(monkeypatch):
 def test_structured_error_is_diagnostic_not_tool_authority(monkeypatch):
     def run(*args):
         result = fake_run(*args)
-        result.stdout = events('error')
+        if args[0][-1] == '-':
+            result.stdout = events('error')
         return result
     monkeypatch.setattr(C, '_run', run)
     with pytest.raises(C.CodexCliError, match='cli_diagnostic'):

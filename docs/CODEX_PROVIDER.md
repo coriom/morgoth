@@ -850,3 +850,62 @@ The script itself asks for explicit consent before inference and again before
 any best-effort-redacted private warning display. An UNKNOWN warning remains
 blocked; the operator must not paste private warning text into a remote
 service. `SAFE_FOR_WORKLOADS=False` and Human Gate 3 remain unchanged.
+
+## 2026-10-13 — Codex 0.162.1 exact advisory policy (feature branch)
+
+The operator's previous private review identified the former UNKNOWN item as
+the exact disabled-host Code Mode notice. In the [pinned disabled provider](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/code-mode/src/remote_session.rs#L80-L93),
+`availability()` fails and session creation remains unavailable. The
+[service](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/code_mode/mod.rs#L70-L115)
+emits the notice once. The [requested mode](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/tools/mod.rs#L620-L662)
+uses model metadata before feature flags. A model can therefore request Code
+Mode even while Morgoth disables `code_mode`, `code_mode_host` and
+`code_mode_only`. The unavailable-host warning is an explicit **fail-closed
+tool-availability** notice. Its "Code mode will fail closed" wording means
+the effective mode is CodeMode or CodeModeOnly, not Direct. The
+[turn-context emitter](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/session/turn_context.rs#L1342-L1368)
+requires an unavailable Code Mode service and a CodeMode/Only request. The
+successful synthetic text reply proves a text turn can complete; it does not prove that
+every future model/tool-mode combination is suitable for workloads. No host,
+feature or mount was enabled to silence the notice.
+
+The other historical item was classified only as a config-topic *template
+match*. The [pinned feature table](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1535-L1539)
+marks `skip_host_skill_discovery` UnderDevelopment. The exact [warning
+producer](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1974-L2017)
+emits a warning when that feature is explicitly enabled, as it is by Morgoth's
+fixed argv. The [session startup path](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/session/session.rs#L1218-L1245)
+forms the config path from the confined `CODEX_HOME`, fixed to
+`/home/codex/.codex` by Morgoth's Bubblewrap launcher. The discarded private
+historical message cannot prove this was that item's original producer.
+
+The [exec JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L405-L485)
+collapses `ConfigWarning`, `Warning`, `DeprecationNotice` and `ModelRerouted`
+into error-shaped items; it does not preserve their original variants. A
+whole-message match identifies a reviewed source template, **not** structural
+notification provenance. Top-level critical errors remain distinct.
+
+The feature-branch production validator now permits at most one copy of each
+of **two exact messages only**: disabled Code Mode host with fail-closed
+wording, and the single `skip_host_skill_discovery` under-development warning
+with the fixed confined config path. Acceptance requires confined discovery
+of exact CLI 0.162.1 and its required capabilities, the complete reviewed
+argv, and placement after `thread.started` but before the sole `turn.started`.
+Suffixes, path/feature changes, duplicates, other config/state/reroute
+messages, in-turn diagnostics, top-level errors, tool events, failed or
+incomplete turns, malformed streams and a final assistant/file mismatch fail
+closed. The last completed assistant item, not every intermediate item, must
+match the final file. A synthetic marker in any assistant/reasoning item
+invalidates the capability canary. No raw diagnostic content is surfaced by
+`CodexCliError`.
+
+This policy is **not deployed or workload-activated**. `SAFE_FOR_WORKLOADS`
+remains False. The confined process can read its narrow read-only ChatGPT
+`auth.json` mount and shares the host network; neither credential secrecy
+from that process nor network isolation is claimed. Before any disposable
+`morgoth_test` workload, a separate human-reviewed integration gate must
+confirm the exact observed warning strings under this policy, a successful
+fresh confined authority and text qualification with no unknown/tool/critical
+events, and model/tool-mode suitability for text-only tasks. Human Gate 3
+remains human-only. No research START or production deployment belongs to
+this branch.

@@ -20,6 +20,7 @@ import time
 import uuid
 
 from core.llm.codex_sandbox import SandboxUnavailable, build_sandbox_argv
+from core.llm.codex_advisories import REVIEWED_ADVISORIES
 
 VERSION = "codex-cli 0.162.1"
 # The old tool_activity verdict included diagnostic error items. Neither
@@ -121,6 +122,22 @@ def build_argv(binary: str, model: str, final_path: str) -> list[str]:
     return argv + ["-"]
 
 
+def _reviewed_launch_argv(argv: list[str], binary: str, model: str,
+                          final_path: str) -> bool:
+    """Require the complete pinned command and explicit tool-mode denials."""
+    if argv != build_argv(binary, model, final_path):
+        return False
+    pairs = [argv[i:i + 2] for i in range(len(argv) - 1)]
+    return (all(pairs.count(["--disable", feature]) == 1 for feature in
+                ("code_mode", "code_mode_host", "code_mode_only", "shell_tool",
+                 "unified_exec", "apps", "plugins", "browser_use", "computer_use"))
+            and pairs.count(["--enable", "skip_host_skill_discovery"]) == 1
+            and pairs.count(["--sandbox", "read-only"]) == 1
+            and all(pairs.count(["-c", value]) == 1 for value in CONFIG)
+            and not any(pair[0] == "--enable" and pair[1] != "skip_host_skill_discovery"
+                        for pair in pairs))
+
+
 def _run(argv: list[str], cwd: str, env: dict[str, str], prompt: str,
          timeout: float) -> subprocess.CompletedProcess[str]:
     # All Codex subprocesses, including discovery, enter the same OS boundary.
@@ -196,41 +213,103 @@ def discover(binary: str, cwd: str, env: dict[str, str]) -> None:
             raise CodexCliError("missing_safety_flag")
 
 
-def _validate_events(stdout: str) -> None:
-    completed = False
+def _validate_events(stdout: str, *, final_text: str | None = None,
+                     reviewed_launch: bool = False,
+                     forbidden_marker: str | None = None) -> None:
+    """Accept only one ordered text turn and exact pre-turn pinned advisories.
+
+    ``reviewed_launch`` is set only by invoke after confined version/feature
+    discovery and an exact comparison to the restricted argv. Direct callers
+    retain the old blanket diagnostic rejection.
+    """
+    if not stdout or len(stdout) > 4_000_000:
+        raise CodexCliError("invalid_events")
+    thread_started = turn_started = completed = False
+    assistant_texts: list[str] = []
+    advisories: set[str] = set()
     try:
-        for line in stdout.splitlines():
+        for position, line in enumerate(stdout.splitlines(), 1):
+            if position > 4096:
+                raise CodexCliError("invalid_events")
+            if len(line) > 32_768:
+                raise CodexCliError("invalid_events")
             event = json.loads(line)
+            if not isinstance(event, dict):
+                raise CodexCliError("invalid_events")
             kind = event["type"]
-            if kind in ("item.started", "item.updated", "item.completed"):
-                if event["item"]["type"] == "error":
-                    raise CodexCliError("cli_diagnostic")
-                if event["item"]["type"] not in ("agent_message", "reasoning"):
+            if kind == "thread.started":
+                if thread_started or turn_started or completed:
+                    raise CodexCliError("unexpected_event")
+                thread_started = True
+            elif kind == "turn.started":
+                if not thread_started or turn_started or completed:
+                    raise CodexCliError("unexpected_event")
+                turn_started = True
+            elif kind in ("item.started", "item.updated", "item.completed"):
+                item = event["item"]
+                if not isinstance(item, dict):
+                    raise CodexCliError("invalid_events")
+                item_type = item["type"]
+                if item_type == "error":
+                    message = item.get("message")
+                    if (kind != "item.completed" or not thread_started or turn_started
+                            or completed or not reviewed_launch
+                            or not isinstance(message, str)
+                            or message not in REVIEWED_ADVISORIES
+                            or message in advisories):
+                        raise CodexCliError("cli_diagnostic")
+                    advisories.add(message)
+                elif item_type in ("agent_message", "reasoning"):
+                    if not turn_started or completed or kind != "item.completed":
+                        raise CodexCliError("unexpected_event")
+                    body = item.get("text")
+                    if not isinstance(body, str):
+                        raise CodexCliError("invalid_events")
+                    if forbidden_marker and forbidden_marker in body:
+                        raise CodexCliError("canary_failed")
+                    if item_type == "agent_message":
+                        assistant_texts.append(body)
+                else:
                     raise CodexCliError("tool_activity")
             elif kind == "turn.completed":
+                if not turn_started or completed:
+                    raise CodexCliError("unexpected_event")
                 completed = True
-            elif kind not in ("thread.started", "turn.started"):
+            else:
                 raise CodexCliError("unexpected_event")
     except (ValueError, KeyError, TypeError):
         raise CodexCliError("invalid_events") from None
-    if not completed:
+    if not thread_started or not turn_started or not completed:
         raise CodexCliError("incomplete_turn")
+    if not assistant_texts or not assistant_texts[-1].strip():
+        raise CodexCliError("missing_final")
+    if final_text is None or assistant_texts[-1].strip() != final_text.strip():
+        raise CodexCliError("final_mismatch")
 
 
 def invoke(binary: str, model: str, env: dict[str, str], prompt: str,
-           timeout: float) -> str:
+           timeout: float, *, forbidden_marker: str | None = None) -> str:
     """Execute one isolated request and return only its final assistant file."""
     with tempfile.TemporaryDirectory(prefix="morgoth-codex-", dir="/tmp") as cwd:
         final = Path(cwd) / "final.txt"
-        result = _run(build_argv(binary, model, str(final)), cwd, env, prompt, timeout)
+        # Recheck the actual binary and safety flags at the invocation boundary;
+        # readiness or an earlier cached qualification may be stale.
+        discover(binary, cwd, env)
+        argv = build_argv(binary, model, str(final))
+        reviewed_launch = _reviewed_launch_argv(argv, binary, model, str(final))
+        if not reviewed_launch:
+            raise CodexCliError("missing_safety_capability")
+        result = _run(argv, cwd, env, prompt, timeout)
         _check_result(result)
-        _validate_events(result.stdout)
         try:
             text = final.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeError):
             raise CodexCliError("missing_final") from None
         if not text:
             raise CodexCliError("empty_final")
+        _validate_events(result.stdout, final_text=text,
+                         reviewed_launch=reviewed_launch,
+                         forbidden_marker=forbidden_marker)
         return text
 
 
@@ -252,7 +331,8 @@ def capability_canary(binary: str, model: str, env: dict[str, str],
             except OSError:
                 return False
         try:
-            answer = invoke(binary, model, env, prompt, timeout)
+            answer = invoke(binary, model, env, prompt, timeout,
+                            forbidden_marker=marker)
         except CodexCliError:
             if not outside_unchanged():
                 raise CodexCliError("canary_effect") from None
@@ -297,7 +377,9 @@ def _complete_owned(prompt: str, model: str, timeout: float) -> str:
     try:
         return invoke(binary, model, env, prompt, timeout)
     except CodexCliError as exc:
-        if exc.code in ("tool_activity", "unexpected_event", "invalid_events", "cli_diagnostic"):
+        if exc.code in ("tool_activity", "unexpected_event", "invalid_events",
+                        "cli_diagnostic", "incomplete_turn", "final_mismatch",
+                        "missing_final", "empty_final", "canary_failed"):
             _QUALIFIED.discard(key)
             _REJECTED.add(key)
         raise

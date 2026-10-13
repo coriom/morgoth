@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from core.llm.codex_advisories import CODE_MODE_DISABLED
 from scripts.diagnose_codex_cli import classify_events
 
 
@@ -14,6 +15,7 @@ STARTUP_CODES = frozenset({
     "CODEX_STARTUP_CONFIG_WARNING", "CODEX_STARTUP_SKILL_WARNING",
     "CODEX_STARTUP_DEPRECATION", "CODEX_STARTUP_STATE_WARNING",
     "CODEX_STARTUP_RUNTIME_WARNING", "CODEX_STARTUP_MODEL_REROUTE",
+    "CODEX_STARTUP_CODE_MODE_DISABLED",
     "CODEX_STARTUP_UNKNOWN",
 })
 
@@ -21,6 +23,7 @@ STARTUP_CODES = frozenset({
 # Skill-loader scan errors are logged, not proven to reach JSONL, so the skill
 # category intentionally has no pattern. Generic topic words are insufficient.
 TEMPLATES: dict[str, tuple[re.Pattern[str], ...]] = {
+    "CODEX_STARTUP_CODE_MODE_DISABLED": (re.compile(re.escape(CODE_MODE_DISABLED)),),
     "CODEX_STARTUP_CONFIG_WARNING": (
         re.compile(r"Under-development features enabled: [a-z0-9_]+(?:, [a-z0-9_]+)*\. Under-development features are incomplete and may behave unpredictably\. To suppress this warning, set `suppress_unstable_features_warning = true` in [^\n]+\."),
         re.compile(r"Codex is ignoring [1-9][0-9]* unrecognized configuration settings?\. Check for typos or deprecated settings\."),

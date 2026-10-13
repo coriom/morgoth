@@ -1088,3 +1088,23 @@ Log files:
   suite: 3 passed. The focused suite includes one real foreground PTY pass,
   five real PTY rejection cases and a no-controlling-terminal rejection.
   Zero model inference. `SAFE_FOR_WORKLOADS=False`; no activation/deployment.
+
+## 2026-10-13 — Codex 0.162.1 exact advisory policy prepared
+
+- Branched from `947872c2f2001725ef2cb209bd7ea23d44d5613d` into
+  `codex-01621-advisory-provider-integration-v1`; Desktop remains `a7dab1b7`.
+- Pinned source traces the former UNKNOWN notice to the disabled Code Mode
+  host. Model metadata can request CodeMode/Only despite disabled features;
+  host execution remains unavailable and the notice says fail closed. The
+  earlier config-topic item may be the explicit under-development
+  `skip_host_skill_discovery` notice, but discarded JSONL cannot prove that
+  historical origin.
+- Added an exact two-message production advisory policy gated by confined
+  0.162.1 discovery, fixed argv, unique pre-turn placement and a strict
+  single-turn/final-assistant contract. All other diagnostics, critical
+  errors and tool events remain blocking. The diagnostic classifier now names
+  only the exact disabled-host message; broad CONFIG_WARNING remains
+  diagnostic-only.
+- No inference, Weather, START, production DB/service, Desktop change,
+  credential or sandbox change. `SAFE_FOR_WORKLOADS=False`; Human Gate 3
+  remains human-only. See `docs/CODEX_PROVIDER.md` for security limits.

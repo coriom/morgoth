@@ -99,8 +99,8 @@ def test_missing_diagnostic_and_overflow_cannot_be_attributed() -> None:
     assert D.verdict(oversized) == "BLOCKED_CODEX_DIAGNOSTIC_UNKNOWN"
 
 
-def test_original_production_event_policy_still_rejects_diagnostics() -> None:
-    raw = stream({"type": "turn.started"},
+def test_production_event_policy_still_rejects_unreviewed_diagnostics() -> None:
+    raw = stream({"type": "thread.started"}, {"type": "turn.started"},
                  {"type": "item.completed", "item": {"type": "error", "message": "failed to load skills"}},
                  {"type": "turn.completed"})
     with pytest.raises(C.CodexCliError, match="cli_diagnostic"):
