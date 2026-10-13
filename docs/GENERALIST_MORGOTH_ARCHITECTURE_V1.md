@@ -80,7 +80,7 @@ production approval interface.
 ## First executable slice
 
 `agents/generalist_mission_fixture.py` and
-`data/fixtures/generalist_task_service.json` model an unfamiliar local task
+`tests/fixtures/generalist_task_service.json` model an unfamiliar local task
 service. `python -m agents.generalist_mission_fixture` is an explicit opt-in,
 bounded command. It parses a strict data-only local contract, detects a gap,
 proposes a capability, validates a fixed adapter on a deep copy, stops at

@@ -1155,7 +1155,7 @@ Log files:
   inference. `SAFE_FOR_WORKLOADS=False` and production readiness are unchanged.
 - Added an opt-in fixture-only capability acquisition flow in
   `agents/generalist_mission_fixture.py`, local documentation in
-  `data/fixtures/generalist_task_service.json`, and adversarial tests. It
+  `tests/fixtures/generalist_task_service.json`, and adversarial tests. It
   distinguishes proposal, isolated test and fixture approval, supports exact
   contract reuse, checkpoint resumption and two synthetic weekly report ticks.
   It does not register a tool, connect to Brain, persist a DB schema or grant

@@ -17,7 +17,7 @@ from agents.generalist_mission_fixture import (
 )
 
 
-DOC = json.loads((Path(__file__).resolve().parents[1] / "data/fixtures/generalist_task_service.json").read_text())
+DOC = json.loads((Path(__file__).resolve().parent / "fixtures/generalist_task_service.json").read_text())
 PERMS = frozenset(DOC["permissions"])
 
 

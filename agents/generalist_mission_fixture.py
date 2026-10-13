@@ -264,7 +264,7 @@ class FixtureMission:
 
 def run_fixture_demo() -> dict[str, object]:
     """Exercise only the repository's synthetic contract and in-memory adapter."""
-    fixture = Path(__file__).resolve().parents[1] / "data/fixtures/generalist_task_service.json"
+    fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/generalist_task_service.json"
     document = fixture.read_text(encoding="utf-8")
     registry = FixtureCapabilityRegistry()
     mission = FixtureMission(registry)
