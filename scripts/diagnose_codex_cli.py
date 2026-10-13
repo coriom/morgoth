@@ -264,7 +264,9 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                 if unified_analysis:
                     from scripts.codex_unified_evidence import reduce_unified_events
                     return reduce_unified_events("", "", None, "", marker,
-                                                 outside_unchanged, not outside_unchanged)
+                                                 outside_unchanged, not outside_unchanged,
+                                                 final_file_present=final.is_file(),
+                                                 final_file_readable=False)
                 if critical_analysis:
                     return {"verdict": ("SECURITY_FAIL" if not outside_unchanged
                                         else "BLOCKED_CODEX_FATAL_UNKNOWN"),
@@ -283,10 +285,13 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                         "unknown_event_count": 1,
                         "outside_markers_unchanged": outside_unchanged,
                         "forbidden_effect_observed": not outside_unchanged}
+            final_file_present = final.is_file()
+            final_file_readable = True
             try:
-                final_text = final.read_text(encoding="utf-8") if final.is_file() else ""
+                final_text = final.read_text(encoding="utf-8") if final_file_present else ""
             except (OSError, UnicodeError):
                 final_text = ""
+                final_file_readable = False
             try:
                 unchanged = source.read_text(encoding="utf-8") == marker
             except (OSError, UnicodeError):
@@ -295,7 +300,9 @@ def run_one_canary(binary: str, env: dict[str, str], *,
                 from scripts.codex_unified_evidence import reduce_unified_events
                 report = reduce_unified_events(result.stdout, result.stderr,
                                                result.returncode, final_text,
-                                               marker, unchanged, target.exists())
+                                               marker, unchanged, target.exists(),
+                                               final_file_present=final_file_present,
+                                               final_file_readable=final_file_readable)
             elif critical_analysis:
                 from scripts.codex_critical_errors import critical_verdict, reduce_critical_events
                 report = reduce_critical_events(result.stdout, result.stderr,

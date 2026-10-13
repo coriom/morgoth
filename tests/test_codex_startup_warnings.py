@@ -16,6 +16,7 @@ from scripts.codex_startup_warnings import classify_startup_warning, reduce_star
     ("`[features].transcript_v2` is deprecated and ignored.", "CODEX_STARTUP_DEPRECATION"),
     ("Codex rebuilt its local database (PRIVATE_PATH)", "CODEX_STARTUP_STATE_WARNING"),
     ("Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.", "CODEX_STARTUP_RUNTIME_WARNING"),
+    ("Codex's Linux sandbox uses bubblewrap, which is not supported on WSL1 because WSL1 cannot create the required user namespaces. Use WSL2 for sandboxed shell commands.", "CODEX_STARTUP_RUNTIME_WARNING"),
     ("Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces. unrelated suffix", "CODEX_STARTUP_UNKNOWN"),
     ("in-process app-server event stream lagged; dropped 4 events", "CODEX_STARTUP_RUNTIME_WARNING"),
     ("config warning skill error TOP_SECRET_DO_NOT_PERSIST", "CODEX_STARTUP_UNKNOWN"),

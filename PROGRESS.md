@@ -967,3 +967,26 @@ Log files:
 - No-inference focused checks: 124 passed, 3 host integration deselected;
   separate structural/auth/cleanup checks: 3 passed. No full canonical rerun;
   historical `be73b4c` pass remains one run with intermittent failures open.
+
+## 2026-10-13 — Codex warning/response attribution prepared
+
+- Operator-reported prior ordinary-WSL canary: exit 0, completed turn, zero
+  critical/tool events and outside effects, but expected response false and
+  one unknown pre-turn warning. Its discarded private output cannot be
+  retrospectively classified; no new model inference ran in this branch.
+- Diagnostic reducer and operator wrapper now export bounded lifecycle,
+  final-file, final-text and completed-assistant-item facts plus a fixed list
+  of simultaneous response-failure classes. Actual harness carries file
+  presence/readability; malformed or unreadable evidence remains UNKNOWN.
+  The wrapper requires this clean, tracked-origin-equal feature checkout.
+- Pinned 0.162.1 source review confirmed multiple warning variants map to
+  error-shaped items without origin identity. One exact WSL1 namespace
+  template was added; skill-discovery and unmatched messages remain UNKNOWN.
+  See `docs/CODEX_PROVIDER.md` for tagged source references and operator
+  command. Production event validator, Codex flags, sandbox mounts and
+  `SAFE_FOR_WORKLOADS=False` are unchanged.
+- No Weather, research START, production database/service operation, Desktop
+  change, new dependency or full canonical campaign.
+- Focused no-inference checks: 141 passed, 3 host checks deselected; separate
+  host structural/auth/timeout-cancellation checks: 3 passed. Historical
+  canonical evidence was not rerun or upgraded to repeated reliability.

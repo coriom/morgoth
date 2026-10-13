@@ -10,13 +10,17 @@ from pathlib import Path
 import subprocess
 
 from scripts.codex_startup_warnings import STARTUP_CODES
+from scripts.codex_unified_evidence import RESPONSE_CLASSES
 from scripts.diagnose_codex_cli import preflight, run_one_canary
 
 
-BRANCH = "codex-01621-operator-qualification-v1"
-BASE_SHA = "dc8754dc029ec9065ba9adceb5900725efbe21e7"
+BRANCH = "codex-01621-warning-response-attribution-v1"
+BASE_SHA = "382d8824add4673d091a738bd7db6dcebccad6d8"
 ROOT = Path(__file__).resolve().parents[1]
-_PUBLIC = ("PROCESS_EXIT", "TURN_COMPLETED", "EXPECTED_CANARY_RESPONSE",
+_PUBLIC = ("PROCESS_EXIT", "TURN_STARTED", "TURN_COMPLETED", "TURN_FAILED",
+           "FINAL_FILE_PRESENT", "FINAL_TEXT_NONEMPTY", "FINAL_TEXT_EXACT",
+           "COMPLETED_ASSISTANT_ITEM_COUNT", "ASSISTANT_ITEM_TEXT_EXACT",
+           "EXPECTED_CANARY_RESPONSE", "RESPONSE_FAILURE_CLASSES",
            "CRITICAL_ERROR_COUNT", "FORBIDDEN_TOOL_EVENTS", "UNKNOWN_EVENT_COUNT",
            "OUTSIDE_MARKERS_UNCHANGED", "OUTSIDE_EFFECT_OBSERVED", "VERDICT")
 
@@ -62,14 +66,22 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
             classes.add(code)
     report = {key: private.get(key) for key in _PUBLIC}
     report["PRE_TURN_DIAGNOSTIC_CLASSES"] = sorted(classes)
+    response_classes = report["RESPONSE_FAILURE_CLASSES"]
     if (type(report["PROCESS_EXIT"]) not in (int, type(None))
             or (type(report["PROCESS_EXIT"]) is int
                 and not -255 <= report["PROCESS_EXIT"] <= 255)
             or any(type(report[key]) is not bool for key in (
-                "TURN_COMPLETED", "EXPECTED_CANARY_RESPONSE", "OUTSIDE_MARKERS_UNCHANGED",
+                "TURN_STARTED", "TURN_COMPLETED", "TURN_FAILED", "FINAL_FILE_PRESENT",
+                "FINAL_TEXT_NONEMPTY", "FINAL_TEXT_EXACT", "ASSISTANT_ITEM_TEXT_EXACT",
+                "EXPECTED_CANARY_RESPONSE", "OUTSIDE_MARKERS_UNCHANGED",
                 "OUTSIDE_EFFECT_OBSERVED"))
             or any(type(report[key]) is not int or not 0 <= report[key] <= 512 for key in (
-                "CRITICAL_ERROR_COUNT", "FORBIDDEN_TOOL_EVENTS", "UNKNOWN_EVENT_COUNT"))
+                "COMPLETED_ASSISTANT_ITEM_COUNT", "CRITICAL_ERROR_COUNT",
+                "FORBIDDEN_TOOL_EVENTS", "UNKNOWN_EVENT_COUNT"))
+            or not isinstance(response_classes, list)
+            or not 1 <= len(response_classes) <= len(RESPONSE_CLASSES)
+            or len(response_classes) != len(set(response_classes))
+            or any(code not in RESPONSE_CLASSES for code in response_classes)
             or report["VERDICT"] not in {
                 "SECURITY_FAIL", "BLOCKED_CODEX_FATAL", "BLOCKED_CODEX_EVENT_POLICY",
                 "BLOCKED_CODEX_INCOMPLETE_TURN", "BLOCKED_CODEX_WARNING_UNKNOWN",
@@ -79,7 +91,12 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
         raise RuntimeError("PREFLIGHT_REPORT_SHAPE")
     if report["VERDICT"] in {"CODEX_CANARY_CLEAN", "CODEX_CANARY_WARNINGS_ATTRIBUTED"}:
         if (report["PROCESS_EXIT"] != 0 or not report["TURN_COMPLETED"]
+                or not report["TURN_STARTED"] or report["TURN_FAILED"]
                 or not report["EXPECTED_CANARY_RESPONSE"]
+                or not report["FINAL_FILE_PRESENT"] or not report["FINAL_TEXT_EXACT"]
+                or report["COMPLETED_ASSISTANT_ITEM_COUNT"] != 1
+                or not report["ASSISTANT_ITEM_TEXT_EXACT"]
+                or response_classes != ["RESPONSE_OK"]
                 or report["CRITICAL_ERROR_COUNT"] or report["FORBIDDEN_TOOL_EVENTS"]
                 or report["UNKNOWN_EVENT_COUNT"] or not report["OUTSIDE_MARKERS_UNCHANGED"]
                 or report["OUTSIDE_EFFECT_OBSERVED"]
@@ -87,6 +104,11 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
                 or (report["VERDICT"] == "CODEX_CANARY_CLEAN" and classes)
                 or (report["VERDICT"] == "CODEX_CANARY_WARNINGS_ATTRIBUTED" and not classes)):
             raise RuntimeError("PREFLIGHT_REPORT_SHAPE")
+    if (report["EXPECTED_CANARY_RESPONSE"] != (response_classes == ["RESPONSE_OK"])
+            or (report["FINAL_TEXT_EXACT"] and not report["FINAL_TEXT_NONEMPTY"])
+            or (report["ASSISTANT_ITEM_TEXT_EXACT"]
+                and report["COMPLETED_ASSISTANT_ITEM_COUNT"] == 0)):
+        raise RuntimeError("PREFLIGHT_REPORT_SHAPE")
     return report
 
 

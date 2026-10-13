@@ -37,6 +37,7 @@ TEMPLATES: dict[str, tuple[re.Pattern[str], ...]] = {
     ),
     "CODEX_STARTUP_RUNTIME_WARNING": (
         re.compile(r"Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces\."),
+        re.compile(r"Codex's Linux sandbox uses bubblewrap, which is not supported on WSL1 because WSL1 cannot create the required user namespaces\. Use WSL2 for sandboxed shell commands\."),
         re.compile(r"Codex could not find bubblewrap on PATH\. Install bubblewrap with your OS package manager\. See the sandbox prerequisites: https://developers\.openai\.com/codex/concepts/sandboxing#prerequisites\. Codex will use the bundled bubblewrap in the meantime\."),
         re.compile(r"in-process app-server event stream lagged; dropped [1-9][0-9]* events"),
     ),

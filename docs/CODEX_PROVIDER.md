@@ -560,3 +560,57 @@ deselected); the 3 host structural/auth/cleanup checks passed separately.
 No new full canonical campaign ran. The historical `be73b4c` full-suite
 success remains one run (2,136 passed, 2 skipped), with intermittent failures
 unresolved.
+
+## 2026-10-13 — response and warning attribution for operator canary
+
+The operator reported one ordinary-WSL confined authority canary from the
+previous branch: exit 0, completed turn, zero critical/tool events, unchanged
+outside markers, no outside effect, but `EXPECTED_CANARY_RESPONSE=false` and
+pre-turn `CODEX_STARTUP_CONFIG_WARNING` plus `CODEX_STARTUP_UNKNOWN`. This
+branch did not run another model call. The private stream and final file from
+that run were discarded, so neither the response mismatch nor the unknown
+warning can be reconstructed from the old Boolean.
+
+The diagnostic-only reducer now separates `TURN_STARTED`, `TURN_COMPLETED`,
+`TURN_FAILED`, `FINAL_FILE_PRESENT`, `FINAL_TEXT_NONEMPTY`,
+`FINAL_TEXT_EXACT`, `COMPLETED_ASSISTANT_ITEM_COUNT`,
+`ASSISTANT_ITEM_TEXT_EXACT` and `EXPECTED_CANARY_RESPONSE`. Fixed
+`RESPONSE_FAILURE_CLASSES` retains simultaneous findings, including missing
+file, empty/nonmatching final text, missing/wrong-count/nonmatching assistant
+items, invalid lifecycle and unknown or unreadable evidence. `RESPONSE_OK`
+requires the complete prior contract; text comparison retains the existing
+whitespace-trimmed equality. The operator wrapper exports only these bounded
+facts and fixed warning classes. It still blocks on any unknown diagnostic,
+unexpected event, failed response contract or forbidden effect; production
+`_validate_events()` remains unchanged.
+
+The exact [0.162.1 JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L389-L450)
+converts `ConfigWarning`, `Warning`, `DeprecationNotice` and `ModelRerouted`
+to error-shaped items, while critical `Error` uses a top-level event. It does
+not retain the original variant. [Exec startup warnings](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/lib.rs#L672-L725),
+[under-development feature notices](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1974-L2017),
+[state initialization](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/lib.rs#L645-L665)
+and [Linux sandbox warnings](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/sandboxing/src/bwrap.rs#L18-L77)
+remain candidate families, not the proven origin of the discarded warning.
+The pinned Linux source also has an exact WSL1 user-namespace warning; its
+whole-message template is now classified as runtime warning. A WSL1 template
+match would still indicate only a probable family. Skill-discovery messages
+have no defensible source-to-JSONL full-message template here, so they remain
+UNKNOWN. No security flag, mount or warning policy was relaxed.
+
+After reviewing the clean pushed feature checkout, the operator may run
+exactly one comparable 90-second canary from ordinary WSL:
+
+```sh
+cd /home/corio/Morgoth/dev-codex-01621-warning-response-attribution-v1 && /home/corio/Morgoth/morgoth/.venv/bin/python -m scripts.codex_operator_canary
+```
+
+It uses the same synthetic outside-file read/write prompt, the existing
+ChatGPT login and mandatory Bubblewrap path. The narrow read-only `auth.json`
+mount is readable by Codex, and networking remains shared with the host.
+`SAFE_FOR_WORKLOADS=False`; no canary result alone authorizes activation.
+
+No-inference verification: 141 focused response, warning, event, confinement
+and provenance tests passed (3 host checks deselected). The 3 separate host
+structural/auth/timeout-cancellation checks passed. No full canonical rerun;
+the historical single `be73b4c` pass and its intermittent-failure limit remain.

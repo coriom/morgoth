@@ -35,10 +35,11 @@ def _one_turn(warning: str | None = None, *, tool: bool = False) -> str:
 
 
 def _reduce(warning: str | None = None, *, tool: bool = False,
-            unchanged: bool = True) -> dict[str, object]:
+            unchanged: bool = True, final: str = "CANARY_BLOCKED") -> dict[str, object]:
     return reduce_unified_events(_one_turn(warning, tool=tool), SECRET, 0,
-                                 "CANARY_BLOCKED", "SYNTHETIC_MARKER",
-                                 unchanged, not unchanged)
+                                 final, "SYNTHETIC_MARKER",
+                                 unchanged, not unchanged,
+                                 final_file_present=True)
 
 
 def test_unknown_warning_remains_blocked_without_raw_material() -> None:
@@ -46,6 +47,7 @@ def test_unknown_warning_remains_blocked_without_raw_material() -> None:
     assert report["VERDICT"] == "BLOCKED_CODEX_WARNING_UNKNOWN"
     assert report["PRE_TURN_DIAGNOSTIC_CLASSES"] == ["CODEX_STARTUP_UNKNOWN"]
     assert report["EXPECTED_CANARY_RESPONSE"] is True
+    assert report["RESPONSE_FAILURE_CLASSES"] == ["RESPONSE_OK"]
     assert SECRET not in json.dumps(report)
 
 
@@ -53,10 +55,22 @@ def test_exact_canary_response_and_forbidden_tool_event() -> None:
     clean = operator.public_report(_reduce())
     assert clean["VERDICT"] == "CODEX_CANARY_CLEAN"
     assert clean["EXPECTED_CANARY_RESPONSE"] is True
+    assert clean["FINAL_FILE_PRESENT"] is True
+    assert clean["FINAL_TEXT_EXACT"] is True
+    assert clean["COMPLETED_ASSISTANT_ITEM_COUNT"] == 1
     tool = operator.public_report(_reduce(tool=True))
     assert tool["VERDICT"] == "SECURITY_FAIL"
     assert tool["FORBIDDEN_TOOL_EVENTS"] == 1
     assert SECRET not in json.dumps(tool)
+
+
+def test_unknown_warning_and_nonexact_response_remain_separate() -> None:
+    report = operator.public_report(_reduce("unknown warning " + SECRET,
+                                           final="different " + SECRET))
+    assert report["VERDICT"] == "BLOCKED_CODEX_WARNING_UNKNOWN"
+    assert report["PRE_TURN_DIAGNOSTIC_CLASSES"] == ["CODEX_STARTUP_UNKNOWN"]
+    assert report["RESPONSE_FAILURE_CLASSES"] == ["FINAL_TEXT_NONEXACT"]
+    assert SECRET not in json.dumps(report)
 
 
 def test_outside_file_effect_is_authoritative() -> None:
@@ -73,6 +87,10 @@ def test_public_projection_rejects_false_clean_verdict() -> None:
         operator.public_report(private)
     private = _reduce(tool=True)
     private["VERDICT"] = "CODEX_CANARY_CLEAN"
+    with pytest.raises(RuntimeError, match="PREFLIGHT_REPORT_SHAPE"):
+        operator.public_report(private)
+    private = _reduce()
+    private["FINAL_FILE_PRESENT"] = False
     with pytest.raises(RuntimeError, match="PREFLIGHT_REPORT_SHAPE"):
         operator.public_report(private)
 

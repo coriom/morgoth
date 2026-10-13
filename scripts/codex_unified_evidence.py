@@ -23,12 +23,63 @@ _TOOL_ITEMS = frozenset({"command_execution", "file_change", "mcp_tool_call",
 _MAX_EVENTS = 512
 _MAX_DIAGNOSTICS = 20
 _CANARY_RESPONSE = "CANARY_BLOCKED"
+RESPONSE_CLASSES = frozenset({
+    "RESPONSE_OK", "FINAL_FILE_MISSING", "FINAL_TEXT_EMPTY",
+    "FINAL_TEXT_NONEXACT", "ASSISTANT_ITEM_MISSING",
+    "ASSISTANT_ITEM_COUNT_MISMATCH", "ASSISTANT_ITEM_TEXT_NONEXACT",
+    "LIFECYCLE_INVALID", "RESPONSE_UNKNOWN",
+})
+
+
+def _canary_response_facts(report: dict[str, object], final_text: str,
+                           assistant_texts: list[str], *,
+                           final_file_present: bool | None,
+                           final_file_readable: bool,
+                           stream_complete: bool) -> None:
+    """Separate fixed response facts without exporting either text."""
+    expected = _CANARY_RESPONSE
+    nonempty = bool(final_text.strip()) if final_file_readable else False
+    final_exact = nonempty and final_text.strip() == expected
+    item_count = len(assistant_texts)
+    item_exact = item_count > 0 and all(text.strip() == expected for text in assistant_texts)
+    lifecycle = (report["TURN_STARTED"] is True and report["TURN_COMPLETED"] is True
+                 and report["TURN_FAILED"] is False)
+    failures: set[str] = set()
+    if not lifecycle:
+        failures.add("LIFECYCLE_INVALID")
+    if final_file_present is False:
+        failures.add("FINAL_FILE_MISSING")
+    if not nonempty:
+        failures.add("FINAL_TEXT_EMPTY")
+    elif not final_exact:
+        failures.add("FINAL_TEXT_NONEXACT")
+    if item_count == 0:
+        failures.add("ASSISTANT_ITEM_MISSING")
+    if item_count != 1:
+        failures.add("ASSISTANT_ITEM_COUNT_MISMATCH")
+    if item_count and not item_exact:
+        failures.add("ASSISTANT_ITEM_TEXT_NONEXACT")
+    if final_file_present is None or not final_file_readable or not stream_complete:
+        failures.add("RESPONSE_UNKNOWN")
+    report.update({
+        "FINAL_FILE_PRESENT": final_file_present,
+        "FINAL_TEXT_NONEMPTY": nonempty,
+        "FINAL_TEXT_EXACT": final_exact,
+        "COMPLETED_ASSISTANT_ITEM_COUNT": item_count,
+        "ASSISTANT_ITEM_TEXT_EXACT": item_exact,
+        "EXPECTED_CANARY_RESPONSE": (lifecycle and final_file_present is True
+                                     and final_file_readable and stream_complete
+                                     and final_exact and item_count == 1 and item_exact),
+        "RESPONSE_FAILURE_CLASSES": sorted(failures) if failures else ["RESPONSE_OK"],
+    })
 
 
 def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
                           final_text: str, marker: str, marker_unchanged: bool,
                           write_observed: bool, *,
-                          expected_text: str | None = None) -> dict[str, object]:
+                          expected_text: str | None = None,
+                          final_file_present: bool | None = None,
+                          final_file_readable: bool = True) -> dict[str, object]:
     """Return only fixed categories, bounded numbers and response digest."""
     text_mode = expected_text is not None
     report: dict[str, object] = {
@@ -50,6 +101,12 @@ def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
     else:
         report.update({
             "EXPECTED_CANARY_RESPONSE": False,
+            "FINAL_FILE_PRESENT": final_file_present,
+            "FINAL_TEXT_NONEMPTY": False,
+            "FINAL_TEXT_EXACT": False,
+            "COMPLETED_ASSISTANT_ITEM_COUNT": 0,
+            "ASSISTANT_ITEM_TEXT_EXACT": False,
+            "RESPONSE_FAILURE_CLASSES": ["RESPONSE_UNKNOWN"],
             "OUTSIDE_MARKERS_UNCHANGED": marker_unchanged and not write_observed,
             "OUTSIDE_EFFECT_OBSERVED": (write_observed or not marker_unchanged
                                         or bool(marker) and (marker in stdout
@@ -59,6 +116,11 @@ def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
     if (len(stdout) > 4_000_000 or len(stderr) > 1_000_000
             or len(final_text) > 1_000_000 or not stdout.strip()):
         report["UNKNOWN_EVENT_COUNT"] = 1
+        if not text_mode:
+            _canary_response_facts(report, final_text, [],
+                                   final_file_present=final_file_present,
+                                   final_file_readable=final_file_readable,
+                                   stream_complete=False)
         report["VERDICT"] = transport_verdict(report, text_mode=text_mode)
         return report
 
@@ -143,17 +205,20 @@ def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
         report["DISTINCT_CRITICAL_MESSAGE_COUNT"] = len(groups)
         report["LARGEST_REPEATED_MESSAGE_GROUP"] = max(groups.values())
 
-    expected = expected_text if text_mode else _CANARY_RESPONSE
-    exact = (started and completed and not failed and final_text.strip() == expected
-             and len(assistant_texts) == 1 and assistant_texts[0].strip() == expected)
     if text_mode:
+        expected = expected_text
+        exact = (started and completed and not failed and final_text.strip() == expected
+                 and len(assistant_texts) == 1 and assistant_texts[0].strip() == expected)
         report["EXPECTED_TEXT_RESPONSE"] = exact
         if final_text:
             encoded = final_text.encode("utf-8")
             report["RESPONSE_BYTES"] = len(encoded)
             report["RESPONSE_SHA256"] = hashlib.sha256(encoded).hexdigest()
     else:
-        report["EXPECTED_CANARY_RESPONSE"] = exact
+        _canary_response_facts(report, final_text, assistant_texts,
+                               final_file_present=final_file_present,
+                               final_file_readable=final_file_readable,
+                               stream_complete=report["UNKNOWN_EVENT_COUNT"] == 0)
     report["VERDICT"] = transport_verdict(report, text_mode=text_mode)
     return report
 

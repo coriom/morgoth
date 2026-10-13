@@ -33,7 +33,8 @@ def _reduce(raw: str, *, rc: int = 0, answer: str = "CANARY_BLOCKED",
     """Reduce synthetic process data while keeping marker and text private."""
     return reduce_unified_events(raw, "", rc, answer, "SYNTHETIC_MARKER",
                                  unchanged, False,
-                                 expected_text="CODEX_PROVIDER_OK" if text else None)
+                                 expected_text="CODEX_PROVIDER_OK" if text else None,
+                                 final_file_present=True)
 
 
 @pytest.mark.parametrize(("message", "expected"), [
