@@ -1070,3 +1070,19 @@ Log files:
   separate host structural/auth/timeout-cancellation checks passed. No full
   canonical rerun, model inference, Weather, START, production database or
   service operation, Desktop change or new dependency.
+
+## 2026-10-13 — autonomous Codex warning resolution, development phase
+
+- Branched from clean `408e75cf66fc45e090977dca0e32a0b01a3089f4` on
+  `codex-01621-autonomous-warning-resolution-v1`. Desktop remains at
+  `a7dab1b7730ba94536f6b413661512e533b36866`.
+- Rechecked exact tagged 0.162.1 exec startup and JSONL conversion. The
+  discarded UNKNOWN warning cannot be attributed statically. The known
+  config-topic match is not proof of notification variant. Exec has no log DB;
+  state, inner-sandbox, reroute and transport warnings have distinct security
+  meaning. No new speculative template or production whitelist was added.
+- Added a separate explicit-opt-in, non-disclosing one-shot text diagnostic
+  using the existing confined transport. The human TTY review is unchanged.
+  The agent tool environment could not resolve the configured ChatGPT service
+  hostname, so no model inference was performed and the unknown warning
+  remains blocked. `SAFE_FOR_WORKLOADS=False`; no research or deployment.

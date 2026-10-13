@@ -815,3 +815,56 @@ Do not pipe or redirect the command. UNKNOWN stays blocked even if the
 operator labels it; any future source-grounded validation and change to the
 production `_validate_events()` policy requires separate security review.
 `SAFE_FOR_WORKLOADS=False`, and Human Gate 3 remains human-only.
+
+## 2026-10-13 — autonomous warning investigation and non-disclosing handoff
+
+The exact `rust-v0.162.1` [exec wiring](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/lib.rs#L672-L725)
+replays `config.startup_warnings`, selects `SessionSource::Exec`, and supplies
+`log_db: None`. Its [JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L389-L485)
+still erases the ConfigWarning/Warning/DeprecationNotice/ModelRerouted origin
+in an error-shaped item; critical Error is a separate top-level event. The
+specific prior UNKNOWN message was discarded, so static analysis cannot
+identify it. The existing `CODEX_STARTUP_CONFIG_WARNING` is a probable
+*message-topic* match, not notification-variant proof. In particular,
+`skip_host_skill_discovery` is [under development](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1535-L1540)
+and its [exact warning producer](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/features/src/lib.rs#L1983-L2017)
+can explain a matching template without proving it produced that recorded item.
+
+Other reachable candidates retain distinct implications: the
+[configuration replay](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/initialize_processor.rs#L219-L238)
+can precede the turn; the [inner Bubblewrap probe](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/sandboxing/src/bwrap.rs#L18-L77)
+may report a namespace/resource problem; a [transport fallback](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/core/src/responses_retry.rs#L112-L130)
+is turn work and carries a private dynamic error; a model reroute changes
+selection. None is established as the UNKNOWN producer. The diagnostic-log
+reporter is not wired into this exec path's absent log DB. We added no
+speculative template and no production warning whitelist.
+
+`scripts/codex_automated_warning_diagnostic.py --one-synthetic-probe` is a
+separate, fixed opt-in, non-disclosing path. It verifies the exact clean branch
+and origin equality, then reuses the already reviewed non-inference version,
+flag and confined ChatGPT login preflight. It makes at most one fixed text
+request through `build_argv()` and `_run()` with the unchanged 90-second
+Bubblewrap boundary. Private JSONL, stderr, assistant text and warning messages
+exist only in process memory. Output is limited to fixed families, bounded
+counts, Booleans and verdict; UNKNOWN, state and model-reroute warnings remain
+blocked. The TTY-only human review entry point and its two consent gates are
+unchanged. The new command does not inspect an UNKNOWN message locally or
+turn a manual classification into workload approval.
+
+The development tool environment could not resolve the configured ChatGPT
+service hostname and could not resolve GitHub. No model request was made here;
+this is `BLOCKED_AGENT_EXECUTION_ENVIRONMENT`, not evidence of failure in
+ordinary WSL. From a clean pushed feature branch in the operator's ordinary
+WSL, one optional automated diagnostic command is:
+
+```sh
+cd /home/corio/Morgoth/dev-codex-01621-autonomous-warning-resolution-v1 && /home/corio/Morgoth/morgoth/.venv/bin/python -m scripts.codex_automated_warning_diagnostic --one-synthetic-probe
+```
+
+If it still reports UNKNOWN, stop further model probes. The existing
+operator-only TTY review remains the last resort; private warning text must
+never be pasted into a remote service. A source-grounded notification-policy
+review is needed before changing `_validate_events()`. `SAFE_FOR_WORKLOADS`
+remains false. The narrow read-only `auth.json` is readable by the confined
+Codex process, and it shares host network access; neither is credential or
+network isolation. Human Gate 3 remains human-only.
