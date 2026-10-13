@@ -1165,3 +1165,19 @@ Log files:
   draft directions. `IDENTITY.md`, `SPEC.md`, permissions and Human Gate 3
   remain untouched. The old research identity and current generalist vision
   need human reconciliation before any protected-file edit.
+- Focused parser/prototype/provider selection: 175 passed; separate synthesis
+  and reflection tests: 26 passed. The bounded demo completed two synthetic
+  report ticks. No live model request or Project/database operation occurred.
+- The first provenance-aware canonical run tested `429e6e3e46dd080f7500574ff2c84d9a6631d61f`:
+  2,298 passed, 2 skipped, 4 collection errors. Cause: the new test fixture
+  was under `data/`, intentionally excluded from the secure copied source.
+  Moved it to `tests/fixtures/` without changing sandbox exclusions. The
+  corrective commit `7802a4ec32db77d6f1dc61e207b528bc8dd4ed64` passed
+  the one justified canonical rerun: requested=tested SHA, whole-tree manifests
+  equal, 2,317 passed, 2 skipped, 0 failures/errors, exit 0, 37.5 s wall,
+  0 cgroup OOM kills. This is one clean acceptance run, not repeated-reliability
+  evidence.
+- Three separate non-inference host Bubblewrap/auth/cleanup checks passed. The
+  first invocation stopped at the test URL guard; a second invocation with a
+  syntactically valid disposable `_test` URL passed without a database
+  connection. No new dependency or production permission change.

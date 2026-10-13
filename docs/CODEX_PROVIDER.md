@@ -22,6 +22,15 @@ against a fabricated current-source observation. Those tests cannot replace a
 separately authorized disposable `morgoth_test` workload. The first proposed
 live task and its approval gate remain as specified below.
 
+The prototype's committed code and fixture-path correction at
+`7802a4ec32db77d6f1dc61e207b528bc8dd4ed64` passed one verified canonical
+run: requested=tested SHA, copied-tree manifests equal, 2,317 passed, 2
+skipped, zero failures/errors, exit 0. The prior candidate failed collection
+because its fixture was in the intentionally excluded `data/` directory; that
+failed run remains recorded in `PROGRESS.md`. The final documentation-only
+commit is not the SHA that the canonical runner tested. Historical runner
+intermittency remains unresolved; this single pass does not prove reliability.
+
 ## Restricted text qualification preparation (2026-10-13)
 
 The `codex-01621-provider-qualification-v1` branch prepares one operator-native
