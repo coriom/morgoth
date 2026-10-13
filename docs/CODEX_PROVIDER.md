@@ -815,3 +815,38 @@ Do not pipe or redirect the command. UNKNOWN stays blocked even if the
 operator labels it; any future source-grounded validation and change to the
 production `_validate_events()` policy requires separate security review.
 `SAFE_FOR_WORKLOADS=False`, and Human Gate 3 remains human-only.
+
+## 2026-10-13 — operator TTY gate correction
+
+The private review's original `/dev/tty` comparison was incorrect on Linux:
+[`/dev/tty` is the 5:0 alias for the controlling terminal](https://man7.org/linux/man-pages/man4/tty.4.html),
+while an interactive WSL shell commonly uses a `/dev/pts/N` device. Equal
+`st_rdev` values were never required between that alias and stdin/stdout/stderr.
+The revised check compares the three standard streams to each other, requires
+each to be a terminal character device in the caller's foreground process
+group, and independently opens and validates `/dev/tty`. Linux
+[`tcgetpgrp`](https://man7.org/linux/man-pages/man3/tcsetpgrp.3.html)
+requires a controlling-terminal descriptor. A real PTY test confirms that
+different `/dev/tty` and `/dev/pts/N` device numbers now pass; redirected,
+background, inconsistent-terminal and CI cases still fail closed.
+
+The same real PTY test also exposed that Python's combined `r+` text wrapper
+can reject a non-seekable PTY. The private terminal now owns separate read and
+write handles to `/dev/tty`; both are foreground-validated and closed after
+review. This does not change either consent phrase, the 90-second one-request
+limit, Bubblewrap, Codex CLI restrictions, authentication, or output redaction.
+No model inference was used to test the correction. The corrected script is
+pinned to the clean tracked-origin-equal branch
+`codex-01621-operator-tty-fix-v1` descending from `408e75cf`.
+
+After the feature branch is pushed, the operator's one command from an
+ordinary foreground Ubuntu WSL terminal is:
+
+```sh
+cd /home/corio/Morgoth/dev-codex-01621-operator-tty-fix-v1 && /home/corio/Morgoth/morgoth/.venv/bin/python -m scripts.codex_local_warning_review
+```
+
+The script itself asks for explicit consent before inference and again before
+any best-effort-redacted private warning display. An UNKNOWN warning remains
+blocked; the operator must not paste private warning text into a remote
+service. `SAFE_FOR_WORKLOADS=False` and Human Gate 3 remain unchanged.

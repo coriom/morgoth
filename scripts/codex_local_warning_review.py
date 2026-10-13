@@ -9,10 +9,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import TextIO
+from typing import Protocol, TextIO
 
 from core.llm import codex_cli as cli
 from scripts.codex_startup_warnings import STARTUP_CODES, classify_startup_warning
@@ -20,8 +21,8 @@ from scripts.codex_unified_evidence import reduce_unified_events
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "codex-01621-private-warning-review-v1"
-BASE_SHA = "0641ffa2728c4cafff10193390808298d5885df3"
+BRANCH = "codex-01621-operator-tty-fix-v1"
+BASE_SHA = "408e75cf66fc45e090977dca0e32a0b01a3089f4"
 PROMPT = "Reply with exactly CODEX_PROVIDER_OK."
 EXPECTED = "CODEX_PROVIDER_OK"
 FIRST_CONSENT = "RUN ONE CONFINED TEXT PROBE"
@@ -39,6 +40,51 @@ class ReviewUnavailable(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class TerminalIO(Protocol):
+    """The minimal local terminal interface used by the consent flow."""
+
+    def write(self, value: str) -> int: ...
+
+    def flush(self) -> None: ...
+
+    def readline(self, limit: int = -1) -> str: ...
+
+
+class OperatorTerminal:
+    """Separate non-seekable read/write handles to the controlling terminal."""
+
+    def __init__(self, reader: TextIO, writer: TextIO) -> None:
+        self.reader = reader
+        self.writer = writer
+
+    def __enter__(self) -> OperatorTerminal:
+        """Use both terminal handles for one private-review session."""
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        """Close both owned handles, including after a declined consent."""
+        try:
+            self.writer.close()
+        finally:
+            self.reader.close()
+
+    def fileno(self) -> int:
+        """Expose the reader descriptor for terminal identity tests."""
+        return self.reader.fileno()
+
+    def write(self, value: str) -> int:
+        """Write only to the controlling terminal."""
+        return self.writer.write(value)
+
+    def flush(self) -> None:
+        """Flush the private terminal prompt before waiting for consent."""
+        self.writer.flush()
+
+    def readline(self, limit: int = -1) -> str:
+        """Read one bounded operator response from the controlling terminal."""
+        return self.reader.readline(limit)
 
 
 def _git(*args: str) -> str:
@@ -66,26 +112,42 @@ def verify_checkout() -> None:
         raise ReviewUnavailable("PREFLIGHT_CHECKOUT")
 
 
-def open_operator_terminal() -> TextIO:
+def open_operator_terminal() -> OperatorTerminal:
     """Reject pipes, redirected output, background jobs and obvious CI use."""
     if (any(os.environ.get(key) for key in ("CI", "GITHUB_ACTIONS", "CODEBUILD_BUILD_ID"))
             or any(not os.isatty(fd) for fd in (0, 1, 2))):
         raise ReviewUnavailable("PREFLIGHT_INTERACTIVE_TTY")
-    fd: int | None = None
+    reader: TextIO | None = None
+    writer: TextIO | None = None
     try:
-        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC)
-        if (not os.isatty(fd) or os.tcgetpgrp(fd) != os.getpgrp()
-                or any(os.fstat(stream).st_rdev != os.fstat(fd).st_rdev
+        foreground_group = os.getpgrp()
+        # Compare the standard streams to one another, not to /dev/tty's 5:0
+        # alias. tcgetpgrp requires a controlling-terminal descriptor.
+        stream_devices = [os.fstat(stream).st_rdev for stream in (0, 1, 2)]
+        if (len(set(stream_devices)) != 1
+                or any(not stat.S_ISCHR(os.fstat(stream).st_mode)
+                       or os.tcgetpgrp(stream) != foreground_group
                        for stream in (0, 1, 2))):
             raise ReviewUnavailable("PREFLIGHT_INTERACTIVE_TTY")
-        terminal = os.fdopen(fd, "r+", encoding="utf-8", buffering=1)
-        fd = None
+        # Python's combined r+ text stream on a non-seekable PTY can raise
+        # UnsupportedOperation. Keep independent read and write handles.
+        reader = open("/dev/tty", "r", encoding="utf-8", buffering=1)
+        writer = open("/dev/tty", "w", encoding="utf-8", buffering=1)
+        if (not os.isatty(reader.fileno()) or not os.isatty(writer.fileno())
+                or os.tcgetpgrp(reader.fileno()) != foreground_group
+                or os.tcgetpgrp(writer.fileno()) != foreground_group):
+            raise ReviewUnavailable("PREFLIGHT_INTERACTIVE_TTY")
+        terminal = OperatorTerminal(reader, writer)
+        reader = None
+        writer = None
         return terminal
     except (OSError, ValueError, ReviewUnavailable):
         raise ReviewUnavailable("PREFLIGHT_INTERACTIVE_TTY") from None
     finally:
-        if fd is not None:
-            os.close(fd)
+        if writer is not None:
+            writer.close()
+        if reader is not None:
+            reader.close()
 
 
 def preflight() -> tuple[str, dict[str, str]]:
@@ -106,7 +168,7 @@ def preflight() -> tuple[str, dict[str, str]]:
     return binary, env
 
 
-def _consent(tty: TextIO, phrase: str) -> bool:
+def _consent(tty: TerminalIO, phrase: str) -> bool:
     """Require an exact phrase typed into the controlling terminal."""
     tty.write(f"Type {phrase} to continue; any other input stops: ")
     tty.flush()
@@ -254,7 +316,7 @@ def public_report(private: dict[str, object]) -> dict[str, object]:
     }
 
 
-def run_once(tty: TextIO) -> dict[str, object]:
+def run_once(tty: TerminalIO) -> dict[str, object]:
     """Gate exactly one inference, then offer one optional local review."""
     verify_checkout()
     binary, env = preflight()

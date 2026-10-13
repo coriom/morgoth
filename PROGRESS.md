@@ -1070,3 +1070,21 @@ Log files:
   separate host structural/auth/timeout-cancellation checks passed. No full
   canonical rerun, model inference, Weather, START, production database or
   service operation, Desktop change or new dependency.
+
+## 2026-10-13 — private Codex review PTY correction (no inference)
+
+- Started from clean `408e75cf66fc45e090977dca0e32a0b01a3089f4` on
+  `codex-01621-operator-tty-fix-v1`; Desktop unchanged at `a7dab1b7`.
+- Linux `/dev/tty` is a 5:0 alias, so comparing its device number with
+  `/dev/pts/N` falsely rejected a real operator terminal. Corrected the gate
+  to compare the three standard streams with each other and verify every
+  stream and `/dev/tty` against the foreground process group.
+- Actual PTY integration exposed a second blocker: Python's combined `r+`
+  text wrapper may reject a non-seekable PTY. The review now uses separately
+  validated and owned read/write `/dev/tty` handles. Consent, private-output
+  handling, one-request limit and provider/sandbox gates are unchanged.
+- No-inference provider preflight passed. Focused Codex/provenance suite:
+  250 passed, 3 host cases deselected. Separate host structural/auth/cleanup
+  suite: 3 passed. The focused suite includes one real foreground PTY pass,
+  five real PTY rejection cases and a no-controlling-terminal rejection.
+  Zero model inference. `SAFE_FOR_WORKLOADS=False`; no activation/deployment.
