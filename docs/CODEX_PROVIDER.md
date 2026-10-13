@@ -1,5 +1,27 @@
 # Internal LLM migration
 
+## Operator-reported restricted text qualification (2026-10-13)
+
+The operator reports one genuine confined Codex CLI 0.162.1 qualification
+from ordinary WSL: process exit 0; turn started and completed without failure;
+exact expected canary response; zero critical, forbidden-tool and unknown
+events; outside markers unchanged and no observed outside-file effects. The
+only advisories were the reviewed `CODEX_STARTUP_CODE_MODE_DISABLED` and
+`CODEX_STARTUP_CONFIG_WARNING` messages. The reported tool mode was
+`CODE_MODE_UNAVAILABLE_FAIL_CLOSED`; verdict was
+`TEXT_ONLY_QUALIFICATION_PASS`, `PRODUCTION_QUALIFIED=false`. This branch did
+not rerun the canary or perform model inference.
+
+This supports the tested restricted **text** path only. It does not establish
+structured-output correctness for every task, stable default-model metadata,
+application acceptance, credential isolation, or full security qualification.
+`SAFE_FOR_WORKLOADS=False` remains unchanged. New deterministic tests in
+`tests/test_generalist_provider_acceptance.py` exercise actual downstream
+thesis, reflection and shadow parsers, local CHAT routing, and numeric fidelity
+against a fabricated current-source observation. Those tests cannot replace a
+separately authorized disposable `morgoth_test` workload. The first proposed
+live task and its approval gate remain as specified below.
+
 ## Restricted text qualification preparation (2026-10-13)
 
 The `codex-01621-provider-qualification-v1` branch prepares one operator-native

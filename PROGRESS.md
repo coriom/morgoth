@@ -1146,3 +1146,22 @@ Log files:
   run: requested=tested SHA `4b37cffb9b26d0bf1b1495d289af3d9fccb56342`,
   copied-tree manifests equal, 2,279 passed, 2 skipped, no failure/error,
   exit 0, 59.7 s. No claim of repeated full-suite reliability is made.
+
+## 2026-10-13 — generalist mission foundation (feature branch)
+
+- The operator reported one 0.162.1 restricted synthetic text qualification:
+  exact response, completed turn, zero critical/tool/unknown events, no observed
+  outside effects, and the two reviewed advisories. This branch did not rerun
+  inference. `SAFE_FOR_WORKLOADS=False` and production readiness are unchanged.
+- Added an opt-in fixture-only capability acquisition flow in
+  `agents/generalist_mission_fixture.py`, local documentation in
+  `data/fixtures/generalist_task_service.json`, and adversarial tests. It
+  distinguishes proposal, isolated test and fixture approval, supports exact
+  contract reuse, checkpoint resumption and two synthetic weekly report ticks.
+  It does not register a tool, connect to Brain, persist a DB schema or grant
+  production authority. No dependency was added.
+- Added downstream task-consumer tests and
+  `docs/GENERALIST_MORGOTH_ARCHITECTURE_V1.md` with reviewable protected-file
+  draft directions. `IDENTITY.md`, `SPEC.md`, permissions and Human Gate 3
+  remain untouched. The old research identity and current generalist vision
+  need human reconciliation before any protected-file edit.
