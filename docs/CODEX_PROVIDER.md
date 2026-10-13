@@ -749,3 +749,69 @@ commit them. No warning whitelist, production `_validate_events()` change,
 sandbox/mount change, or workload activation is justified here. The read-only
 `auth.json` mount remains readable by Codex, and network access remains
 shared with the host.
+
+## 2026-10-13 — operator-local private warning review prepared
+
+The latest operator-native authority canary completed with the exact final
+response and no tool event, critical error or observed outside-file effect.
+Its pre-turn diagnostics remain one config-topic template match and one
+UNKNOWN. The discarded private stream cannot be recovered. This branch ran
+**zero** model calls and does not reinterpret the historical result as a
+provider qualification.
+
+At exact tag `rust-v0.162.1`, the
+[exec JSONL mapper](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/exec/src/event_processor_with_jsonl_output.rs#L389-L485)
+maps ConfigWarning, Warning, DeprecationNotice and ModelRerouted to the same
+`item.completed` / `item.type=error` shape; critical Error maps to top-level
+`type=error`. The notification variant is not retained. A message's position
+before `turn.started` does not identify its producer. Exact full-message
+templates yield **probable source families**, not proof of a variant.
+
+The diagnostic-only `scripts/codex_local_warning_review.py` checks the exact
+clean feature checkout against its tracked origin branch, the pinned CLI
+version/flags and confined ChatGPT login. It then requires a foreground local
+TTY and the phrase `RUN ONE CONFINED TEXT PROBE` before at most one fixed
+90-second inference. It calls the unchanged `build_argv()` and `_run()` path,
+which enters mandatory Bubblewrap. The fixed prompt is `Reply with exactly
+CODEX_PROVIDER_OK.` No project data or tool request enters it. The existing
+`--output-last-message` flag targets `/dev/null` for this diagnostic, avoiding
+an on-disk final-response artifact; no sandbox mount or restriction changes.
+JSONL, stderr and warning messages stay in process memory. Temporary neutral
+workspace cleanup still uses the existing owned-process lifecycle.
+The diagnostic text reducer follows the pinned final-message behavior: if
+multiple completed assistant items occur, it compares the **last** item with
+the fixed expected response; earlier items do not become the final answer.
+
+Machine-readable stdout contains only bounded fixed fields: text-transport
+result, pre-turn diagnostic count, exact-template family labels, unknown count,
+optional local-review status/category, `PRODUCTION_QUALIFIED=false` and a
+fixed verdict. If exactly one short UNKNOWN warning is present with a valid
+event stream, the script warns that redaction is incomplete and asks for a
+second phrase, `SHOW ONE REDACTED WARNING`. Only then does it show a bounded,
+control-escaped, best-effort-redacted rendering through `/dev/tty`, never
+through stdout or a file. The optional manual family choice is a fixed enum;
+it **never** changes `BLOCKED_CODEX_WARNING_UNKNOWN` or production readiness.
+Known state-persistence and model-reroute templates also retain their own
+blocking verdicts. Oversized/malformed warnings do not get displayed.
+
+Redaction handles common credential, URL, path and identifier forms, but an
+arbitrary unknown message can contain secrets in an unrecognized format.
+The operator must review the displayed content locally and never paste raw
+warning text into ChatGPT or another remote service. A local TTY and explicit
+phrases reject ordinary redirected/unattended runs; a program controlling a
+pseudo-terminal cannot be distinguished conclusively from a human. Terminal
+scrollback, screen recorders and external session logging remain outside this
+script's control. The read-only `auth.json` mount is readable by Codex and
+the process shares host networking.
+
+After reviewing the pushed clean branch, the operator may run **once** from
+ordinary Ubuntu WSL, with an interactive local terminal:
+
+```sh
+cd /home/corio/Morgoth/dev-codex-01621-private-warning-review-v1 && /home/corio/Morgoth/morgoth/.venv/bin/python -m scripts.codex_local_warning_review
+```
+
+Do not pipe or redirect the command. UNKNOWN stays blocked even if the
+operator labels it; any future source-grounded validation and change to the
+production `_validate_events()` policy requires separate security review.
+`SAFE_FOR_WORKLOADS=False`, and Human Gate 3 remains human-only.

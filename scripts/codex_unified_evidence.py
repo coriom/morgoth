@@ -229,8 +229,10 @@ def reduce_unified_events(stdout: str, stderr: str, returncode: int | None,
 
     if text_mode:
         expected = expected_text
+        # The pinned JSONL mapper permits intermediate completed assistant
+        # items; the last completed item is the final turn response.
         exact = (started and completed and not failed and final_text.strip() == expected
-                 and len(assistant_texts) == 1 and assistant_texts[0].strip() == expected)
+                 and bool(assistant_texts) and assistant_texts[-1].strip() == expected)
         report["EXPECTED_TEXT_RESPONSE"] = exact
         if final_text:
             encoded = final_text.encode("utf-8")

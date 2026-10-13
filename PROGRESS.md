@@ -1041,3 +1041,32 @@ Log files:
   shape passed and did not connect to PostgreSQL. No full canonical rerun,
   model inference, Weather, START, production service/database or new
   dependency. `SAFE_FOR_WORKLOADS=False`.
+
+## 2026-10-13 — operator-local Codex warning review prepared (no inference)
+
+- Branched from clean `0641ffa2728c4cafff10193390808298d5885df3` on
+  `codex-01621-private-warning-review-v1`. The prior operator-native
+  authority canary is inherited evidence only: exact response, zero tool and
+  outside effects, one config-topic diagnostic and one UNKNOWN. Its discarded
+  private warning cannot be recovered.
+- Added `scripts/codex_local_warning_review.py` for an operator-only, one-shot
+  fixed text probe. It checks the exact clean tracked-origin-equal branch,
+  0.162.1 flags and confined ChatGPT login, foreground local TTY and typed
+  consent before one 90-second `_run(build_argv(...))` call. The output-last-
+  message target is `/dev/null`; stdout/stderr/JSONL remain private in memory.
+  A second consent gates one bounded, escaped, best-effort-redacted UNKNOWN
+  warning displayed only on `/dev/tty`. Public JSON contains fixed facts and
+  a manual category cannot change the BLOCKED verdict.
+- Tagged JSONL collapses several noncritical notification variants into one
+  error-shaped item; top-level critical errors remain separate. Position does
+  not prove variant identity. Redaction cannot guarantee arbitrary secrets
+  are absent; terminal scrollback/recording and pseudo-TTY automation cannot
+  be ruled out. The script refuses ordinary redirected/unattended use.
+- Diagnostic-only text reduction now checks the last completed assistant item
+  when multiple items occur, matching the pinned final-message semantics.
+  Production `_validate_events()`, `SAFE_FOR_WORKLOADS=False`, Bubblewrap
+  mounts, auth mount, tools, model and network restrictions are unchanged.
+- No-inference focused tests: 243 passed, 3 host checks deselected; the 3
+  separate host structural/auth/timeout-cancellation checks passed. No full
+  canonical rerun, model inference, Weather, START, production database or
+  service operation, Desktop change or new dependency.
