@@ -851,8 +851,10 @@ blocked. The TTY-only human review entry point and its two consent gates are
 unchanged. The new command does not inspect an UNKNOWN message locally or
 turn a manual classification into workload approval.
 
-The development tool environment could not resolve the configured ChatGPT
-service hostname and could not resolve GitHub. No model request was made here;
+The development tool environment could not reach the configured ChatGPT
+service: an initial DNS check failed, and a later bounded DNS/TLS recheck was
+still blocked. GitHub access subsequently succeeded for the feature push.
+No model request was made here;
 this is `BLOCKED_AGENT_EXECUTION_ENVIRONMENT`, not evidence of failure in
 ordinary WSL. From a clean pushed feature branch in the operator's ordinary
 WSL, one optional automated diagnostic command is:
