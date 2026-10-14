@@ -1,0 +1,36 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "Open Library work lookup", "version": "1.0"},
+  "x-morgoth": {
+    "documentation_identity": "https://openlibrary.org/dev/docs/api/books",
+    "service_id": "open_library",
+    "capability_id": "open_library_work_read",
+    "scope": "open_library.read",
+    "valid_until_tick": 100
+  },
+  "servers": [{"url": "https://openlibrary.org"}],
+  "paths": {
+    "/works/{work_id}.json": {
+      "get": {
+        "operationId": "get_work",
+        "parameters": [
+          {"name": "work_id", "in": "path", "required": true,
+           "schema": {"type": "string", "maxLength": 24}}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object", "additionalProperties": true,
+                  "required": ["title"],
+                  "properties": {"title": {"type": "string", "maxLength": 240}}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

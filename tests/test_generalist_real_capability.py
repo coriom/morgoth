@@ -175,9 +175,12 @@ async def test_real_contract_mocked_restart_reuse_and_revocation():
     with pytest.raises(CapabilityRefusal, match="PERMISSION_REQUIRED"):
         await engine.execute(mission.mission_id, DOC, grant=None, now_tick=1)
     restarted = GeneralistMissionOrchestrator(store, "fixture_a", driver, approval_broker=_FakeBroker(store))
-    result = await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
+    receipt_grant = uuid4()
+    result = await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=receipt_grant, now_tick=1)
     assert result["evidence"]["issue_count"] == 1
-    assert await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1) == result
+    with pytest.raises(CapabilityRefusal, match="PERMISSION_REQUIRED"):
+        await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
+    assert await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=receipt_grant, now_tick=1) == result
     later = await restarted.receive("Reuse same public issues contract", desc.capability_id)
     assert (await restarted.assess(later.mission_id, DOC, ROWS, now_tick=1)).state is MissionState.READY
     assert (await restarted.execute(later.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1))["status"] == "MISSION_COMPLETE"

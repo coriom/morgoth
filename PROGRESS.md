@@ -1306,3 +1306,35 @@ Log files:
   780,718,080 bytes and 95 PIDs with zero OOM or PID-limit hits. No live model
   inference, production database/service, external mutation or deployment
   occurred.
+
+## 2026-10-14 — Generalist V5 generic declarative GET candidate
+
+- Added an opt-in, strict OpenAPI 3.0.3 **subset** extractor for one bounded
+  collection or detail GET. Documentation supplies operation shape, identity,
+  digest and typed schema, but never an executable grant. The generic HTTP
+  driver accepts only an independent exact reviewed request and mock transport
+  in this milestone; no new live destination is enabled.
+- The existing disposable Project SQL broker now binds reviewed host, concrete
+  endpoint, query, operation and scope instead of assuming GitHub in its
+  generic claim path. The historical fixed GitHub operator command retains
+  its default reviewed policy. A receipt read now requires the original grant
+  UUID, preventing an unrelated UUID from retrieving a completed result.
+- Two new synthetic unfamiliar services, collection albums and detail
+  artifacts, use the same parser, driver, orchestrator and one-use broker.
+  Actual disposable `morgoth_test` tests demonstrated initial gap, isolated
+  validation, pending approval, forged-grant refusal, exact execution,
+  fresh-interpreter receipt recovery, later capability reuse with a new grant,
+  document/version/operation/destination/scope drift refusal and revocation.
+- The prior GitHub public GET remains **operator-reported** evidence only:
+  `PUBLIC_READ_CONFIRMED`, one request, two issues, fresh-process recovery,
+  response SHA-256 `4ee918a0925299beb38d254621d13ef74326cb603c91ec64bfa8ef8d86b8964c`.
+  V5 made no new external GET or Codex inference.
+- The fresh-Project `self_modify_proposals` warnings result from optional
+  ALTER statements preceding table CREATE in protected `memory/persistent.py`.
+  Left unchanged pending a separate protected migration review.
+- An Open Library Works detail GET is documented as a future consent-based
+  transfer candidate; only its declarative fixture and synthetic projection
+  were checked, with no live request. Production approval, real generic
+  network binding and non-HTTP capability modalities remain unimplemented.
+  `SAFE_FOR_WORKLOADS=False`; no autonomous START, production write or Desktop
+  modification. Exact verification and tested SHA are recorded below.

@@ -1,4 +1,4 @@
-"""Disposable Project-bound approval and one-attempt claim for the fixed public GET.
+"""Disposable Project-bound approval and one-attempt claim for reviewed GETs.
 
 Only the opt-in operator command invokes approval. This is not a production
 credential service: same-UID Python with test-DB access is inside the trust
@@ -8,6 +8,7 @@ boundary. No Brain, API route or tool router imports this module.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 import json
 import os
 from typing import TYPE_CHECKING
@@ -27,6 +28,35 @@ _OPERATION = "list_open_issues"
 _SCOPE = "public_issues.read"
 
 
+@dataclass(frozen=True)
+class ReviewedReadRequest:
+    """Trusted caller's exact destination; never constructed from documentation."""
+
+    host: str
+    endpoint: str
+    operation: str
+    scope: str
+    query: dict[str, object]
+
+
+def _reviewed_request(desc: CapabilityDescriptor,
+                      reviewed: ReviewedReadRequest | None) -> ReviewedReadRequest:
+    if reviewed is None:
+        query = _fixed_request(desc)
+        return ReviewedReadRequest(_HOST, _ENDPOINT, _OPERATION, _SCOPE, query)
+    contract = desc.invocation_contract
+    if (type(reviewed) is not ReviewedReadRequest or type(reviewed.query) is not dict
+            or contract.get("method") != "GET" or contract.get("host") != reviewed.host
+            or contract.get("endpoint") != reviewed.endpoint
+            or contract.get("operation_id") != reviewed.operation
+            or contract.get("scope") != reviewed.scope
+            or contract.get("query") != reviewed.query
+            or desc.operation != reviewed.operation
+            or desc.scopes != frozenset({reviewed.scope})):
+        raise CapabilityRefusal("UNREVIEWED_DESTINATION")
+    return reviewed
+
+
 def _fixed_request(desc: CapabilityDescriptor) -> dict[str, object]:
     """Refuse unreviewed authority even if documentation or a grant requests it."""
     contract = desc.invocation_contract
@@ -44,8 +74,10 @@ def _fixed_request(desc: CapabilityDescriptor) -> dict[str, object]:
 class ProjectApprovalBroker:
     """Verify an exact local operator approval and consume it before one GET."""
 
-    def __init__(self, store: ProjectMissionStore) -> None:
+    def __init__(self, store: ProjectMissionStore, *,
+                 reviewed_request: ReviewedReadRequest | None = None) -> None:
         self.store = store
+        self.reviewed_request = reviewed_request
 
     async def _issue_after_consent(self, mission_id: UUID, desc: CapabilityDescriptor,
                                    *, provenance: str, lifetime_seconds: int = 120) -> UUID:
@@ -58,7 +90,8 @@ class ProjectApprovalBroker:
             raise CapabilityRefusal("OPERATOR_APPROVAL_REQUIRED")
         if not 1 <= lifetime_seconds <= 120:
             raise CapabilityRefusal("APPROVAL_EXPIRY_INVALID")
-        query = _fixed_request(desc)
+        reviewed = _reviewed_request(desc, self.reviewed_request)
+        query = reviewed.query
         pool = self.store._pool()
         grant_id = uuid4()
         async with pool.acquire() as conn:
@@ -89,7 +122,7 @@ class ProjectApprovalBroker:
                         approval_provenance,expires_at,max_invocations,max_response_bytes,max_duration_seconds)
                        VALUES ($1,$2,$3,$4,$5,$6,$7,'GET',$8,$9,$10::jsonb,$11,$12,$13,1,131072,8)""",
                     grant_id, self.store.project.id, mission_id, desc.capability_id,
-                    desc.version, desc.digest, desc.operation, _HOST, _ENDPOINT,
+                    desc.version, desc.digest, desc.operation, reviewed.host, reviewed.endpoint,
                     json.dumps(query), sorted(desc.scopes), provenance,
                     datetime.now(timezone.utc) + timedelta(seconds=lifetime_seconds))
         return grant_id
@@ -117,7 +150,8 @@ class ProjectApprovalBroker:
     async def claim(self, grant_id: UUID, mission: MissionRecord, revision: int,
                     desc: CapabilityDescriptor, attempted_record: str) -> None:
         """Atomically spend one grant and checkpoint ATTEMPTED before external I/O."""
-        query = _fixed_request(desc)
+        reviewed = _reviewed_request(desc, self.reviewed_request)
+        query = reviewed.query
         pool = self.store._pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -133,7 +167,7 @@ class ProjectApprovalBroker:
                         or (row["capability_id"], row["version"], row["document_digest"],
                             row["operation"], row["method"], row["host"], row["endpoint"])
                         != (desc.capability_id, desc.version, desc.digest, desc.operation,
-                            "GET", _HOST, _ENDPOINT)
+                            "GET", reviewed.host, reviewed.endpoint)
                         or json.loads(row["query_text"]) != query
                         or set(row["scopes"]) != desc.scopes
                         or row["max_response_bytes"] != 131072

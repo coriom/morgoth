@@ -14,12 +14,18 @@ import json
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import UUID
 
+import httpx
+
 from agents.generalist_capability import (
     CapabilityRefusal, FixtureAdapter, parse_contract, validate_isolated,
 )
 from agents.generalist_http_read import (
     parse_public_issues_contract, read_public_issues, validate_isolated_public_issues,
 )
+from agents.generalist_generic_read import (
+    extract_openapi_read, read_once, validated_request, validate_response,
+)
+from agents.generalist_approval_broker import ReviewedReadRequest
 from agents.generalist_mission_engine import (
     CapabilityRecord, CapabilityState, MissionRecord, MissionState, MissionStore, _now,
 )
@@ -133,6 +139,59 @@ class PublicIssuesDriver:
         return await read_public_issues(contract, transport=self._transport)
 
 
+class DeclarativeHttpReadDriver:
+    """One test-only GET interpreter for independently reviewed destinations."""
+
+    provenance = "operator_task_public_read"
+
+    def __init__(self, reviewed_request: ReviewedReadRequest, inputs: dict[str, object],
+                 *, transport: Any = None) -> None:
+        if type(reviewed_request) is not ReviewedReadRequest or type(inputs) is not dict:
+            raise CapabilityRefusal("UNREVIEWED_DESTINATION")
+        # This milestone only permits synthetic transports for previously
+        # unknown services. No production destination registry exists yet.
+        if type(transport) is not httpx.MockTransport:
+            raise CapabilityRefusal("GENERIC_LIVE_READ_NOT_AUTHORIZED")
+        self.reviewed_request = reviewed_request
+        self.inputs = dict(inputs)
+        self._transport = transport
+
+    def inspect(self, document: str, *, now_tick: int) -> CapabilityDescriptor:
+        """Parse data and demand an independent exact request binding."""
+        contract = extract_openapi_read(document)
+        if now_tick > contract.valid_until_tick:
+            raise CapabilityRefusal("DOCUMENT_STALE")
+        path, query = validated_request(contract, self.inputs)
+        review = self.reviewed_request
+        if ((contract.host, path, contract.operation_id, contract.scope, query) !=
+                (review.host, review.endpoint, review.operation, review.scope, review.query)):
+            raise CapabilityRefusal("UNREVIEWED_DESTINATION")
+        invocation = {"method": "GET", "host": contract.host,
+                      "path_template": contract.path_template, "endpoint": path,
+                      "operation_id": contract.operation_id, "scope": contract.scope,
+                      "query": query, "service_id": contract.service_id,
+                      "capability_id": contract.capability_id,
+                      "documentation_identity": contract.documentation_identity}
+        return CapabilityDescriptor(contract.capability_id, contract.version,
+                                    contract.documentation_digest, contract.documentation_identity,
+                                    contract.operation_id, frozenset({contract.scope}),
+                                    contract.valid_until_tick, invocation)
+
+    def validate(self, document: str, sample: object, *, now_tick: int) -> str:
+        """Validate an isolated mock response using the same schema as execution."""
+        self.inspect(document, now_tick=now_tick)
+        contract = extract_openapi_read(document)
+        result = validate_response(contract, sample)
+        return sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+
+    async def execute(self, document: str, sample: object | None, *, now_tick: int) -> dict[str, Any]:
+        """Perform the one reviewed mock GET after the SQL broker has claimed."""
+        self.inspect(document, now_tick=now_tick)
+        contract = extract_openapi_read(document)
+        return await read_once(contract, self.reviewed_request, self.inputs,
+                               transport=self._transport)
+
+
 class GeneralistMissionOrchestrator:
     """Durable gap/proposal/validation/claim/receipt transitions for any driver."""
 
@@ -140,8 +199,12 @@ class GeneralistMissionOrchestrator:
                  *, approval_broker: ProjectApprovalBroker | None = None) -> None:
         if getattr(store.project, "id", None) != project_id or project_id == "default":
             raise CapabilityRefusal("PROJECT_MISMATCH")
-        if type(driver) not in {FixtureDriver, PublicIssuesDriver}:
+        if type(driver) not in {FixtureDriver, PublicIssuesDriver, DeclarativeHttpReadDriver}:
             raise CapabilityRefusal("UNREVIEWED_DRIVER")
+        if type(driver) is DeclarativeHttpReadDriver and (
+            approval_broker is None or approval_broker.reviewed_request != driver.reviewed_request
+        ):
+            raise CapabilityRefusal("UNREVIEWED_DESTINATION")
         self.store, self.project_id, self.driver = store, project_id, driver
         self.approval_broker = approval_broker
 
@@ -257,7 +320,7 @@ class GeneralistMissionOrchestrator:
             raise CapabilityRefusal("CAPABILITY_RECORD_INVALID")
         if cap.validation_state != "PASSED" or cap.validation_evidence is None:
             raise CapabilityRefusal("VALIDATION_REQUIRED")
-        real_read = isinstance(self.driver, PublicIssuesDriver)
+        real_read = type(self.driver) in {PublicIssuesDriver, DeclarativeHttpReadDriver}
         if real_read:
             if grant is not None or grant_id is None or self.approval_broker is None:
                 raise CapabilityRefusal("PERMISSION_REQUIRED")
@@ -272,12 +335,16 @@ class GeneralistMissionOrchestrator:
         key = f"{desc.operation}:{desc.digest[:16]}"
         old = await self.store.get_receipt(mission_id, key)
         if old is not None:
+            if real_read and mission.checkpoint.get("grant_id") != str(grant_id):
+                raise CapabilityRefusal("PERMISSION_REQUIRED")
             return json.loads(old)
         if mission.state is MissionState.COMPLETE:
             raise CapabilityRefusal("RECEIPT_MISSING")
         mission.state = MissionState.ATTEMPTED
         mission.state_history.append(MissionState.ATTEMPTED.value)
         mission.checkpoint["attempt_key"] = key
+        if real_read:
+            mission.checkpoint["grant_id"] = str(grant_id)
         mission.resume_eligible = False
         mission.updated_at = _now()
         if real_read:

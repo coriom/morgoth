@@ -375,3 +375,65 @@ reviewed restricted network egress, durable operator audit/revocation, and
 remote idempotency/reconciliation for mutating operations. Browser, CLI/code,
 file and desktop modalities each require separately reviewed execution
 brokers. `SAFE_FOR_WORKLOADS=False`; no research or Codex workload activation.
+
+## V5 supplied-document generic GET acquisition (2026-10-14)
+
+The V4 public read was reported by the operator, not repeated here:
+`PUBLIC_READ_CONFIRMED`, one request, two issues, fresh-process receipt
+recovered, `PRODUCTION_APPROVAL=false`, response SHA-256
+`4ee918a0925299beb38d254621d13ef74326cb603c91ec64bfa8ef8d86b8964c`.
+It remains evidence for the fixed GitHub adapter, not a live proof of V5.
+
+`agents/generalist_generic_read.py` now extracts one operation from a strict,
+data-only OpenAPI **3.0.3 subset** supplied as a local document: a collection
+GET with a bounded object array or a detail GET with typed path parameters.
+Required query/path inputs are bounded strings, integers or Booleans; returned
+objects project at most twelve typed fields from at most ten collection rows
+and 128 KiB of JSON. Duplicate keys, extra document instructions, unsupported
+schema features, unbounded arrays, unsafe paths, HTTP writes and redirects
+are refused. The raw documentation SHA-256, source identity, service identity,
+capability/version and operation identity are distinct. This is deterministic
+extraction from **supplied** documentation, not autonomous discovery or
+general OpenAPI support.
+
+The same `DeclarativeHttpReadDriver` validated and executed two previously
+unregistered synthetic APIs: an album collection with integer query limit,
+and an artifact detail with a string path identifier. No service-specific
+Python driver was added. The generic driver currently requires an exact
+`httpx.MockTransport`; it cannot make a live network request. Its reviewed
+request object is supplied by trusted test code, separately from the document,
+and binds host, concrete endpoint, query, operation and scope. The existing
+Project SQL broker now compares that reviewed request to the persisted
+capability and one-use grant, atomically spends the grant and records
+`ATTEMPTED` before mock I/O. Both services recovered their committed receipts
+in a fresh interpreter and reused the compatible capability on a later
+mission with a new grant. Changed documentation/version, operation, host,
+scope, query, revocation, forged grant UUID and wrong receipt grant are blocked.
+The same-UID disposable-test broker is still **not authenticated production
+approval**. A local atomic receipt still cannot establish remote exactly-once
+execution.
+
+The previous three nonfatal `self_modify_proposals` bootstrap warnings have a
+specific ordering cause: `memory/persistent.py` attempts three optional
+`ALTER TABLE self_modify_proposals` statements before its later
+`CREATE TABLE IF NOT EXISTS` on a fresh schema. The table is absent at that
+point. This protected storage file was left unchanged; a future narrowly
+reviewed migration-order correction can eliminate the warnings without
+altering the generalist test-only schema.
+
+For a **future**, separately consented real-world transfer, the official
+[Open Library Works API](https://openlibrary.org/dev/docs/api/books) documents
+read-only JSON works, e.g. `GET /works/{work_id}.json` on `openlibrary.org`.
+An operator-selected work ID such as `OL45804W`, an independently reviewed
+destination/response contract, a production-authenticated grant boundary,
+and a network destination binding are required before enabling a live generic
+transport. No Open Library request ran here. Open Library usage guidance also
+asks clients to keep API use low volume; consult its
+[developer guidance](https://openlibrary.org/developers/api) during review.
+
+The opt-in mission interface remains `receive → assess → execute`. The research
+Brain, Scheduler, tool router, local Ollama, protected identity/specification,
+Human Gate 3 and Codex workload gate are unchanged. The generic modality
+demonstrates declarative API learning and mock execution only. Browser, file,
+CLI and desktop modalities remain unimplemented; neither an untrusted document
+nor a model can issue a production grant or expand network access.
