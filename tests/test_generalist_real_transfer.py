@@ -107,12 +107,11 @@ def test_reviewed_http_library_version_drift_fails_closed(monkeypatch):
         PinnedPublicTransport("openlibrary.org")
 
 
-def test_remote_checkout_probe_cannot_prompt_for_ssh_secret(monkeypatch):
+def test_remote_checkout_probe_uses_bounded_nonstdin_git(monkeypatch):
     def fake_run(argv, **kwargs):
         assert argv[-2:] == ["ls-remote", "origin"]
         assert kwargs["stdin"] == subprocess.DEVNULL
         assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
-        assert kwargs["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert _git("ls-remote", "origin") == ""

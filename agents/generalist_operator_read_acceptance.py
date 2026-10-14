@@ -38,8 +38,7 @@ def _git(*args: str) -> str:
     try:
         result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
                                 stdin=subprocess.DEVNULL, text=True, timeout=15,
-                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0",
-                                     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes"},
+                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
                                 check=False)
     except (OSError, subprocess.SubprocessError):
         raise CapabilityRefusal("CHECKOUT_UNVERIFIED") from None

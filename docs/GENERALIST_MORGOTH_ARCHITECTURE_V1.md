@@ -511,6 +511,7 @@ errors, exit 0. The development sandbox could not create a PostgreSQL Unix
 socket or a systemd cgroup, so these checks used approved local-process access;
 neither touched production state. The historical intermittent canonical
 failures are not disproved by one pass.
-The final operator command's Git remote check also disables interactive SSH
-prompts; that small follow-up has focused negative tests and was not included
-in the canonical-tested code SHA.
+The final operator command's Git remote check uses no stdin and disables Git
+terminal prompts while retaining existing SSH configuration. That small
+follow-up has focused negative tests and was not included in the
+canonical-tested code SHA.

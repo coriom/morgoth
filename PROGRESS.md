@@ -1383,5 +1383,6 @@ Log files:
   2,435 passed, 2 skipped, zero failures/errors, exit 0, 57.8-second runner
   wall. Owned cgroup peak was 803,667,968 bytes, 95 PIDs, zero OOM kills and
   zero PID-limit hits. This run does not prove repeated runner reliability.
-  A subsequent small SSH preflight hardening uses noninteractive BatchMode
-  and has focused negative tests; it was not separately canonical-tested.
+  A subsequent small Git preflight hardening uses no stdin, disables Git
+  terminal prompts and retains the operator's existing SSH configuration;
+  it has focused negative tests and was not separately canonical-tested.
