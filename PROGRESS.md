@@ -1218,3 +1218,32 @@ Log files:
   failures/errors, exit 0, 56.7 s wall. Owned scope peak memory 802,648,064 B,
   98 max PIDs, zero cgroup OOM kills and zero PID-limit hits. The final
   documentation-only evidence commit is distinct from the tested code SHA.
+
+## 2026-10-14 — Generalist public read capability (opt-in feature branch)
+
+- Added a driver-neutral mission orchestrator over the existing Project-local
+  store. The same receive/assess/validate/claim/execute/receipt path handles
+  task-management and inventory fixtures and the new public Issues contract.
+  It is not imported by Brain, Scheduler, ToolRouter or Desktop.
+- Added a manually extracted, strict data-only subset of GitHub's public
+  repository Issues list operation. The checked-in contract targets public
+  `octocat/Hello-World`; the adapter is fixed-host HTTPS GET, unauthenticated,
+  no proxy/redirect, at most five rows, 128 KiB body and eight-second timeout.
+  Mocked response validation is separate from live evidence. PR entries are
+  filtered. This is not arbitrary OpenAPI extraction or generic URL execution.
+- A mission CAS now records `EXTERNAL_OPERATION_ATTEMPTED` before adapter I/O;
+  a confirmed result and completion checkpoint commit with one local receipt.
+  Concurrent claims, uncertain remote outcomes and failed receipt commits do
+  not auto-replay. A local receipt does not prove remote exactly-once behavior.
+  The caller's disposable exact `InvocationGrant` is not authenticated human
+  production approval; production `APPROVED` remains unavailable.
+- Focused hermetic tests and disposable SQL tests passed; the SQL proof used
+  a separate PostgreSQL 16 `morgoth_test` cluster under `/tmp`, including a
+  fresh-process mocked public-read demonstration. The production PostgreSQL
+  cluster remained untouched. Direct DNS lookup for `api.github.com` failed
+  in the development sandbox, so real public GET proof is
+  `REAL_NETWORK_PROOF_BLOCKED_BY_ENVIRONMENT`; no bypass or fabricated PASS.
+- No Codex inference, Weather, research START, real external mutation,
+  production deployment/database, UI change or permission change.
+  `SAFE_FOR_WORKLOADS=False` and Human Gate 3 remain unchanged. Canonical
+  source-provenance result is recorded after the code commit.

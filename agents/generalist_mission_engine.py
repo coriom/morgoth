@@ -29,6 +29,7 @@ class MissionState(str, Enum):
     READY = "APPROVED_CAPABILITY_SELECTED"
     COMPLETE = "MISSION_COMPLETE"
     BLOCKED = "MISSION_BLOCKED"
+    ATTEMPTED = "EXTERNAL_OPERATION_ATTEMPTED"
 
 
 class CapabilityState(str, Enum):

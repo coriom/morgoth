@@ -224,3 +224,82 @@ Mark current research features as the first Domain implementation, not the
 entire product identity. Reconcile the legacy Phase 1 self-modification prose
 with today's human-controlled protected-zone policy. These are proposed text
 directions only; neither protected file is changed here.
+
+## V3 opt-in public read acquisition (2026-10-14)
+
+`agents/generalist_orchestrator.py` supplies one driver-neutral, opt-in mission
+interface: receive, inspect inventory, discover a gap, parse a data-only
+contract, validate against an isolated response, wait for a caller-supplied
+exact grant, claim a step, execute and commit a receipt. It works with the
+existing task and inventory fixture driver and a separate public Issues driver;
+there is no service-name switch in the orchestrator. The existing research
+Brain, scheduler, ToolRouter, Project bootstrap and Desktop are untouched.
+Only managed disposable `morgoth_test` Projects can use the optional store.
+
+The new narrowly reviewed [GitHub Issues list operation](https://docs.github.com/en/rest/issues/issues#list-repository-issues)
+is a **manually extracted subset**, not arbitrary OpenAPI learning: GET on
+`api.github.com`, `/repos/{owner}/{repo}/issues`, `state=open`, `per_page<=5`,
+and exactly number/title/state/created/updated result fields. The checked-in
+contract names the public `octocat/Hello-World` repository. GitHub's Issues
+list can include pull requests; the adapter filters entries with a
+`pull_request` key. The contract records the authoritative documentation URI,
+its own SHA-256 digest, version, operation, scope and expiry tick. A changed
+document/version requires new validation and an exact new grant. Documentation
+and issue titles remain untrusted data; no instruction or authority is taken
+from either. The isolated validation fixture proves parser behavior, **not**
+live response fidelity or connectivity.
+
+The HTTP adapter is GET-only, fixed-host HTTPS, no redirect following, no
+credentials/cookies/proxy environment, one request, eight-second timeout and
+128 KiB decompressed response cap. It handles 401/403/404/429/5xx and invalid
+JSON/schema with fixed error codes and never returns raw server error bodies.
+It rejects private DNS answers before connecting, but the preflight is not
+atomic with the TLS connection; the fixed hostname and TLS certificate check
+remain the primary destination binding. There is no generic URL executor.
+No shell, browser, plugin or generated code is installed or run.
+
+The orchestrator's Project/revision CAS records
+`EXTERNAL_OPERATION_ATTEMPTED` **before** calling a driver. Only a confirmed
+result and mission completion commit atomically with the local receipt. A crash,
+timeout, invalid response or failed receipt transaction leaves an attempted
+mission that is not automatically replayed. The local receipt does not prove
+exactly-once remote execution; a future mutating adapter needs reviewed remote
+idempotency and reconciliation. A concurrent second claimant is rejected.
+Receipt recovery is tested after a fresh pool and a separate-process mocked
+demo. Reuse of the exact capability version is tested; revocation and stale
+document/version block subsequent invocations.
+
+`InvocationGrant` is an exact Project/capability/version/digest/scope/expiry
+constraint supplied by the **trusted opt-in caller**. It is not an authenticated
+human approval record and is forgeable by arbitrary Python code. The one
+explicit public GET authorized for this development task can use it only in a
+disposable test Project. The production `APPROVED` state has no writer and no
+autonomous runtime imports this path. Before a real user-selected capability
+could be activated, add a separate authenticated human approval broker and
+bind grant issuance to Project, operation, destination, budget, expiry and
+revocation. No test-only grant should cross that boundary.
+
+`python -m agents.generalist_public_read_demo --mock-public-read` exercises
+the full prepare/execute/recover sequence in separate child interpreters and
+removes the temporary Project schema. `--live-public-read` is an explicit
+single public GET mode with the same isolation and bounded safe output. This
+development environment could not resolve `api.github.com`; therefore **real
+network proof is blocked by environment**. The mocked and disposable SQL
+proofs must not be described as a live API success.
+
+The next separate Codex task acceptance remains a single synthetic,
+source-grounded structured extraction in disposable `morgoth_test`, with
+fallback disabled, bounded output, strict schema/source checks, no tool events
+and explicit authorization. It is independent of the public read prototype.
+`SAFE_FOR_WORKLOADS=False` remains unchanged. Future browser, CLI/code,
+file/document and desktop modalities need separate brokers with the same
+versioned contract, Project scope, grant and receipt semantics; this GET
+adapter does not provide those capabilities.
+
+**Protected-file update proposal (not applied):** amend `IDENTITY.md`'s
+research-primary description to define an operator-directed generalist mission
+agent while explicitly retaining source grounding, immutable core and human
+approval. Amend `SPEC.md` to name Mission/Capability/Grant/Attempt/Receipt as
+separate versioned concepts and require authenticated approval plus remote
+idempotency/reconciliation for mutating operations. Keep no-trading and human
+Gate 3 rules until independently reviewed.

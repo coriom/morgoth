@@ -20,6 +20,96 @@ from memory.persistent import PersistentMemory
 from tests.test_generalist_capability_persistence import SCOPES, TASK_ROWS, document
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_contract_disposable_sql_claim_receipt_recovery(tmp_path, monkeypatch):
+    """Actual morgoth_test tables prove claim-before-I/O and fresh-pool recovery."""
+    dsn = os.environ.get("MORGOTH_TEST_POSTGRES_URL")
+    if not dsn:
+        pytest.skip("disposable morgoth_test URL unavailable")
+    import httpx
+    import core.project as project_module
+    import agents.generalist_mission_store as store_module
+    from agents.generalist_orchestrator import (
+        GeneralistMissionOrchestrator, InvocationGrant, PublicIssuesDriver,
+    )
+    from tests.test_generalist_real_capability import DOC, ROWS
+
+    project = _project(tmp_path, f"github_{uuid4().hex[:10]}")
+    monkeypatch.setattr(project_module, "current_namespace", lambda: project)
+    monkeypatch.setattr(store_module, "current_namespace", lambda: project)
+    memory = None
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=ROWS)
+
+    driver = PublicIssuesDriver(transport=httpx.MockTransport(handler))
+
+    async def reopen():
+        fresh = PersistentMemory(SimpleNamespace(postgres_url=dsn))
+        await fresh.initialize()
+        store = ProjectMissionStore(fresh, project)
+        await store.initialize_optional()
+        return fresh, store
+
+    try:
+        memory, store = await reopen()
+        engine = GeneralistMissionOrchestrator(store, project.id, driver)
+        desc = driver.inspect(DOC, now_tick=1)
+        mission = await engine.receive("Public issues", desc.capability_id)
+        assert (await engine.assess(mission.mission_id, DOC, ROWS, now_tick=1)).state is MissionState.PENDING
+        await memory.close()
+        memory = None
+        memory, store = await reopen()
+        resumed = GeneralistMissionOrchestrator(store, project.id, driver)
+        grant = InvocationGrant(project.id, desc.capability_id, desc.version, desc.digest,
+                                desc.scopes, 10, driver.provenance)
+        with pytest.raises(CapabilityRefusal, match="PERMISSION_REQUIRED"):
+            await resumed.execute(mission.mission_id, DOC, grant=None, now_tick=1)
+        first = await resumed.execute(mission.mission_id, DOC, grant=grant, now_tick=1)
+        assert first["status"] == "MISSION_COMPLETE" and calls == 1
+        await memory.close()
+        memory = None
+        memory, store = await reopen()
+        recovered = GeneralistMissionOrchestrator(store, project.id, driver)
+        assert await recovered.execute(mission.mission_id, DOC, grant=grant, now_tick=1) == first
+        assert calls == 1
+        saved, revision = await recovered._load(mission.mission_id)
+        assert saved.state is MissionState.COMPLETE
+        with pytest.raises(MissionStoreError, match="MISSION_CONCURRENT_CHANGE"):
+            await store.commit_execution(mission.mission_id, saved.user_id, "stale",
+                                         revision - 1, saved.state.value,
+                                         saved.model_dump_json(), '{}')
+        assert await store.get_receipt(mission.mission_id, "stale") is None
+    finally:
+        if memory is not None:
+            await memory.close()
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{project.postgres_schema}" CASCADE')
+        finally:
+            await conn.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_public_read_demo_cross_process_mocked():
+    """The bounded command uses separate interpreters and one mocked GET."""
+    if not os.environ.get("MORGOTH_TEST_POSTGRES_URL"):
+        pytest.skip("disposable morgoth_test URL unavailable")
+    from agents.generalist_public_read_demo import run_demo
+    result = await run_demo(mode="mock")
+    assert result["validation"] == "MOCKED_PASS"
+    assert result["prepared_state"] == "PENDING_HUMAN_APPROVAL"
+    assert result["completed"]["state"] == "MISSION_COMPLETE"
+    assert result["fresh_process_receipt_recovered"] is True
+    assert result["mock_get_count"] == 1 and result["public_get_count"] == 0
+    assert result["production_approval"] is False
+
+
 def _project(root: Path, suffix: str) -> ProjectConfig:
     return ProjectConfig(
         id=f"fixture_{suffix}", name="Disposable fixture", domain="crypto",

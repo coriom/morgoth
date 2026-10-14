@@ -1,0 +1,17 @@
+{
+  "service_id": "public_github_issues",
+  "version": "1.0",
+  "schema_revision": 1,
+  "documentation_identity": "https://docs.github.com/en/rest/issues/issues#list-repository-issues",
+  "method": "GET",
+  "host": "api.github.com",
+  "path_template": "/repos/{owner}/{repo}/issues",
+  "operation_id": "list_open_issues",
+  "scope": "public_issues.read",
+  "state": "open",
+  "per_page": 3,
+  "owner": "octocat",
+  "repo": "Hello-World",
+  "result_fields": ["number", "title", "state", "created_at", "updated_at"],
+  "valid_until_tick": 10
+}

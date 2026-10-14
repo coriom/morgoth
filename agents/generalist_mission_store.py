@@ -45,7 +45,7 @@ _DDL = (
 
 
 class ProjectMissionStore:
-    """CAS and atomic fixture receipts in one Project-only PostgreSQL schema."""
+    """CAS and atomic local receipts in one disposable Project schema."""
 
     def __init__(self, memory: PersistentMemory, project: ProjectConfig) -> None:
         if project.is_legacy or project.postgres_schema == "public":
@@ -163,7 +163,7 @@ class ProjectMissionStore:
         return row["record"] if row else None
 
     async def get_receipt(self, mission_id: UUID, key: str) -> str | None:
-        """Find a committed fixture result before doing duplicate work."""
+        """Find a committed local result before considering duplicate work."""
         pool = self._pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -176,11 +176,10 @@ class ProjectMissionStore:
     async def commit_execution(self, mission_id: UUID, user_id: str, key: str,
                                expected_revision: int, state: str, record: str,
                                result: str) -> tuple[bool, str]:
-        """Atomically persist the fixture result and its mission checkpoint once.
+        """Atomically persist a confirmed result and mission checkpoint once.
 
-        The fixture computation has no external side effect. A real connector
-        would require a separate broker/reconciliation contract and cannot use
-        this method as its permission grant.
+        External callers must claim an ATTEMPTED checkpoint before I/O. This
+        local receipt is neither a remote exactly-once proof nor a grant.
         """
         pool = self._pool()
         async with pool.acquire() as conn:
