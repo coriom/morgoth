@@ -10,6 +10,8 @@ import httpx
 import json
 from pathlib import Path
 import socket
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +21,8 @@ from agents.generalist_capability import CapabilityRefusal
 from agents.generalist_documentation import reviewed_offline_snapshot
 from agents.generalist_generic_read import extract_openapi_read, read_once, validate_response, validated_request
 from agents.generalist_operator_read_acceptance import _reviewed_inputs
+from agents.generalist_operator_read_acceptance import _git
+from agents.generalist_operator_read_acceptance import verify_checkout
 from agents.generalist_orchestrator import DeclarativeHttpReadDriver
 from agents.generalist_pinned_transport import _PublicAddressBackend, _public_addresses, PinnedPublicTransport
 from scripts.codex_local_warning_review import ReviewUnavailable
@@ -101,6 +105,42 @@ def test_reviewed_http_library_version_drift_fails_closed(monkeypatch):
     monkeypatch.setattr(httpx, "__version__", "0.29.0")
     with pytest.raises(RuntimeError, match="version not reviewed"):
         PinnedPublicTransport("openlibrary.org")
+
+
+def test_remote_checkout_probe_cannot_prompt_for_ssh_secret(monkeypatch):
+    def fake_run(argv, **kwargs):
+        assert argv[-2:] == ["ls-remote", "origin"]
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+        assert kwargs["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _git("ls-remote", "origin") == ""
+
+
+@pytest.mark.parametrize("bad_key,bad_value", [
+    (("branch", "--show-current"), "main"),
+    (("status", "--porcelain", "--untracked-files=all"), " M changed.py"),
+    (("ls-remote", "origin", "refs/heads/morgoth-generalist-real-transfer-v1"),
+     "1" * 40 + "\trefs/heads/morgoth-generalist-real-transfer-v1"),
+])
+def test_operator_checkout_preflight_fails_closed(monkeypatch, bad_key, bad_value):
+    import agents.generalist_operator_read_acceptance as command
+    head = "0" * 40
+    values = {
+        ("rev-parse", "HEAD"): head,
+        ("branch", "--show-current"): command.BRANCH,
+        ("status", "--porcelain", "--untracked-files=all"): "",
+        ("merge-base", command.BASE, "HEAD"): command.BASE,
+        ("remote", "get-url", "origin"): "git@github.com:coriom/morgoth.git",
+        ("rev-parse", f"origin/{command.BRANCH}"): head,
+        ("ls-remote", "origin", f"refs/heads/{command.BRANCH}"):
+            head + f"\trefs/heads/{command.BRANCH}",
+    }
+    values[bad_key] = bad_value
+    monkeypatch.setattr(command, "_git", lambda *args: values[args])
+    with pytest.raises(CapabilityRefusal, match="CHECKOUT_UNVERIFIED"):
+        verify_checkout()
 
 
 @pytest.mark.asyncio

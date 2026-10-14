@@ -1368,7 +1368,7 @@ Log files:
   checks the bounded result, recovers its receipt in a fresh interpreter and
   removes disposable resources. It was **not executed** here; no consent was
   simulated and no Open Library request was made.
-- Focused no-network generalist tests: 143 passed, 22 integration tests
+- Focused no-network generalist tests: 147 passed, 22 integration tests
   deselected. An owned disposable PostgreSQL 16 cluster ran 25 selected
   generalist SQL tests, all passed, including the new real-service proposal,
   exact grant, fresh-interpreter receipt and later capability reuse test.
@@ -1377,3 +1377,11 @@ Log files:
   and tested commit SHA are recorded in a follow-up evidence entry.
 - `SAFE_FOR_WORKLOADS=False`. No production authorization, deployment,
   research START, model inference, protected-file change or Desktop edit.
+- Candidate commit `0a3f2db933668b3f1f5831c063d1824eb5d9523d` was tested by
+  one provenance-aware canonical run: requested SHA = tested SHA, copied-tree
+  manifest matched (`6a87b0131ab222eb5b529187e756b8dbff18d275084d8f51635513226253e7e3`),
+  2,435 passed, 2 skipped, zero failures/errors, exit 0, 57.8-second runner
+  wall. Owned cgroup peak was 803,667,968 bytes, 95 PIDs, zero OOM kills and
+  zero PID-limit hits. This run does not prove repeated runner reliability.
+  A subsequent small SSH preflight hardening uses noninteractive BatchMode
+  and has focused negative tests; it was not separately canonical-tested.

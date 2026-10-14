@@ -37,7 +37,10 @@ _active_transport: PinnedPublicTransport | None = None
 def _git(*args: str) -> str:
     try:
         result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
-                                text=True, timeout=15, check=False)
+                                stdin=subprocess.DEVNULL, text=True, timeout=15,
+                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0",
+                                     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes"},
+                                check=False)
     except (OSError, subprocess.SubprocessError):
         raise CapabilityRefusal("CHECKOUT_UNVERIFIED") from None
     if result.returncode or len(result.stdout) > 4096:

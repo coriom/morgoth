@@ -501,3 +501,16 @@ Scheduler, Ollama routing, protected identity/governance and Human Gate 3 stay
 unchanged. Browser, CLI, file and desktop capabilities still need separately
 reviewed brokers and permission contracts; one supported API does not prove
 universal software learning.
+
+V6 validation: 147 focused no-network generalist tests passed (22 integration
+tests deselected); 25 selected generalist tests passed against an owned,
+disposable `morgoth_test` PostgreSQL cluster. One provenance-aware canonical
+run tested code SHA `0a3f2db933668b3f1f5831c063d1824eb5d9523d` and an
+equal complete copied-tree manifest: 2,435 passed, 2 skipped, no failures or
+errors, exit 0. The development sandbox could not create a PostgreSQL Unix
+socket or a systemd cgroup, so these checks used approved local-process access;
+neither touched production state. The historical intermittent canonical
+failures are not disproved by one pass.
+The final operator command's Git remote check also disables interactive SSH
+prompts; that small follow-up has focused negative tests and was not included
+in the canonical-tested code SHA.
