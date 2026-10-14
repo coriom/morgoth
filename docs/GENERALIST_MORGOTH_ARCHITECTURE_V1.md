@@ -95,6 +95,71 @@ or exercise an external account. The fixture's Boolean grant is intentionally
 forgeable in Python and confers no Morgoth runtime permission. Do not connect
 it to autonomous START.
 
+## V2 opt-in persistent slice (this feature branch)
+
+`agents/generalist_capability.py` interprets a strict, data-only subset of
+API-style operation definitions: exactly one `list`, `reorder`, and `report`
+operation, each bound to a fixed fixture scope and result type. The document
+defines service/version, two record field names and expiration tick. It has no
+URL, HTTP method, dynamic script, executable code, credential, path, or grant
+field. Unknown keys, duplicate JSON keys, extra operations, mismatched scopes,
+injection prose and oversized documents are rejected. This is **not** general
+OpenAPI support. The same interpreter operates on separate synthetic project
+and inventory records; a third service needs a compatible document and local
+fixture data, not a service-name branch in the mission engine.
+
+`agents/generalist_mission_engine.py` tracks a separate Mission record and
+Capability record. Missions keep Project/user IDs, objective, required and
+missing capabilities, step lists, checkpoint, bounded failure codes, resume
+eligibility and timestamps. Capabilities bind Project/user, exact version and
+documentation SHA-256, operations/scopes, invocation contract, isolated
+validation evidence, lifecycle history, compatibility revision, expiry and
+test-only approval provenance. A successful copy-based fixture validation
+produces `PENDING_APPROVAL`, never `APPROVED`. The only simulated grant is
+`TEST_ONLY_APPROVED`; production `APPROVED` has no writer. Revocation and
+version/document drift block subsequent invocation. A malformed document or
+failed validation leaves a durable safe failure code when storage is available.
+
+`agents/generalist_mission_store.py` adds three **optional** tables in an
+existing managed Project PostgreSQL schema: missions, capabilities and
+idempotent execution receipts. It uses the initialized `PersistentMemory` pool,
+the Project's existing no-public-fallback search path and compare-and-swap
+mission revisions. A receipt and checkpoint commit in one transaction. Only
+`morgoth_test` is accepted, checked before optional table creation; the demo
+also verifies that database name **before** calling `PersistentMemory.initialize()`.
+The legacy/default Project is refused. This optional fixture schema is not
+added to normal `scripts/init_db.py` bootstrap because doing so would create
+generalist tables in live Projects before a production approval contract exists.
+
+`python -m agents.generalist_persistent_demo` requires an explicit disposable
+`MORGOTH_TEST_POSTGRES_URL`. It creates two private Project manifests under a
+temporary `MORGOTH_HOME`, then runs separate Python processes for prepare,
+resume and reuse. The prepare process commits `PENDING_HUMAN_APPROVAL` and
+exits. The resume process reads that checkpoint, applies an explicit synthetic
+grant, commits an exact-once report receipt and a second periodic tick. A third
+process reuses the same exact capability. The command prints only bounded
+state/Boolean timeline entries and drops its temporary schemas. The synthetic
+operation is deterministic computation over copied fixture records; no external
+side effect exists. Thus atomic receipts prove durable fixture idempotency,
+**not** safe retries of a real API call. A real broker will need external
+idempotency/reconciliation and authenticated human approval before any account
+integration.
+
+This slice is not imported by Brain, Scheduler, ToolRouter or Desktop. Research
+objectives retain their existing lifecycle. Capability acquisition is a
+separate opt-in mission path. No generated code, package installation, real
+third-party API, model inference, production database, or production grant is
+used. `SAFE_FOR_WORKLOADS=False`; Human Gate 3 is unchanged.
+
+The next separately authorized live Codex acceptance remains a single
+source-grounded synthetic structured task in disposable `morgoth_test` with
+fallback disabled, exact output schema, source/numeric checks, bounded time,
+zero tool events and strict cleanup. It is independent of this fixture
+capability path and is **not** executed here. A real generalist connector is a
+later milestone after an authenticated approval broker, per-operation scope,
+versioned adapter review, non-idempotent recovery design and explicit Project
+UI/API contracts are reviewed.
+
 ## Recovery and observability contract for a future implementation
 
 Persist a mission transition and its idempotency key before external work.

@@ -1,0 +1,13 @@
+{
+  "service_id": "synthetic_inventory",
+  "version": "2.0",
+  "schema_revision": 1,
+  "valid_until_tick": 10,
+  "record_id_field": "sku",
+  "record_state_field": "stock_level",
+  "operations": [
+    {"operation_id": "list_stock", "kind": "list", "scope": "fixture.read", "result_type": "records"},
+    {"operation_id": "prioritize_stock", "kind": "reorder", "scope": "fixture.write", "result_type": "ack"},
+    {"operation_id": "stock_report", "kind": "report", "scope": "fixture.report", "result_type": "report"}
+  ]
+}

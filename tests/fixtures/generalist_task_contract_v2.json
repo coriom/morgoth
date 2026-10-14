@@ -1,0 +1,13 @@
+{
+  "service_id": "synthetic_tasks",
+  "version": "1.0",
+  "schema_revision": 1,
+  "valid_until_tick": 10,
+  "record_id_field": "project_name",
+  "record_state_field": "task_state",
+  "operations": [
+    {"operation_id": "list_projects", "kind": "list", "scope": "fixture.read", "result_type": "records"},
+    {"operation_id": "organize_projects", "kind": "reorder", "scope": "fixture.write", "result_type": "ack"},
+    {"operation_id": "weekly_project_report", "kind": "report", "scope": "fixture.report", "result_type": "report"}
+  ]
+}

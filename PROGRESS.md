@@ -1181,3 +1181,34 @@ Log files:
   first invocation stopped at the test URL guard; a second invocation with a
   syntactically valid disposable `_test` URL passed without a database
   connection. No new dependency or production permission change.
+
+## 2026-10-14 — Generalist capability persistence (opt-in feature branch)
+
+- Added a strict data-only declarative fixture contract and one generic
+  interpreter for synthetic task-management and inventory services. Unknown
+  operations, authority fields, malformed/stale docs and unsupported schemas
+  fail closed; no generated code or third-party API is executed.
+- Added opt-in Project-local PostgreSQL mission, capability and receipt tables
+  through the existing `PersistentMemory` pool. Provisioning and use require a
+  managed Project and verified `morgoth_test` database; the demo checks the
+  database name before `PersistentMemory.initialize()`. This is deliberately
+  absent from normal production bootstrap. No migration or production DB use.
+- Missions persist checkpoint, gaps, steps, fixed failure reasons and revision.
+  Capabilities persist exact document/version identity, test evidence, scopes,
+  history and fixture-only approval provenance. Production APPROVED has no
+  writer. A receipt and mission checkpoint commit atomically; duplicate ticks
+  return their durable receipt. Real external side-effect reconciliation is
+  not implemented.
+- A bounded command runs task and inventory prepare/resume/reuse phases in
+  distinct Python processes and private Project schemas, then removes those
+  schemas. It uses only local deterministic fixture records. One disposable
+  PostgreSQL 16 cluster under `/tmp` (private socket, `morgoth_test`) passed the
+  SQL isolation/restart proof; the host's ordinary 5432 cluster remained down.
+- Focused new and V1 fixture/provider tests passed 44/44 (two marked SQL tests
+  deselected); the disposable SQL tests passed 2/2, including process-boundary
+  restart for both services. Full canonical acceptance
+  result is recorded below after the candidate commit. No live inference,
+  research START, Desktop change, dependency addition or Codex activation.
+- Decision: fixture-only approval can never be used against a production DB;
+  normal bootstrap does not create these tables. Protected SPEC/IDENTITY/core,
+  `SAFE_FOR_WORKLOADS=False` and Human Gate 3 remain unchanged.
