@@ -1247,3 +1247,13 @@ Log files:
   production deployment/database, UI change or permission change.
   `SAFE_FOR_WORKLOADS=False` and Human Gate 3 remain unchanged. Canonical
   source-provenance result is recorded after the code commit.
+- Final focused hermetic scoreboard: 72 passed. Disposable `morgoth_test`
+  SQL scoreboard: 7 passed, including fresh-process mocked read/recovery.
+  The exact owned PostgreSQL test cluster was stopped and removed.
+- One provenance-aware canonical run on code candidate
+  `3ea9c3dfb9e1b66edb0b54f8d39ea1630557976b` had requested=tested SHA,
+  identical complete copied-tree manifests, 2,367 passed, 2 skipped,
+  zero failed/errors, exit 0, 75.4 s runner wall. Owned scope: peak memory
+  768,712,704 B, max 88 PIDs, zero OOM kills/PID-limit hits. This does not
+  establish repeated reliability of the historically intermittent runner.
+  The final evidence-only commit is distinct from the tested code candidate.
