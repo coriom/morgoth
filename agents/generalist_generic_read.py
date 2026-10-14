@@ -88,8 +88,9 @@ def _object_schema(value: object) -> dict[str, Any]:
         raise ValueError("object required")
     fields = raw["properties"]
     if (type(fields) is not dict or not 1 <= len(fields) <= 12
-            or type(raw["required"]) is not list or set(raw["required"]) != set(fields)
-            or len(raw["required"]) != len(fields)):
+            or type(raw["required"]) is not list or not raw["required"]
+            or len(set(raw["required"])) != len(raw["required"])
+            or not set(raw["required"]).issubset(fields)):
         raise ValueError("required fields")
     for name, schema in fields.items():
         _identifier(name)
@@ -233,11 +234,12 @@ def validated_request(contract: LearnedReadContract, inputs: dict[str, object]) 
 def _validate_object(value: object, schema: dict[str, Any]) -> dict[str, object]:
     if type(value) is not dict or not set(schema["required"]).issubset(value):
         raise CapabilityRefusal("EXTERNAL_RESPONSE_INVALID")
-    if schema["additionalProperties"] is False and set(value) != set(schema["properties"]):
+    if schema["additionalProperties"] is False and not set(value).issubset(schema["properties"]):
         raise CapabilityRefusal("EXTERNAL_RESPONSE_INVALID")
     # Extra response fields are discarded, never interpreted as instructions.
     try:
-        return {key: _checked_value(value[key], field) for key, field in schema["properties"].items()}
+        return {key: _checked_value(value[key], field) for key, field in schema["properties"].items()
+                if key in value}
     except CapabilityRefusal:
         raise CapabilityRefusal("EXTERNAL_RESPONSE_INVALID") from None
 
@@ -261,8 +263,11 @@ async def read_once(contract: LearnedReadContract, reviewed: ReviewedReadRequest
             (reviewed.host, reviewed.endpoint, reviewed.operation,
              reviewed.scope, reviewed.query)):
         raise CapabilityRefusal("UNREVIEWED_DESTINATION")
-    if type(transport) is not httpx.MockTransport:
+    from agents.generalist_pinned_transport import PinnedPublicTransport
+    if type(transport) not in {httpx.MockTransport, PinnedPublicTransport}:
         raise CapabilityRefusal("GENERIC_LIVE_READ_NOT_AUTHORIZED")
+    if type(transport) is PinnedPublicTransport and transport.host != reviewed.host:
+        raise CapabilityRefusal("UNREVIEWED_DESTINATION")
     async def request() -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(transport=transport, trust_env=False,
@@ -282,8 +287,12 @@ async def read_once(contract: LearnedReadContract, reviewed: ReviewedReadRequest
                         raise CapabilityRefusal("EXTERNAL_HTTP_OTHER")
                     if response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
                         raise CapabilityRefusal("EXTERNAL_RESPONSE_INVALID")
+                    if response.headers.get("content-encoding", "").lower() not in {"", "identity"}:
+                        raise CapabilityRefusal("EXTERNAL_RESPONSE_INVALID")
                     body = bytearray()
-                    async for chunk in response.aiter_bytes():
+                    chunks = (response.aiter_bytes() if type(transport) is httpx.MockTransport
+                              else response.aiter_raw())
+                    async for chunk in chunks:
                         body.extend(chunk)
                         if len(body) > _MAX_BODY:
                             raise CapabilityRefusal("EXTERNAL_RESPONSE_TOO_LARGE")

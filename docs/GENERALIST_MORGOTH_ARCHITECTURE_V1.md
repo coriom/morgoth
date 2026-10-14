@@ -444,3 +444,60 @@ One canonical run verified that requested=tested SHA and the complete copied
 tree manifest matched; 2,415 passed, 2 skipped, zero failures/errors, exit 0.
 The historical intermittent canonical-runner failures are not thereby proven
 resolved. No live third-party call or model inference occurred in V5.
+
+## V6 reviewed Open Library transfer candidate (2026-10-14)
+
+The next opt-in path uses the **same** `DeclarativeHttpReadDriver`, OpenAPI
+subset parser, Project mission store and exact-operation SQL approval broker.
+The official [Open Library Books API](https://openlibrary.org/dev/docs/api/books)
+identifies the Works JSON example `/works/OL45804W.json`. A committed,
+operator-reviewed offline excerpt records that canonical source identity and
+its own SHA-256. A separate, digest-checked data-only contract proposal binds
+the selected work ID, `GET`, `openlibrary.org`, one concrete endpoint, the
+`title` field and optional bounded `key`/`first_publish_date` fields. Unknown
+response fields are discarded. The source digest is included in the persisted
+capability/grant digest; changing the snapshot or proposal invalidates reuse.
+The excerpt is **not** a fetched live document or independent API-behavior
+proof. Prose-to-contract extraction remains a reviewed proposal boundary,
+not autonomous semantic learning. Document instructions cannot mint grants
+or drive code execution.
+
+`PinnedPublicTransport` is the only newly permitted non-mock transport for
+this generic driver. It is pinned to reviewed `httpx 0.28.1` and `httpcore
+1.0.9` internals and fails closed on version drift. The one-host backend
+resolves `openlibrary.org` once, rejects the entire answer if any address is
+nonpublic, dials one checked IP and retains the original hostname for TLS SNI
+and certificate verification. It refuses another host, method, port, Unix
+socket, request attempt, credentials and proxy use. The client has no proxy
+environment inheritance, redirects or retries. A hard eight-second total
+timeout and 128-KiB JSON cap apply; compressed responses are refused before
+decoding. DNS-to-connect rebinding through
+a second hostname resolution is removed for this path; shared host networking
+and ordinary public-network availability remain. No credential is needed or
+forwarded. The operator workflow makes at most one GET, below Open Library's
+[default one-request-per-second unidentified limit](https://openlibrary.org/developers/api),
+and does not scrape or bulk-fetch.
+
+The disposable `agents.generalist_operator_read_acceptance` command verifies
+the pushed clean feature branch, exact fixture digests and reviewed request,
+creates its own private `morgoth_test` PostgreSQL cluster/Project, validates an
+isolated sample, and stops at `PENDING_HUMAN_APPROVAL`. Only foreground
+controlling-terminal consent issues a one-use, 120-second, Project/mission/
+capability/version/source-digest/operation/destination-bound grant. The broker
+atomically consumes it with the `ATTEMPTED` checkpoint before external I/O.
+The generic driver then validates the response and commits a receipt. A fresh
+interpreter recovers that receipt; a later mission can select the same compatible
+capability only with a **new** grant. All disposable files and SQL resources
+are removed. An ambiguous post-claim failure is not replayed. This local
+same-UID operator grant is not production-grade authentication, and a local
+receipt does not prove remote exactly-once execution.
+
+The operator-only real GET is **prepared, not executed in development**.
+Offline mock/SQL evidence does not imply that Open Library currently returns
+the proposed schema, that the endpoint is reachable from ordinary WSL, or
+that Morgoth is production qualified. No Open Library live response, Codex
+inference or autonomous task ran. `SAFE_FOR_WORKLOADS=False`; Brain,
+Scheduler, Ollama routing, protected identity/governance and Human Gate 3 stay
+unchanged. Browser, CLI, file and desktop capabilities still need separately
+reviewed brokers and permission contracts; one supported API does not prove
+universal software learning.

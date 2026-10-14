@@ -24,7 +24,11 @@
                 "schema": {
                   "type": "object", "additionalProperties": true,
                   "required": ["title"],
-                  "properties": {"title": {"type": "string", "maxLength": 240}}
+                  "properties": {
+                    "title": {"type": "string", "maxLength": 240},
+                    "key": {"type": "string", "maxLength": 80},
+                    "first_publish_date": {"type": "string", "maxLength": 120}
+                  }
                 }
               }
             }

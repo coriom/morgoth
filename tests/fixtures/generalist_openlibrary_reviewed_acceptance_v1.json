@@ -1,0 +1,16 @@
+{
+  "source_identity": "https://openlibrary.org/dev/docs/api/books",
+  "snapshot_file": "generalist_openlibrary_works_snapshot_v1.txt",
+  "snapshot_sha256": "9ac7c0154e4cab140953842add00efebaedd8df61369da5622318b3804654b72",
+  "proposal_file": "generalist_openlibrary_work_subset_v1.json",
+  "proposal_sha256": "b16ba1247c26ea715f4c766c472daa352d3c488fdff927d8cff1e31bf58b2b64",
+  "reviewed_request": {
+    "host": "openlibrary.org",
+    "endpoint": "/works/OL45804W.json",
+    "operation": "get_work",
+    "scope": "open_library.read",
+    "query": {}
+  },
+  "inputs": {"work_id": "OL45804W"},
+  "isolated_sample": {"title": "Synthetic work", "key": "/works/OL45804W"}
+}

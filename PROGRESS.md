@@ -1349,3 +1349,31 @@ Log files:
   95 PIDs, zero OOM kills and zero PID-limit hits. Historical intermittent
   runner failures are not disproved by one green run. This subsequent
   documentation-only commit records results; it was not separately tested.
+
+## 2026-10-14 — Generalist V6 reviewed real-service transfer candidate
+
+- Added an opt-in Open Library Works candidate without an Open Library Python
+  driver. The supplied prose snapshot and OpenAPI-subset proposal have separate
+  checked digests; the snapshot's official-source identity is an operator
+  assertion, not a live-document retrieval or semantic extraction proof.
+  `title` is required; bounded `key` and `first_publish_date` are optional.
+- The exact selected `/works/OL45804W.json` GET is in reviewed data-only
+  policy. The generic broker binds it to one disposable Project, mission,
+  version, source digest and one-use grant. The generic transport pins an
+  all-public DNS answer to the TCP dial while retaining `openlibrary.org` for
+  TLS verification. It refuses proxy inheritance, credentials, redirects,
+  retries and a second request. Package-version drift fails closed.
+- A prepared operator command owns an isolated `morgoth_test` PostgreSQL
+  cluster and Project, requires foreground consent, performs at most one GET,
+  checks the bounded result, recovers its receipt in a fresh interpreter and
+  removes disposable resources. It was **not executed** here; no consent was
+  simulated and no Open Library request was made.
+- Focused no-network generalist tests: 143 passed, 22 integration tests
+  deselected. An owned disposable PostgreSQL 16 cluster ran 25 selected
+  generalist SQL tests, all passed, including the new real-service proposal,
+  exact grant, fresh-interpreter receipt and later capability reuse test.
+  The development tool sandbox denied Unix-socket creation; the owned test
+  cluster was run with approved local-process access. Full canonical result
+  and tested commit SHA are recorded in a follow-up evidence entry.
+- `SAFE_FOR_WORKLOADS=False`. No production authorization, deployment,
+  research START, model inference, protected-file change or Desktop edit.

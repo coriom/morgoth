@@ -1,0 +1,5 @@
+Reviewed offline source identity: https://openlibrary.org/dev/docs/api/books
+The official Books API documentation identifies a Works JSON resource at
+https://openlibrary.org/works/OL45804W.json . The reviewed candidate selects
+that single public work. This snapshot is a source assertion, not a live API
+response or proof that the endpoint is currently reachable.

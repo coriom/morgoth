@@ -25,6 +25,8 @@ from agents.generalist_http_read import (
 from agents.generalist_generic_read import (
     extract_openapi_read, read_once, validated_request, validate_response,
 )
+from agents.generalist_documentation import DocumentationEvidence
+from agents.generalist_pinned_transport import PinnedPublicTransport
 from agents.generalist_approval_broker import ReviewedReadRequest
 from agents.generalist_mission_engine import (
     CapabilityRecord, CapabilityState, MissionRecord, MissionState, MissionStore, _now,
@@ -145,20 +147,27 @@ class DeclarativeHttpReadDriver:
     provenance = "operator_task_public_read"
 
     def __init__(self, reviewed_request: ReviewedReadRequest, inputs: dict[str, object],
-                 *, transport: Any = None) -> None:
+                 *, transport: Any = None,
+                 documentation: DocumentationEvidence | None = None) -> None:
         if type(reviewed_request) is not ReviewedReadRequest or type(inputs) is not dict:
             raise CapabilityRefusal("UNREVIEWED_DESTINATION")
-        # This milestone only permits synthetic transports for previously
-        # unknown services. No production destination registry exists yet.
-        if type(transport) is not httpx.MockTransport:
+        if type(transport) not in {httpx.MockTransport, PinnedPublicTransport}:
             raise CapabilityRefusal("GENERIC_LIVE_READ_NOT_AUTHORIZED")
+        if type(transport) is PinnedPublicTransport and (
+                transport.host != reviewed_request.host or documentation is None):
+            raise CapabilityRefusal("DOCUMENT_SOURCE_UNVERIFIED")
         self.reviewed_request = reviewed_request
         self.inputs = dict(inputs)
         self._transport = transport
+        self.documentation = documentation
 
     def inspect(self, document: str, *, now_tick: int) -> CapabilityDescriptor:
         """Parse data and demand an independent exact request binding."""
         contract = extract_openapi_read(document)
+        source = self.documentation
+        if source is not None and (source.source_identity != contract.documentation_identity
+                                   or source.provenance != "operator_reviewed_offline_snapshot"):
+            raise CapabilityRefusal("DOCUMENT_SOURCE_UNVERIFIED")
         if now_tick > contract.valid_until_tick:
             raise CapabilityRefusal("DOCUMENT_STALE")
         path, query = validated_request(contract, self.inputs)
@@ -172,8 +181,13 @@ class DeclarativeHttpReadDriver:
                       "query": query, "service_id": contract.service_id,
                       "capability_id": contract.capability_id,
                       "documentation_identity": contract.documentation_identity}
+        digest = contract.documentation_digest
+        if source is not None:
+            invocation["source_content_digest"] = source.content_digest
+            invocation["source_provenance"] = source.provenance
+            digest = sha256((digest + ":" + source.content_digest).encode()).hexdigest()
         return CapabilityDescriptor(contract.capability_id, contract.version,
-                                    contract.documentation_digest, contract.documentation_identity,
+                                    digest, contract.documentation_identity,
                                     contract.operation_id, frozenset({contract.scope}),
                                     contract.valid_until_tick, invocation)
 

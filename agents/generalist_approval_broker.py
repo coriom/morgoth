@@ -147,6 +147,28 @@ class ProjectApprovalBroker:
         return await self._issue_after_consent(mission_id, desc,
                                                provenance=f"foreground_operator_uid:{os.geteuid()}")
 
+    async def approve_reviewed_interactively(self, mission_id: UUID,
+                                             desc: CapabilityDescriptor) -> UUID:
+        """Consent to one exact generic GET in a foreground disposable Project."""
+        from scripts.codex_local_warning_review import ReviewUnavailable, open_operator_terminal
+        reviewed = _reviewed_request(desc, self.reviewed_request)
+        if self.reviewed_request is None or reviewed.query:
+            raise CapabilityRefusal("UNREVIEWED_DESTINATION")
+        try:
+            with open_operator_terminal() as tty:
+                tty.write("Disposable morgoth_test only. Approve ONE unauthenticated HTTPS GET:\n"
+                          f"https://{reviewed.host}{reviewed.endpoint}\n"
+                          "No production grant. Type APPROVE ONE PUBLIC GET to continue: ")
+                tty.flush()
+                approved = tty.readline(48) in {"APPROVE ONE PUBLIC GET\n",
+                                               "APPROVE ONE PUBLIC GET\r\n"}
+        except ReviewUnavailable:
+            raise CapabilityRefusal("INTERACTIVE_OPERATOR_REQUIRED") from None
+        if not approved:
+            raise CapabilityRefusal("OPERATOR_APPROVAL_DECLINED")
+        return await self._issue_after_consent(
+            mission_id, desc, provenance=f"foreground_operator_uid:{os.geteuid()}")
+
     async def claim(self, grant_id: UUID, mission: MissionRecord, revision: int,
                     desc: CapabilityDescriptor, attempted_record: str) -> None:
         """Atomically spend one grant and checkpoint ATTEMPTED before external I/O."""
