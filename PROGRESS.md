@@ -1282,7 +1282,8 @@ Log files:
   supplied-document extraction, not autonomous documentation discovery.
   Production approval remains unimplemented. `SAFE_FOR_WORKLOADS=False`,
   research Brain, Desktop and Human Gate 3 remain unchanged.
-- Focused no-network generalist selection: 90 passed, 19 SQL deselected.
+- Focused no-network generalist selection after the recovery safety fix:
+  92 passed, 19 SQL deselected.
   Disposable PostgreSQL 16 `morgoth_test` integration: 22 passed, including
   grant forgery, expiry, revocation, budget, parallel claim, uncertain receipt
   and fresh-process mocked recovery. The operator runner's private cluster
@@ -1294,5 +1295,14 @@ Log files:
   790,896,640 bytes and 95 PIDs with zero OOM or PID-limit hits. This is one
   green run, not proof that historical intermittent runner failures vanished.
   The final documentation-only evidence commit is distinct from the tested
-  code SHA. No live model inference, production database/service, external
-  mutation or deployment occurred.
+  code SHA. A final review then found that the operator command's internal
+  recovery mode needed to verify `morgoth_test` **before** calling
+  `PersistentMemory.initialize()`. Commit
+  `ed0cdccf819969ac2b936bf91117c59e3c4b745f` adds that fail-closed check
+  and safe top-level error reporting, with two hermetic regressions. One
+  corrective, provenance-aware canonical run on that code SHA matched its
+  complete copied-tree manifest and passed 2,384 tests, 2 skipped, zero
+  failures/errors, exit 0, 41.4-second runner wall. Owned scope peaked at
+  780,718,080 bytes and 95 PIDs with zero OOM or PID-limit hits. No live model
+  inference, production database/service, external mutation or deployment
+  occurred.

@@ -362,7 +362,10 @@ The operator-only command `python -m agents.generalist_operator_public_read
 owned private PostgreSQL 16 cluster and Project, asks one exact terminal
 consent, makes at most one public GET, verifies the receipt in a new process,
 then stops/removes its owned resources. It prints only fixed verdicts, count,
-hash and recovery Boolean. Do not run it in an unattended agent terminal or
+hash and recovery Boolean. Both its main and internal recovery paths verify
+the actual database name is `morgoth_test` before initializing
+`PersistentMemory`; unexpected errors become fixed public verdicts. Do not
+run it in an unattended agent terminal or
 substitute a pseudo-TTY. Its authorization does not make a capability
 production executable.
 
