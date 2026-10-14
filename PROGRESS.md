@@ -1282,6 +1282,17 @@ Log files:
   supplied-document extraction, not autonomous documentation discovery.
   Production approval remains unimplemented. `SAFE_FOR_WORKLOADS=False`,
   research Brain, Desktop and Human Gate 3 remain unchanged.
-- Focused hermetic, disposable SQL and provenance-aware canonical results are
-  recorded in the final evidence commit. No live model inference, production
-  database/service, external mutation or deployment occurred.
+- Focused no-network generalist selection: 90 passed, 19 SQL deselected.
+  Disposable PostgreSQL 16 `morgoth_test` integration: 22 passed, including
+  grant forgery, expiry, revocation, budget, parallel claim, uncertain receipt
+  and fresh-process mocked recovery. The operator runner's private cluster
+  start/connect/stop path separately passed. No live GET was performed.
+- One provenance-aware canonical run on code commit
+  `1e9a8653a7f724094c3dd3175ba62f7cec300c42`: requested=tested SHA,
+  complete copied-tree manifests equal, 2,382 passed, 2 skipped, zero
+  failures/errors, exit 0, 38.3-second runner wall. Owned scope peaked at
+  790,896,640 bytes and 95 PIDs with zero OOM or PID-limit hits. This is one
+  green run, not proof that historical intermittent runner failures vanished.
+  The final documentation-only evidence commit is distinct from the tested
+  code SHA. No live model inference, production database/service, external
+  mutation or deployment occurred.
