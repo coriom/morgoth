@@ -437,3 +437,10 @@ Human Gate 3 and Codex workload gate are unchanged. The generic modality
 demonstrates declarative API learning and mock execution only. Browser, file,
 CLI and desktop modalities remain unimplemented; neither an untrusted document
 nor a model can issue a production grant or expand network access.
+
+V5 verification on code SHA `5259eaadc1af88cf84859199ff73d0158c9776e8`:
+123 focused no-network tests and 24 owned disposable PostgreSQL tests passed.
+One canonical run verified that requested=tested SHA and the complete copied
+tree manifest matched; 2,415 passed, 2 skipped, zero failures/errors, exit 0.
+The historical intermittent canonical-runner failures are not thereby proven
+resolved. No live third-party call or model inference occurred in V5.

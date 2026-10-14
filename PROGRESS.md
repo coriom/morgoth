@@ -1338,3 +1338,14 @@ Log files:
   network binding and non-HTTP capability modalities remain unimplemented.
   `SAFE_FOR_WORKLOADS=False`; no autonomous START, production write or Desktop
   modification. Exact verification and tested SHA are recorded below.
+- V5 code candidate `5259eaadc1af88cf84859199ff73d0158c9776e8`:
+  123 focused no-network generalist tests passed, 21 integration tests
+  deselected; 24 focused tests passed against an owned, Unix-socket-only
+  disposable PostgreSQL 16 `morgoth_test` cluster. The new two-service SQL
+  cases include fresh-interpreter receipt recovery. One provenance-aware
+  canonical run requested and tested that exact SHA, with equal complete
+  copied-tree manifests; 2,415 passed, 2 skipped, zero failures/errors,
+  exit 0, 60.8-second runner wall. Owned scope peak was 775,516,160 bytes,
+  95 PIDs, zero OOM kills and zero PID-limit hits. Historical intermittent
+  runner failures are not disproved by one green run. This subsequent
+  documentation-only commit records results; it was not separately tested.
