@@ -114,3 +114,32 @@ async def test_declined_operator_consent_cannot_issue_disposable_grant(monkeypat
     desc = PublicIssuesDriver().inspect(DOC, now_tick=1)
     with pytest.raises(CapabilityRefusal, match="OPERATOR_APPROVAL_DECLINED"):
         await broker.approve_interactively(uuid4(), desc)
+
+
+@pytest.mark.asyncio
+async def test_internal_recovery_refuses_non_test_database_before_memory_init(monkeypatch):
+    import agents.generalist_operator_public_read as module
+    class Connection:
+        async def fetchval(self, _query):
+            return "postgres"
+        async def close(self):
+            return None
+    async def connect(_dsn):
+        return Connection()
+    monkeypatch.setattr(module.asyncpg, "connect", connect)
+    monkeypatch.setattr(module, "PersistentMemory",
+                        lambda *_args: pytest.fail("memory initialized before DB preflight"))
+    with pytest.raises(CapabilityRefusal, match="DISPOSABLE_TEST_DATABASE_REQUIRED"):
+        await module._open_store("private-test-dsn")
+
+
+def test_operator_command_never_prints_private_exception(monkeypatch, capsys):
+    import agents.generalist_operator_public_read as module
+    import sys
+    monkeypatch.setattr(sys, "argv", ["operator", "--one-public-get"])
+    monkeypatch.setattr(module, "verify_checkout",
+                        lambda: (_ for _ in ()).throw(RuntimeError("TOP_SECRET_DO_NOT_PERSIST")))
+    assert module.main() == 1
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"VERDICT": "OPERATOR_READ_FAILED", "PRODUCTION_APPROVAL": False}
+    assert "TOP_SECRET_DO_NOT_PERSIST" not in output

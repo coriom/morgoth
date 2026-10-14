@@ -111,6 +111,12 @@ class DisposablePostgres:
 
 async def _open_store(dsn: str) -> tuple[PersistentMemory, ProjectMissionStore]:
     """Open only the selected disposable Project schema."""
+    preflight = await asyncpg.connect(dsn)
+    try:
+        if await preflight.fetchval("SELECT current_database()") != "morgoth_test":
+            raise CapabilityRefusal("DISPOSABLE_TEST_DATABASE_REQUIRED")
+    finally:
+        await preflight.close()
     memory = PersistentMemory(SimpleNamespace(postgres_url=dsn))
     await memory.initialize()
     store = ProjectMissionStore(memory, current_namespace())
@@ -204,7 +210,7 @@ def main() -> int:
             raise CapabilityRefusal("OPERATOR_ARGUMENTS_INVALID")
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (CapabilityRefusal, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except Exception as exc:
         code = exc.code if isinstance(exc, CapabilityRefusal) else "OPERATOR_READ_FAILED"
         print(json.dumps({"VERDICT": code, "PRODUCTION_APPROVAL": False}, sort_keys=True))
         return 1
