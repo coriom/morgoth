@@ -1212,3 +1212,9 @@ Log files:
 - Decision: fixture-only approval can never be used against a production DB;
   normal bootstrap does not create these tables. Protected SPEC/IDENTITY/core,
   `SAFE_FOR_WORKLOADS=False` and Human Gate 3 remain unchanged.
+- Provenance-aware canonical acceptance on candidate
+  `acfaf52e5097b11fc9f6ed090f591f6174d157c1`: requested=tested SHA,
+  complete copied-tree manifests equal, 2,336 passed, 2 skipped, zero
+  failures/errors, exit 0, 56.7 s wall. Owned scope peak memory 802,648,064 B,
+  98 max PIDs, zero cgroup OOM kills and zero PID-limit hits. The final
+  documentation-only evidence commit is distinct from the tested code SHA.
