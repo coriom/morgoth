@@ -1,6 +1,6 @@
 """One opt-in public Issues GET in a disposable Project, with fresh-process recovery.
 
-Invocation requires --live-public-read and MORGOTH_TEST_POSTGRES_URL. This is
+Invocation requires --mock-public-read and MORGOTH_TEST_POSTGRES_URL. This is
 not a production approval interface and is never imported by autonomous START.
 """
 
@@ -19,8 +19,9 @@ import asyncpg
 import httpx
 
 from agents.generalist_orchestrator import (
-    GeneralistMissionOrchestrator, InvocationGrant, PublicIssuesDriver,
+    GeneralistMissionOrchestrator, PublicIssuesDriver,
 )
+from agents.generalist_approval_broker import ProjectApprovalBroker
 from agents.generalist_mission_store import ProjectMissionStore
 from core.project import current_namespace
 from memory.persistent import PersistentMemory
@@ -50,12 +51,11 @@ async def _child(phase: str, mission_id: str | None) -> dict[str, object]:
         mode = os.environ.get("MORGOTH_PUBLIC_READ_MODE")
         if mode == "mock":
             transport = httpx.MockTransport(lambda request: httpx.Response(200, json=MOCKED_ROWS))
-        elif mode == "live":
-            transport = None
         else:
             raise RuntimeError("PUBLIC_READ_MODE_INVALID")
         driver = PublicIssuesDriver(transport=transport)
-        engine = GeneralistMissionOrchestrator(store, project.id, driver)
+        broker = ProjectApprovalBroker(store)
+        engine = GeneralistMissionOrchestrator(store, project.id, driver, approval_broker=broker)
         document = DOCUMENT.read_text(encoding="utf-8")
         desc = driver.inspect(document, now_tick=1)
         if phase == "prepare":
@@ -65,9 +65,20 @@ async def _child(phase: str, mission_id: str | None) -> dict[str, object]:
                     "validation": "MOCKED_PASS"}
         if mission_id is None:
             raise RuntimeError("MISSION_ID_REQUIRED")
-        grant = InvocationGrant(project.id, desc.capability_id, desc.version, desc.digest,
-                                desc.scopes, 1, "operator_task_public_read")
-        result = await engine.execute(UUID(mission_id), document, grant=grant, now_tick=1)
+        if phase == "recover":
+            key = f"{desc.operation}:{desc.digest[:16]}"
+            old = await store.get_receipt(UUID(mission_id), key)
+            if old is None:
+                raise RuntimeError("RECEIPT_MISSING")
+            result = json.loads(old)
+        elif phase == "complete":
+            grant_id = await broker._issue_after_consent(
+                UUID(mission_id), desc,
+                provenance=f"foreground_operator_uid:{os.geteuid()}")
+            result = await engine.execute(UUID(mission_id), document, grant=None,
+                                          grant_id=grant_id, now_tick=1)
+        else:
+            raise RuntimeError("PUBLIC_READ_PHASE_INVALID")
         evidence = result["evidence"]
         return {"mission_id": mission_id, "state": result["status"],
                 "capability_id": result["capability_id"],
@@ -107,7 +118,7 @@ async def _spawn(phase: str, project_id: str, home: Path, dsn: str, mode: str,
 
 async def run_demo(*, mode: str) -> dict[str, object]:
     """Validate mock, perform one public GET, recover receipt, remove schema."""
-    if mode not in {"mock", "live"}:
+    if mode != "mock":
         raise RuntimeError("PUBLIC_READ_MODE_INVALID")
     dsn = os.environ.get("MORGOTH_TEST_POSTGRES_URL")
     if not dsn:
@@ -133,8 +144,8 @@ async def run_demo(*, mode: str) -> dict[str, object]:
             return {"validation": prepared["validation"], "mode": mode,
                     "prepared_state": prepared["state"],
                     "completed": completed, "fresh_process_receipt_recovered": True,
-                    "production_approval": False, "public_get_count": 1 if mode == "live" else 0,
-                    "mock_get_count": 1 if mode == "mock" else 0}
+                    "production_approval": False, "public_get_count": 0,
+                    "mock_get_count": 1}
         finally:
             conn = await asyncpg.connect(dsn)
             try:
@@ -149,8 +160,6 @@ def main() -> int:
     """Run only an explicitly requested disposable public read."""
     if len(sys.argv) == 4 and sys.argv[1] == "--child":
         result = asyncio.run(_child(sys.argv[2], None if sys.argv[3] == "-" else sys.argv[3]))
-    elif sys.argv == [sys.argv[0], "--live-public-read"]:
-        result = asyncio.run(run_demo(mode="live"))
     elif sys.argv == [sys.argv[0], "--mock-public-read"]:
         result = asyncio.run(run_demo(mode="mock"))
     else:

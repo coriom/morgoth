@@ -303,3 +303,72 @@ approval. Amend `SPEC.md` to name Mission/Capability/Grant/Attempt/Receipt as
 separate versioned concepts and require authenticated approval plus remote
 idempotency/reconciliation for mutating operations. Keep no-trading and human
 Gate 3 rules until independently reviewed.
+
+## V4 disposable authorization and one public read (2026-10-14)
+
+The V3 `InvocationGrant` remains usable only for local fixture operations.
+`PublicIssuesDriver` now requires `ProjectApprovalBroker` and a persisted grant
+UUID; a caller-constructed dataclass cannot authorize its external GET. The
+broker is deliberately **test-only**: its optional table is provisioned only
+inside a managed Project schema after verifying the actual database is
+`morgoth_test`. It is not an API, a production credential issuer, a Brain tool,
+or a Human Gate 3 replacement. The operator command obtains explicit consent
+through the existing foreground controlling-terminal check. The local OS
+session/UID and private disposable database form this proof's trust boundary.
+A same-UID process with test-database access could forge rows; a production
+approval service still needs authenticated operator identity, protected grant
+issuance and a reviewed audit channel.
+
+Each grant binds a unique approval UUID, Project, mission, capability/version,
+documentation digest, operation, fixed `GET`/`api.github.com`/public Issues
+endpoint, `state=open` and `per_page<=3`, one `public_issues.read` scope,
+operator-session provenance, a maximum 120-second lifetime, one invocation,
+128 KiB response budget, eight-second total deadline and revocation flag.
+The broker locks the grant and capability rows, rechecks the exact contract and
+validation state, then spends the grant and writes the mission's `ATTEMPTED`
+checkpoint in one SQL transaction. Concurrent claimants, expired/revoked or
+drifted grants, stale mission revisions and changed capabilities cannot send a
+request. Revocation linearizes against claim; it cannot retroactively stop a
+request already claimed. A crash after claim or after receiving a response
+without a local receipt leaves an uncertain attempt that is never auto-replayed.
+The atomic local receipt remains distinct from remote exactly-once execution.
+
+The fixed HTTP reader now accepts only public `octocat/Hello-World`, at most
+three returned entries, and an eight-second total DNS/connect/read deadline.
+It validates the HTTPS hostname with the normal trust store, inherits no proxy
+environment, sends no cookies or authorization, follows no redirect, and caps
+decoded content at 128 KiB. GitHub's [Issues list contract](https://docs.github.com/en/rest/issues/issues#list-repository-issues)
+includes pull requests; they are excluded from the issue report. Explicit
+401/403/404/429/5xx, timeout, redirect and schema refusals remain fixed codes.
+The DNS public-address preflight and subsequent HTTPS connection are two
+separate resolutions; a DNS change between them could point the socket at a
+private address, although TLS hostname validation still applies. We have not
+proved an atomic IP/hostname binding. Arbitrary hosts and URLs remain
+unsupported. Direct DNS in this development environment failed, so **no live
+GitHub GET** is claimed here.
+
+`agents/generalist_contract_extraction.py` now parses a tiny, bounded local
+machine-readable GET subset for collection and detail shapes without service
+branches or executable hosts. It rejects instructions, servers, POST, path
+traversal, duplicates and unsupported schemas. This demonstrates transferable
+**contract extraction from supplied documentation**, not autonomous document
+discovery or automatic network authority. The GitHub executable contract is
+still the separately reviewed, manually bound adapter; extracted contracts
+cannot add a destination or grant themselves approval. The task-management
+and inventory fixture services continue through the same mission engine.
+
+The operator-only command `python -m agents.generalist_operator_public_read
+--one-public-get` verifies a clean origin-equal reviewed branch, creates an
+owned private PostgreSQL 16 cluster and Project, asks one exact terminal
+consent, makes at most one public GET, verifies the receipt in a new process,
+then stops/removes its owned resources. It prints only fixed verdicts, count,
+hash and recovery Boolean. Do not run it in an unattended agent terminal or
+substitute a pseudo-TTY. Its authorization does not make a capability
+production executable.
+
+Before the first real user-approved capability, add a production-authenticated
+human grant boundary, an OS-enforced destination binding or independently
+reviewed restricted network egress, durable operator audit/revocation, and
+remote idempotency/reconciliation for mutating operations. Browser, CLI/code,
+file and desktop modalities each require separately reviewed execution
+brokers. `SAFE_FOR_WORKLOADS=False`; no research or Codex workload activation.

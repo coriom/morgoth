@@ -1257,3 +1257,31 @@ Log files:
   768,712,704 B, max 88 PIDs, zero OOM kills/PID-limit hits. This does not
   establish repeated reliability of the historically intermittent runner.
   The final evidence-only commit is distinct from the tested code candidate.
+
+## 2026-10-14 — Generalist disposable approval broker and external-read preparation
+
+- Replaced caller-constructed `InvocationGrant` as permission for the public
+  Issues driver with an opt-in Project-local, disposable `morgoth_test` approval
+  row. The fixed broker binds Project/mission/capability/version/digest,
+  operation, GET host/endpoint/query/scope, foreground operator provenance,
+  expiry, revocation, one invocation and response/time budgets. Grant spend
+  and `EXTERNAL_OPERATION_ATTEMPTED` checkpoint commit atomically before I/O.
+  Fixture-only dataclass grants remain for synthetic local operations.
+- Added an operator-only one-shot command with an owned private PostgreSQL
+  cluster, explicit foreground terminal consent, one public GET maximum, and
+  fresh-process receipt recovery. This command was **not executed** in the
+  development environment. Direct `api.github.com` DNS returned
+  `EXTERNAL_DNS_UNAVAILABLE`; live network proof remains
+  `REAL_NETWORK_PROOF_BLOCKED_BY_ENVIRONMENT`.
+- Tightened the fixed adapter to public `octocat/Hello-World`, `per_page<=3`,
+  an eight-second total deadline, three-row response cap and no proxy,
+  credentials or redirects. The DNS preflight-to-connection race remains a
+  documented residual; arbitrary destinations stay unsupported.
+- Added a data-only GET collection/detail contract extractor. Two different
+  local operation shapes parse without introducing host authority; this is
+  supplied-document extraction, not autonomous documentation discovery.
+  Production approval remains unimplemented. `SAFE_FOR_WORKLOADS=False`,
+  research Brain, Desktop and Human Gate 3 remain unchanged.
+- Focused hermetic, disposable SQL and provenance-aware canonical results are
+  recorded in the final evidence commit. No live model inference, production
+  database/service, external mutation or deployment occurred.

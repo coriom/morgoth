@@ -1,8 +1,9 @@
 """Opt-in Project mission orchestration over trusted, narrow capability drivers.
 
-This module is not imported by Brain, Scheduler or ToolRouter. Its grant is an
-explicit disposable-test invocation constraint, not authenticated production
-approval. No model can register a driver or construct a production grant here.
+This module is not imported by Brain, Scheduler or ToolRouter. Fixture grants
+remain caller-supplied; the public GET instead requires a disposable,
+Project-bound SQL approval consumed by the broker before I/O. No production
+approval or model-controlled driver registry exists here.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import UUID
 
 from agents.generalist_capability import (
@@ -22,6 +23,9 @@ from agents.generalist_http_read import (
 from agents.generalist_mission_engine import (
     CapabilityRecord, CapabilityState, MissionRecord, MissionState, MissionStore, _now,
 )
+
+if TYPE_CHECKING:
+    from agents.generalist_approval_broker import ProjectApprovalBroker
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,7 @@ class CapabilityDescriptor:
 
 @dataclass(frozen=True)
 class InvocationGrant:
-    """Exact, caller-supplied disposable permission; never a production token."""
+    """Caller-supplied fixture permission; rejected for the real HTTP driver."""
 
     project_id: str
     capability_id: str
@@ -132,10 +136,14 @@ class PublicIssuesDriver:
 class GeneralistMissionOrchestrator:
     """Durable gap/proposal/validation/claim/receipt transitions for any driver."""
 
-    def __init__(self, store: MissionStore, project_id: str, driver: CapabilityDriver) -> None:
+    def __init__(self, store: MissionStore, project_id: str, driver: CapabilityDriver,
+                 *, approval_broker: ProjectApprovalBroker | None = None) -> None:
         if getattr(store.project, "id", None) != project_id or project_id == "default":
             raise CapabilityRefusal("PROJECT_MISMATCH")
+        if type(driver) not in {FixtureDriver, PublicIssuesDriver}:
+            raise CapabilityRefusal("UNREVIEWED_DRIVER")
         self.store, self.project_id, self.driver = store, project_id, driver
+        self.approval_broker = approval_broker
 
     async def receive(self, objective: str, capability_id: str) -> MissionRecord:
         """Commit the mission before looking up a capability."""
@@ -218,7 +226,8 @@ class GeneralistMissionOrchestrator:
         return mission
 
     async def execute(self, mission_id: UUID, document: str, *, grant: InvocationGrant | None,
-                      now_tick: int, sample: object | None = None) -> dict[str, Any]:
+                      now_tick: int, sample: object | None = None,
+                      grant_id: UUID | None = None) -> dict[str, Any]:
         """Claim before I/O; uncertain external outcomes never auto-retry."""
         mission, revision = await self._load(mission_id)
         if mission.state not in {MissionState.PENDING, MissionState.READY, MissionState.COMPLETE}:
@@ -248,12 +257,18 @@ class GeneralistMissionOrchestrator:
             raise CapabilityRefusal("CAPABILITY_RECORD_INVALID")
         if cap.validation_state != "PASSED" or cap.validation_evidence is None:
             raise CapabilityRefusal("VALIDATION_REQUIRED")
-        if grant is None or (grant.project_id, grant.capability_id, grant.version, grant.digest,
-                             grant.provenance) != (self.project_id, desc.capability_id,
-                                                  desc.version, desc.digest, self.driver.provenance):
-            raise CapabilityRefusal("PERMISSION_REQUIRED")
-        if now_tick > grant.expires_tick or not desc.scopes.issubset(grant.scopes):
-            raise CapabilityRefusal("PERMISSION_REQUIRED")
+        real_read = isinstance(self.driver, PublicIssuesDriver)
+        if real_read:
+            if grant is not None or grant_id is None or self.approval_broker is None:
+                raise CapabilityRefusal("PERMISSION_REQUIRED")
+        else:
+            if grant_id is not None or grant is None or (
+                grant.project_id, grant.capability_id, grant.version, grant.digest,
+                grant.provenance) != (self.project_id, desc.capability_id,
+                                     desc.version, desc.digest, self.driver.provenance):
+                raise CapabilityRefusal("PERMISSION_REQUIRED")
+            if now_tick > grant.expires_tick or not desc.scopes.issubset(grant.scopes):
+                raise CapabilityRefusal("PERMISSION_REQUIRED")
         key = f"{desc.operation}:{desc.digest[:16]}"
         old = await self.store.get_receipt(mission_id, key)
         if old is not None:
@@ -265,8 +280,12 @@ class GeneralistMissionOrchestrator:
         mission.checkpoint["attempt_key"] = key
         mission.resume_eligible = False
         mission.updated_at = _now()
-        if not await self.store.save_mission(mission_id, revision, mission.state.value,
-                                             mission.model_dump_json()):
+        if real_read:
+            assert self.approval_broker is not None and grant_id is not None
+            await self.approval_broker.claim(grant_id, mission, revision, desc,
+                                             mission.model_dump_json())
+        elif not await self.store.save_mission(mission_id, revision, mission.state.value,
+                                               mission.model_dump_json()):
             raise CapabilityRefusal("MISSION_CONCURRENT_CHANGE")
         # A crash, transport error or commit failure leaves ATTEMPTED durably.
         # Even a GET is not automatically replayed; mutating adapters need a

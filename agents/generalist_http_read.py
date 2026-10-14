@@ -40,9 +40,9 @@ class PublicIssuesContract(BaseModel):
     operation_id: Literal["list_open_issues"]
     scope: Literal["public_issues.read"]
     state: Literal["open"]
-    per_page: int = Field(ge=1, le=5)
-    owner: str
-    repo: str
+    per_page: int = Field(ge=1, le=3)
+    owner: Literal["octocat"]
+    repo: Literal["Hello-World"]
     result_fields: list[str] = Field(min_length=5, max_length=5)
     valid_until_tick: int = Field(ge=1, le=100000)
 
@@ -77,7 +77,7 @@ def parse_public_issues_contract(text: str, *, now_tick: int) -> tuple[PublicIss
 
 def validate_issue_rows(raw: object) -> list[dict[str, str | int]]:
     """Extract only bounded, evidenced fields; PR entries are not issues."""
-    if not isinstance(raw, list) or len(raw) > 5:
+    if not isinstance(raw, list) or len(raw) > 3:
         raise CapabilityRefusal("EXTERNAL_RESPONSE_INVALID")
     result: list[dict[str, str | int]] = []
     for item in raw:
@@ -128,16 +128,17 @@ def _resolve_public_host() -> None:
         raise CapabilityRefusal("EXTERNAL_DNS_UNAVAILABLE") from None
 
 
-async def read_public_issues(contract: PublicIssuesContract, *,
-                             transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
+async def _read_public_issues_once(contract: PublicIssuesContract, *,
+                                   transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
     """Perform one credential-free HTTPS GET with bounded body and no redirects."""
     if transport is None:
         await asyncio.to_thread(_resolve_public_host)
     url = f"https://{_HOST}/repos/{contract.owner}/{contract.repo}/issues"
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "Morgoth-public-read-proof"}
+    headers = {"Accept": "application/vnd.github+json", "Accept-Encoding": "identity",
+               "User-Agent": "Morgoth-public-read-proof"}
     try:
         async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False,
-                                     timeout=httpx.Timeout(8.0), headers=headers,
+                                     timeout=httpx.Timeout(8.0, connect=3.0, read=3.0), headers=headers,
                                      max_redirects=0) as client:
             async with client.stream("GET", url,
                                      params={"state": "open", "per_page": contract.per_page}) as response:
@@ -166,3 +167,12 @@ async def read_public_issues(contract: PublicIssuesContract, *,
             "operation": contract.operation_id,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
             "response_sha256": sha256(body).hexdigest(), "issue_count": len(rows), "issues": rows}
+
+
+async def read_public_issues(contract: PublicIssuesContract, *,
+                             transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
+    """Apply an eight-second total deadline to DNS, connection and body read."""
+    try:
+        return await asyncio.wait_for(_read_public_issues_once(contract, transport=transport), timeout=8)
+    except TimeoutError:
+        raise CapabilityRefusal("EXTERNAL_TIMEOUT") from None

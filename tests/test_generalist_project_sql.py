@@ -31,8 +31,9 @@ async def test_real_contract_disposable_sql_claim_receipt_recovery(tmp_path, mon
     import core.project as project_module
     import agents.generalist_mission_store as store_module
     from agents.generalist_orchestrator import (
-        GeneralistMissionOrchestrator, InvocationGrant, PublicIssuesDriver,
+        GeneralistMissionOrchestrator, PublicIssuesDriver,
     )
+    from agents.generalist_approval_broker import ProjectApprovalBroker
     from tests.test_generalist_real_capability import DOC, ROWS
 
     project = _project(tmp_path, f"github_{uuid4().hex[:10]}")
@@ -57,25 +58,30 @@ async def test_real_contract_disposable_sql_claim_receipt_recovery(tmp_path, mon
 
     try:
         memory, store = await reopen()
-        engine = GeneralistMissionOrchestrator(store, project.id, driver)
+        engine = GeneralistMissionOrchestrator(store, project.id, driver,
+                                               approval_broker=ProjectApprovalBroker(store))
         desc = driver.inspect(DOC, now_tick=1)
         mission = await engine.receive("Public issues", desc.capability_id)
         assert (await engine.assess(mission.mission_id, DOC, ROWS, now_tick=1)).state is MissionState.PENDING
         await memory.close()
         memory = None
         memory, store = await reopen()
-        resumed = GeneralistMissionOrchestrator(store, project.id, driver)
-        grant = InvocationGrant(project.id, desc.capability_id, desc.version, desc.digest,
-                                desc.scopes, 10, driver.provenance)
+        broker = ProjectApprovalBroker(store)
+        resumed = GeneralistMissionOrchestrator(store, project.id, driver, approval_broker=broker)
+        grant_id = await broker._issue_after_consent(
+            mission.mission_id, desc, provenance=f"foreground_operator_uid:{os.geteuid()}")
         with pytest.raises(CapabilityRefusal, match="PERMISSION_REQUIRED"):
             await resumed.execute(mission.mission_id, DOC, grant=None, now_tick=1)
-        first = await resumed.execute(mission.mission_id, DOC, grant=grant, now_tick=1)
+        first = await resumed.execute(mission.mission_id, DOC, grant=None,
+                                      grant_id=grant_id, now_tick=1)
         assert first["status"] == "MISSION_COMPLETE" and calls == 1
         await memory.close()
         memory = None
         memory, store = await reopen()
-        recovered = GeneralistMissionOrchestrator(store, project.id, driver)
-        assert await recovered.execute(mission.mission_id, DOC, grant=grant, now_tick=1) == first
+        recovered = GeneralistMissionOrchestrator(store, project.id, driver,
+                                                  approval_broker=ProjectApprovalBroker(store))
+        assert await recovered.execute(mission.mission_id, DOC, grant=None,
+                                       grant_id=grant_id, now_tick=1) == first
         assert calls == 1
         saved, revision = await recovered._load(mission.mission_id)
         assert saved.state is MissionState.COMPLETE

@@ -41,6 +41,19 @@ _DDL = (
         result JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (project_id, mission_id, idempotency_key)
     )""",
+    """CREATE TABLE IF NOT EXISTS generalist_approval_grants (
+        grant_id UUID PRIMARY KEY, project_id TEXT NOT NULL, mission_id UUID NOT NULL
+            REFERENCES generalist_missions(mission_id), capability_id TEXT NOT NULL,
+        version TEXT NOT NULL, document_digest TEXT NOT NULL, operation TEXT NOT NULL,
+        method TEXT NOT NULL, host TEXT NOT NULL, endpoint TEXT NOT NULL,
+        query_constraints JSONB NOT NULL, scopes TEXT[] NOT NULL,
+        approval_provenance TEXT NOT NULL, approved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL, max_invocations INTEGER NOT NULL CHECK (max_invocations = 1),
+        used_invocations INTEGER NOT NULL DEFAULT 0 CHECK (used_invocations BETWEEN 0 AND 1),
+        max_response_bytes INTEGER NOT NULL CHECK (max_response_bytes = 131072),
+        max_duration_seconds INTEGER NOT NULL CHECK (max_duration_seconds = 8),
+        revoked BOOLEAN NOT NULL DEFAULT FALSE
+    )""",
 )
 
 

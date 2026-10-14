@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -34,6 +35,18 @@ def _transport(rows=ROWS, status=200, headers=None):
 def _grant(project, desc, provenance):
     return InvocationGrant(project, desc.capability_id, desc.version, desc.digest,
                            desc.scopes, 10, provenance)
+
+
+class _FakeBroker:
+    """Hermetic claim shim; real grant semantics are exercised in SQL tests."""
+
+    def __init__(self, store):
+        self.store = store
+
+    async def claim(self, grant_id, mission, revision, desc, attempted_record):
+        if not await self.store.save_mission(mission.mission_id, revision,
+                                             MissionState.ATTEMPTED.value, attempted_record):
+            raise CapabilityRefusal("MISSION_CONCURRENT_CHANGE")
 
 
 @pytest.mark.parametrize("change", [
@@ -155,20 +168,19 @@ async def test_same_orchestrator_supports_old_services(name, rows):
 async def test_real_contract_mocked_restart_reuse_and_revocation():
     store = FakeStore()
     driver = PublicIssuesDriver(transport=_transport())
-    engine = GeneralistMissionOrchestrator(store, "fixture_a", driver)
+    engine = GeneralistMissionOrchestrator(store, "fixture_a", driver, approval_broker=_FakeBroker(store))
     desc = driver.inspect(DOC, now_tick=1)
     mission = await engine.receive("Report public open issues", desc.capability_id)
     assert (await engine.assess(mission.mission_id, DOC, ROWS, now_tick=1)).state is MissionState.PENDING
-    grant = _grant("fixture_a", desc, driver.provenance)
     with pytest.raises(CapabilityRefusal, match="PERMISSION_REQUIRED"):
         await engine.execute(mission.mission_id, DOC, grant=None, now_tick=1)
-    restarted = GeneralistMissionOrchestrator(store, "fixture_a", driver)
-    result = await restarted.execute(mission.mission_id, DOC, grant=grant, now_tick=1)
+    restarted = GeneralistMissionOrchestrator(store, "fixture_a", driver, approval_broker=_FakeBroker(store))
+    result = await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
     assert result["evidence"]["issue_count"] == 1
-    assert await restarted.execute(mission.mission_id, DOC, grant=grant, now_tick=1) == result
+    assert await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1) == result
     later = await restarted.receive("Reuse same public issues contract", desc.capability_id)
     assert (await restarted.assess(later.mission_id, DOC, ROWS, now_tick=1)).state is MissionState.READY
-    assert (await restarted.execute(later.mission_id, DOC, grant=grant, now_tick=1))["status"] == "MISSION_COMPLETE"
+    assert (await restarted.execute(later.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1))["status"] == "MISSION_COMPLETE"
     raw = await store.get_capability(desc.capability_id, desc.version, desc.digest)
     cap = CapabilityRecord.model_validate_json(raw)
     cap.state = CapabilityState.REVOKED
@@ -225,18 +237,17 @@ async def test_external_failure_leaves_attempt_checkpoint_and_no_receipt():
         raise httpx.ReadTimeout("TOP_SECRET_DO_NOT_PERSIST")
     store = FakeStore()
     driver = PublicIssuesDriver(transport=httpx.MockTransport(failing))
-    engine = GeneralistMissionOrchestrator(store, "fixture_a", driver)
+    engine = GeneralistMissionOrchestrator(store, "fixture_a", driver, approval_broker=_FakeBroker(store))
     desc = driver.inspect(DOC, now_tick=1)
     mission = await engine.receive("Public issues", desc.capability_id)
     await engine.assess(mission.mission_id, DOC, ROWS, now_tick=1)
-    grant = _grant("fixture_a", desc, driver.provenance)
     with pytest.raises(CapabilityRefusal, match="EXTERNAL_TIMEOUT"):
-        await engine.execute(mission.mission_id, DOC, grant=grant, now_tick=1)
+        await engine.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
     saved, _ = await engine._load(mission.mission_id)
     assert saved.state is MissionState.ATTEMPTED and saved.resume_eligible is False
     assert await store.get_receipt(mission.mission_id, saved.checkpoint["attempt_key"]) is None
     with pytest.raises(CapabilityRefusal, match="MISSION_STATE_INVALID"):
-        await engine.execute(mission.mission_id, DOC, grant=grant, now_tick=1)
+        await engine.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
     assert calls == 1
 
 
@@ -249,7 +260,7 @@ async def test_post_response_receipt_failure_remains_ambiguous(monkeypatch):
         return httpx.Response(200, json=ROWS)
     store = FakeStore()
     driver = PublicIssuesDriver(transport=httpx.MockTransport(handler))
-    engine = GeneralistMissionOrchestrator(store, "fixture_a", driver)
+    engine = GeneralistMissionOrchestrator(store, "fixture_a", driver, approval_broker=_FakeBroker(store))
     desc = driver.inspect(DOC, now_tick=1)
     mission = await engine.receive("Public issues", desc.capability_id)
     await engine.assess(mission.mission_id, DOC, ROWS, now_tick=1)
@@ -258,13 +269,12 @@ async def test_post_response_receipt_failure_remains_ambiguous(monkeypatch):
         raise CapabilityRefusal("RECEIPT_PERSIST_FAILED")
 
     monkeypatch.setattr(store, "commit_execution", fail_commit)
-    grant = _grant("fixture_a", desc, driver.provenance)
     with pytest.raises(CapabilityRefusal, match="RECEIPT_PERSIST_FAILED"):
-        await engine.execute(mission.mission_id, DOC, grant=grant, now_tick=1)
+        await engine.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
     saved, _ = await engine._load(mission.mission_id)
     assert saved.state is MissionState.ATTEMPTED and calls == 1
     with pytest.raises(CapabilityRefusal, match="MISSION_STATE_INVALID"):
-        await engine.execute(mission.mission_id, DOC, grant=grant, now_tick=1)
+        await engine.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
     assert calls == 1 and store.receipts == {}
 
 
