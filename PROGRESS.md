@@ -1536,3 +1536,9 @@ Log files:
   inference in development, external
   API call, grant issuance, research START or Desktop change. Prose-to-contract
   execution remains unsupported. `SAFE_FOR_WORKLOADS=False`.
+- One provenance-aware canonical run tested candidate SHA
+  `b7ff941c2bd765e1f32e1dc16c051b97747eeca1`: requested/tested SHA and
+  full copied-tree manifest agreed; 2,539 passed, 2 skipped, zero failures or
+  errors, exit 0 in 38.4 seconds. The final follow-up commit records evidence
+  only; it was not a second canonical code run. Historical intermittent runner
+  failures remain a separate reliability concern.
