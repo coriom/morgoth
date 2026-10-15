@@ -11,7 +11,7 @@ import pytest
 
 from agents import generalist_ollama_plan_probe as probe
 from agents.generalist_capability import CapabilityRefusal
-from agents.generalist_mission_planner import ProposalEvidence
+from agents.generalist_mission_planner import PlanningProposal, ProposalEvidence
 
 
 def _response(content: str | None, *, done: bool = True,
@@ -68,10 +68,14 @@ async def test_one_valid_proposal_uses_digest_verified_operation_choices(
     _install(monkeypatch, client)
     evidence = ProposalEvidence()
     await probe._one_proposal(evidence)
-    assert evidence == ProposalEvidence(True, True, True)
+    assert evidence == ProposalEvidence(True, True, True, True, True, True)
     assert client.calls == 1 and client.closed
     assert client.options["tools"] is None and client.options["stream"] is False
     assert client.options["options"] == {"temperature": 0, "num_predict": 640}
+    assert client.options["format"] == PlanningProposal.model_json_schema()
+    assert client.options["format"]["additionalProperties"] is False
+    assert set(client.options["format"]["required"]) == set(PlanningProposal.model_fields)
+    assert client.options["format"]["properties"]["completion_criteria"]["maxItems"] == 4
     prompt = client.messages[1].content
     assert '"operation_id": "get_work"' in prompt
     assert '"operation_id": "get_route"' in prompt
@@ -100,7 +104,9 @@ async def test_absent_model_blocks_before_inference(monkeypatch: pytest.MonkeyPa
     (_response("{invalid"), None, "INVALID_JSON"),
     (_response(_proposal().replace('"catalog_id": "books",',
                                   '"catalog_id": "books", "catalog_id": "transit",')),
-     None, "INVALID_JSON"),
+     None, "DUPLICATE_JSON_KEY"),
+    (_response("```json\n" + _proposal() + "\n```"), None, "INVALID_JSON"),
+    (_response(""), None, "RESPONSE_MISSING_OR_INCOMPLETE"),
     (_response(_proposal()[:-1] + ', "extra": "TOP_SECRET_DO_NOT_PERSIST"}'),
      None, "INVALID_PROPOSAL_SCHEMA"),
     (_response(_proposal("invented")), None, "UNKNOWN_CATALOG_OR_OPERATION"),
@@ -110,6 +116,14 @@ async def test_absent_model_blocks_before_inference(monkeypatch: pytest.MonkeyPa
     (None, httpx.ReadTimeout("TOP_SECRET_DO_NOT_PERSIST"), "INFERENCE_TIMEOUT"),
     (None, httpx.HTTPStatusError("TOP_SECRET_DO_NOT_PERSIST", request=httpx.Request(
         "POST", "http://127.0.0.1/api/chat"), response=httpx.Response(500)),
+     "MODEL_SERVICE_ERROR"),
+    (None, httpx.HTTPStatusError("TOP_SECRET_DO_NOT_PERSIST", request=httpx.Request(
+        "POST", "http://127.0.0.1/api/chat"), response=httpx.Response(400, json={
+            "error": 'invalid format: expected "json" or a JSON schema'})),
+     "MODEL_FORMAT_UNSUPPORTED"),
+    (None, httpx.HTTPStatusError("TOP_SECRET_DO_NOT_PERSIST", request=httpx.Request(
+        "POST", "http://127.0.0.1/api/chat"), response=httpx.Response(400, json={
+            "error": 'invalid format: expected "json" or a JSON schema TOP_SECRET_DO_NOT_PERSIST'})),
      "MODEL_SERVICE_ERROR"),
 ])
 async def test_model_failure_is_fixed_class_without_private_content(
@@ -124,6 +138,29 @@ async def test_model_failure_is_fixed_class_without_private_content(
     assert "TOP_SECRET_DO_NOT_PERSIST" not in str(caught.value)
     assert evidence.inference_attempted and client.calls == 1 and client.closed
     assert evidence.response_received is (error is None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content,expected,stages", [
+    ("not json", "INVALID_JSON", (False, False, False, False)),
+    (json.dumps({"catalog_id": "books"}), "INVALID_PROPOSAL_SCHEMA",
+     (True, False, False, False)),
+    (_proposal("invented"), "UNKNOWN_CATALOG_OR_OPERATION",
+     (True, True, False, False)),
+    (_proposal("transit", "get_route"), "MISSION_CAPABILITY_INCOMPATIBLE",
+     (True, True, True, False)),
+])
+async def test_acceptance_stages_are_independent(monkeypatch: pytest.MonkeyPatch,
+                                                  content: str, expected: str,
+                                                  stages: tuple[bool, ...]) -> None:
+    client = FakeClient(response=_response(content))
+    _install(monkeypatch, client)
+    evidence = ProposalEvidence()
+    with pytest.raises(CapabilityRefusal, match=expected):
+        await probe._one_proposal(evidence)
+    assert (evidence.json_valid, evidence.proposal_validated,
+            evidence.catalog_operation_validated, evidence.mission_compatible) == stages
+    assert client.calls == 1 and client.closed
 
 
 def test_public_report_never_emits_private_exception(monkeypatch: pytest.MonkeyPatch,
@@ -142,6 +179,9 @@ def test_public_report_never_emits_private_exception(monkeypatch: pytest.MonkeyP
     assert json.loads(output) == {
         "VERDICT": "MODEL_PROPOSAL_BLOCKED", "FAILURE_CLASS": "PLANNING_FAILURE_UNKNOWN",
         "INFERENCE_ATTEMPTED": False, "RESPONSE_RECEIVED": False,
+        "VALID_JSON": False, "VALID_PROPOSAL_SCHEMA": False,
+        "CATALOG_OPERATION_VALIDATED": False, "MISSION_COMPATIBLE": False,
+        "AUTHORIZATION_GRANTED": False,
         "MODEL_PROPOSAL": False, "INDEPENDENT_CONTRACT_VALIDATION": False,
         "EXECUTED_CAPABILITY": False, "MISSION_COMPLETED": False,
         "PRODUCTION_QUALIFIED": False}
@@ -187,6 +227,10 @@ def test_successful_public_report_does_not_claim_execution(
     assert report["INFERENCE_ATTEMPTED"] is True
     assert report["RESPONSE_RECEIVED"] is True
     assert report["INDEPENDENT_CONTRACT_VALIDATION"] is True
+    assert all(report[key] is True for key in (
+        "VALID_JSON", "VALID_PROPOSAL_SCHEMA", "CATALOG_OPERATION_VALIDATED",
+        "MISSION_COMPATIBLE"))
+    assert report["AUTHORIZATION_GRANTED"] is False
     assert report["EXECUTED_CAPABILITY"] is False
     assert report["PRODUCTION_QUALIFIED"] is False
 

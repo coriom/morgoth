@@ -218,8 +218,8 @@ async def test_bad_model_output_never_persists_raw_content(content):
                      requirements=BOOK_REQUIREMENTS)
     received = await engine.receive(BOOKS)
     result = await engine.advance(received.mission_id, now_tick=1)
-    assert result.failure_reasons == ["INVALID_JSON" if content.startswith("Ignore")
-                                      or content.count('"catalog_id"') > 1 else
+    assert result.failure_reasons == ["DUPLICATE_JSON_KEY" if content.count('"catalog_id"') > 1
+                                      else "INVALID_JSON" if content.startswith("Ignore") else
                                       "INVALID_PROPOSAL_SCHEMA"]
     assert "TOP_SECRET_DO_NOT_PERSIST" not in str(engine.store.missions)
 

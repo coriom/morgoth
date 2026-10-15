@@ -12,7 +12,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
-from typing import Protocol
+from typing import Annotated, Protocol
 from uuid import UUID
 
 import httpx
@@ -33,6 +33,20 @@ _WORD = re.compile(r"[a-z][a-z0-9]{2,}")
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
 
 
+class DuplicateProposalKeyError(ValueError):
+    """Private JSON parser signal; never contains the duplicated key."""
+
+
+def _proposal_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate keys at every JSON object depth without echoing data."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateProposalKeyError()
+        result[key] = value
+    return result
+
+
 class PlanningProposal(BaseModel):
     """Untrusted model or fixture suggestion, never an executable grant."""
 
@@ -40,7 +54,8 @@ class PlanningProposal(BaseModel):
     catalog_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
     operation_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
     outcome: str = Field(min_length=8, max_length=160)
-    completion_criteria: list[str] = Field(min_length=1, max_length=4)
+    completion_criteria: list[Annotated[str, Field(min_length=8, max_length=120)]] = Field(
+        min_length=1, max_length=4)
     uncertainty: str = Field(min_length=1, max_length=160)
 
     @field_validator("outcome", "uncertainty")
@@ -188,7 +203,8 @@ class DocumentationCatalog:
 
 def validate_planning_candidate(catalog: DocumentationCatalog, proposal: PlanningProposal,
                                 requirements: MissionRequirements,
-                                objective: str) -> SelectedDocument:
+                                objective: str,
+                                evidence: ProposalEvidence | None = None) -> SelectedDocument:
     """Check an untrusted choice against reviewed identity and outcome schema."""
     try:
         entry = catalog.get(proposal.catalog_id)
@@ -201,7 +217,11 @@ def validate_planning_candidate(catalog: DocumentationCatalog, proposal: Plannin
         raise CapabilityRefusal("DOCUMENTATION_VALIDATION_FAILED") from None
     if proposal.operation_id != contract.operation_id:
         raise CapabilityRefusal("UNKNOWN_CATALOG_OR_OPERATION")
+    if evidence is not None:
+        evidence.catalog_operation_validated = True
     requirements.check(objective, contract)
+    if evidence is not None:
+        evidence.mission_compatible = True
     return selected
 
 
@@ -264,6 +284,9 @@ class ProposalEvidence:
     inference_attempted: bool = False
     response_received: bool = False
     proposal_validated: bool = False
+    json_valid: bool = False
+    catalog_operation_validated: bool = False
+    mission_compatible: bool = False
 
 
 class OllamaProposalSource:
@@ -274,7 +297,7 @@ class OllamaProposalSource:
         self.client, self.model, self.evidence = client, model, evidence
 
     async def propose(self, mission: str, catalog: DocumentationCatalog) -> PlanningProposal:
-        """Bound one existing Ollama chat call and strictly parse its JSON text."""
+        """Request native schema output and independently validate one proposal."""
         from core.llm_client import ChatMessage
         if not 1 <= len(mission) <= 240 or len(self.model) > 80:
             raise CapabilityRefusal("MISSION_INVALID")
@@ -291,11 +314,24 @@ class OllamaProposalSource:
                  ChatMessage(role="user", content=json.dumps({"mission": mission,
                                                                "catalog": candidates}))],
                 model=self.model, tools=None, stream=False,
-                options={"temperature": 0, "num_predict": 640}), timeout=90)
+                options={"temperature": 0, "num_predict": 640},
+                format=PlanningProposal.model_json_schema()), timeout=90)
         except (TimeoutError, httpx.TimeoutException):
             raise CapabilityRefusal("INFERENCE_TIMEOUT") from None
         except (httpx.ConnectError, httpx.NetworkError):
             raise CapabilityRefusal("OLLAMA_UNREACHABLE") from None
+        except httpx.HTTPStatusError as exc:
+            # Only the known Ollama format-contract rejection is attributable.
+            # Read the bounded body privately; never include it in an exception.
+            body = exc.response.content
+            try:
+                detail = json.loads(body) if len(body) <= 256 else None
+            except (ValueError, UnicodeError):
+                detail = None
+            if (exc.response.status_code == 400 and type(detail) is dict
+                    and detail == {"error": 'invalid format: expected "json" or a JSON schema'}):
+                raise CapabilityRefusal("MODEL_FORMAT_UNSUPPORTED") from None
+            raise CapabilityRefusal("MODEL_SERVICE_ERROR") from None
         except (httpx.HTTPError, OSError, ValueError, ValidationError, TypeError, KeyError):
             raise CapabilityRefusal("MODEL_SERVICE_ERROR") from None
         if self.evidence is not None:
@@ -313,9 +349,13 @@ class OllamaProposalSource:
         except (AttributeError, TypeError):
             raise CapabilityRefusal("RESPONSE_MISSING_OR_INCOMPLETE") from None
         try:
-            raw = json.loads(content, object_pairs_hook=_unique_pairs)
+            raw = json.loads(content, object_pairs_hook=_proposal_pairs)
+        except DuplicateProposalKeyError:
+            raise CapabilityRefusal("DUPLICATE_JSON_KEY") from None
         except (ValueError, UnicodeError):
             raise CapabilityRefusal("INVALID_JSON") from None
+        if self.evidence is not None:
+            self.evidence.json_valid = True
         try:
             proposal = PlanningProposal.model_validate(raw)
         except ValidationError:

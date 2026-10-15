@@ -32,8 +32,8 @@ REQUIREMENTS = MissionRequirements(MISSION, "detail", ("title",))
 _FAILURES = frozenset({
     "LOCAL_CONFIG_REJECTED", "MODEL_NOT_INSTALLED", "OLLAMA_UNREACHABLE",
     "INFERENCE_TIMEOUT", "MODEL_SERVICE_ERROR", "RESPONSE_MISSING_OR_INCOMPLETE",
-    "GENERATION_BUDGET_EXHAUSTED",
-    "INVALID_JSON", "INVALID_PROPOSAL_SCHEMA", "UNKNOWN_CATALOG_OR_OPERATION",
+    "MODEL_FORMAT_UNSUPPORTED", "GENERATION_BUDGET_EXHAUSTED",
+    "INVALID_JSON", "DUPLICATE_JSON_KEY", "INVALID_PROPOSAL_SCHEMA", "UNKNOWN_CATALOG_OR_OPERATION",
     "MISSION_CAPABILITY_INCOMPATIBLE", "DOCUMENTATION_VALIDATION_FAILED",
     "FORBIDDEN_TOOL_ACTIVITY", "PLANNING_FAILURE_UNKNOWN",
 })
@@ -132,10 +132,10 @@ async def _one_proposal(evidence: ProposalEvidence) -> None:
             raise CapabilityRefusal("MODEL_NOT_INSTALLED")
         proposal = await OllamaProposalSource(client, config.ollama_primary_model, evidence).propose(
             MISSION, catalog)
-        selected = validate_planning_candidate(catalog, proposal, REQUIREMENTS, MISSION)
+        selected = validate_planning_candidate(catalog, proposal, REQUIREMENTS, MISSION,
+                                               evidence=evidence)
         contract = extract_openapi_read(selected.document)
         validate_response(contract, selected.entry.isolated_sample)
-        evidence.proposal_validated = True
     finally:
         await client.close()
 
@@ -160,6 +160,11 @@ def main() -> int:
               "FAILURE_CLASS": failure,
               "INFERENCE_ATTEMPTED": evidence.inference_attempted,
               "RESPONSE_RECEIVED": evidence.response_received,
+              "VALID_JSON": evidence.json_valid,
+              "VALID_PROPOSAL_SCHEMA": evidence.proposal_validated,
+              "CATALOG_OPERATION_VALIDATED": evidence.catalog_operation_validated,
+              "MISSION_COMPATIBLE": evidence.mission_compatible,
+              "AUTHORIZATION_GRANTED": False,
               "MODEL_PROPOSAL": evidence.proposal_validated,
               "INDEPENDENT_CONTRACT_VALIDATION": code == 0,
               "EXECUTED_CAPABILITY": False, "MISSION_COMPLETED": False,

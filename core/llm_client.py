@@ -134,6 +134,7 @@ class OllamaLLMClient:
         tools: list[dict[str, Any]] | None = None,
         stream: bool = False,
         options: dict[str, Any] | None = None,
+        format: str | dict[str, Any] | None = None,
     ) -> ChatResponse:
         """Send a chat request to Ollama and return a normalized response."""
 
@@ -154,17 +155,27 @@ class OllamaLLMClient:
             }
             if tools:
                 payload["tools"] = tools
+            if format is not None:
+                payload["format"] = format
 
-            logger.debug("Sending chat request to Ollama: {}", json.dumps(payload, default=str))
+            if format is None:
+                logger.debug("Sending chat request to Ollama: {}", json.dumps(payload, default=str))
+            else:
+                # A structured planning request may contain private mission text.
+                logger.debug("Sending structured chat request to Ollama")
             response = await self._client.post("/api/chat", json=payload)
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError:
-                logger.error(
-                    "Ollama chat request failed with status {} and body: {}",
-                    response.status_code,
-                    response.text,
-                )
+                if format is None:
+                    logger.error(
+                        "Ollama chat request failed with status {} and body: {}",
+                        response.status_code,
+                        response.text,
+                    )
+                else:
+                    logger.error("Structured Ollama chat request failed with status {}",
+                                 response.status_code)
                 raise
             raw_response = response.json()
             normalized = self._normalize_response(raw_response)

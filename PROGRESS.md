@@ -1475,3 +1475,22 @@ Log files:
 - The operator-only semantic acceptance remains separately consent-gated;
   no capability execution, external API request, autonomous START, Desktop
   change, production activation or permission expansion. `SAFE_FOR_WORKLOADS=False`.
+
+## 2026-10-15 — V7.2 opt-in Ollama structured planning candidate
+
+- Operator-reported V7.1 request reached the local model and returned a response,
+  but strict parsing returned `INVALID_JSON`; private output was discarded, so
+  the specific syntax/root cause remains unknown.
+- The opt-in planner now sends its actual strict Pydantic JSON Schema as
+  Ollama `/api/chat` `format`. Ordinary CHAT/research requests omit `format` as
+  before. Planning remains tool-free, nonstreaming, 90 seconds, 640 generated
+  tokens and 4096 context tokens. No `think` setting is sent until the selected
+  model's `/api/show` compatibility can be verified in the operator environment.
+- Syntax, duplicate keys, proposal schema, reviewed catalog/operation and
+  mission compatibility now have separate fixed evidence fields. An exact
+  format-contract HTTP 400 gets a fixed code; other errors stay fail-closed.
+  Structured request/error logging does not emit prompts or private HTTP bodies.
+- Focused synthetic/mock Ollama, planner, PTY and context tests: 81 passed.
+  The reviewed local config path validated, but this agent environment could
+  not reach the local Ollama loopback within a bounded non-inference check.
+  Zero live model calls; no capability action or production authority.

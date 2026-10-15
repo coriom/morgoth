@@ -666,3 +666,30 @@ provenance-aware canonical run: requested/tested SHA and complete copied-tree
 manifest matched; 2,499 passed, 2 skipped, zero failures/errors, exit 0.
 Owned scope peak was 778,608,640 bytes and 87 PIDs, with zero OOM or PID-limit
 events. This is one clean run, not a repeated-reliability claim.
+
+## V7.2 opt-in Ollama schema contract (2026-10-15)
+
+The V7.1 operator attempt reached the configured local model and returned a
+response, but strict decoding classified it `INVALID_JSON`. Its private output
+was discarded; its exact syntax, reasoning behavior and cause are unknown.
+V7.2 sends `PlanningProposal.model_json_schema()` as Ollama `/api/chat`'s
+optional top-level `format` only for the opt-in planning request. Normal CHAT
+and research requests retain their existing payloads. The schema requires all
+five fields, forbids extra fields and bounds string and criteria-array lengths.
+The request still has no tools, is nonstreaming, has a 90-second limit and a
+640-token generation cap. Ollama's structured-output API supports a JSON Schema
+in `format`, but support by the operator's particular model is not yet proven.
+The optional model-specific `think` parameter is omitted: Ollama documents
+`/api/show` as the way to discover supported values, and the development
+sandbox cannot reach the configured loopback service. A reasoning-only reply
+without final content remains blocked; there is no unrestricted fallback.
+
+Syntax, duplicate keys, Pydantic schema, reviewed catalog/operation identity,
+mission/result-shape compatibility and authority are separate checks. The
+operator report now exposes fixed Booleans for these stages, without model
+text, reasoning or local configuration. A known exact Ollama HTTP 400 format
+error maps to `MODEL_FORMAT_UNSUPPORTED`; other 400 responses remain generic
+service failures, with private bodies neither logged nor published. A
+schema-valid proposal never grants permission or performs a capability action.
+The final operator check remains one foreground `PLAN ONCE` request; no
+production gate changes, external API calls or autonomous START are permitted.
