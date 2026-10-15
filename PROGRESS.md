@@ -1501,3 +1501,38 @@ Log files:
   799,498,240 bytes, 88 PIDs, zero OOM kills or PID-limit hits. This is
   one run, not repeated-reliability evidence. Final follow-up changes are
   documentation-only and were not separately canonically tested.
+
+## 2026-10-15 — V8 bounded mission-driven offline discovery candidate
+
+- Operator-reported V7.2 local Ollama result: `MODEL_PROPOSAL_VALIDATED`,
+  independently compatible catalog operation, no approval or execution.
+  Not repeated in this development session.
+- Added opt-in `DiscoveryIntent` and a one-call schema-constrained Ollama
+  source that receives only the mission and Project capability inventory,
+  never a target document or operation ID. The reviewed offline search index
+  returns at most three hits; retrieval verifies pinned source/contract
+  digests and bounds total bytes. Independent mission requirements, generic
+  OpenAPI-subset extraction and the existing mock validator remain separate
+  from approval and execution.
+- Three held-out fixture-intent scenarios: misleading lexical-top decoy loses
+  to the compatible detail contract; unfamiliar collection contract validates;
+  ambiguous service-status mission blocks. The initial engine was committed
+  before the corpus; the optional second model-choice stage was added later.
+  This is not a frozen final-code blind evaluation or live model-semantic evidence.
+- Project CAS checkpoints survive discovery, proposal and approval-pending
+  stages. Same-tick concurrent workers do not duplicate the model call;
+  a later tick may recover one interrupted interpretation. Existing validated
+  but still pending capability records now keep later missions pending rather
+  than incorrectly labeling them READY. Revocation and digest drift block.
+- Focused discovery/provider selection: 115 passed; all generalist hermetic
+  tests: 244 passed, 24 integration tests deselected. Two real guarded SQL tests passed
+  against a disposable `morgoth_test` PostgreSQL cluster with a Unix socket
+  and temporary Project schema; the cluster and files were removed. The
+  initial sandboxed cluster start was denied at socket creation; a later
+  corrected disposable harness ran with local-process permission. No
+  production database was touched.
+- Operator-only discovery probe prepared with at most two schema-constrained
+  local requests (intent, then metadata-only document choice); no local model
+  inference in development, external
+  API call, grant issuance, research START or Desktop change. Prose-to-contract
+  execution remains unsupported. `SAFE_FOR_WORKLOADS=False`.

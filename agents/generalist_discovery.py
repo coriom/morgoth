@@ -70,6 +70,69 @@ class IntentSource(Protocol):
     async def interpret(self, mission: str, inventory: tuple[str, ...]) -> DiscoveryIntent: ...
 
 
+class DocumentChoice(BaseModel):
+    """Untrusted choice among reviewed search-hit metadata; not authority."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    catalog_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    abstain: bool
+    uncertainty: str = Field(min_length=8, max_length=160)
+
+
+class ChoiceSource(Protocol):
+    """Candidate document choice receives no full document or operation ID."""
+
+    async def choose(self, mission: str, hits: list[dict[str, str]]) -> DocumentChoice: ...
+
+
+class OllamaDocumentChoiceSource:
+    """One additional bounded local-model choice over short index metadata."""
+
+    def __init__(self, client: object, model: str) -> None:
+        self.client, self.model = client, model
+
+    async def choose(self, mission: str, hits: list[dict[str, str]]) -> DocumentChoice:
+        """Choose or abstain without seeing documents, contracts, or endpoints."""
+        from core.llm_client import ChatMessage
+        if (not 1 <= len(hits) <= MAX_RESULTS or
+                any(type(hit) is not dict or set(hit) != {"catalog_id", "description"}
+                    or len(hit["description"]) > 160 for hit in hits)):
+            raise CapabilityRefusal("SEARCH_RESULT_INVALID")
+        try:
+            response = await asyncio.wait_for(self.client.chat(
+                [ChatMessage(role="system", content=(
+                    "Choose the most relevant document metadata for the mission. "
+                    "Use only one supplied catalog_id; set abstain true and catalog_id none "
+                    "when evidence is insufficient. A choice is not an execution grant.")),
+                 ChatMessage(role="user", content=json.dumps({"mission": mission,
+                                                               "search_hits": hits}))],
+                model=self.model, tools=None, stream=False,
+                options={"temperature": 0, "num_predict": 160},
+                format=DocumentChoice.model_json_schema()), timeout=30)
+        except (TimeoutError, httpx.TimeoutException):
+            raise CapabilityRefusal("MODEL_TIMEOUT") from None
+        except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError):
+            raise CapabilityRefusal("MODEL_UNAVAILABLE") from None
+        try:
+            content = response.message.content
+            if response.message.tool_calls:
+                raise CapabilityRefusal("FORBIDDEN_TOOL_ACTIVITY")
+            if (response.done is not True or getattr(response, "done_reason", None) not in {None, "stop"}
+                    or type(content) is not str or not 1 <= len(content.encode()) <= 512):
+                raise CapabilityRefusal("MODEL_RESPONSE_INCOMPLETE")
+            result = DocumentChoice.model_validate(json.loads(content, object_pairs_hook=_proposal_pairs))
+            if result.abstain:
+                if result.catalog_id != "none":
+                    raise CapabilityRefusal("DOCUMENT_CHOICE_INVALID")
+            elif result.catalog_id not in {hit["catalog_id"] for hit in hits}:
+                raise CapabilityRefusal("DOCUMENT_CHOICE_INVALID")
+            return result
+        except CapabilityRefusal:
+            raise
+        except (AttributeError, UnicodeError, ValueError, TypeError, ValidationError):
+            raise CapabilityRefusal("DOCUMENT_CHOICE_INVALID") from None
+
+
 class OllamaIntentSource:
     """One schema-constrained local Ollama call with no tools or fallback."""
 
@@ -154,17 +217,27 @@ class OfflineDiscovery:
             documents.append(selected)
         return tuple(documents)
 
+    def metadata(self, hits: tuple[SearchHit, ...]) -> list[dict[str, str]]:
+        """Expose reviewed summaries only, never an operation or destination."""
+        if not 1 <= len(hits) <= MAX_RESULTS:
+            raise CapabilityRefusal("SEARCH_RESULT_INVALID")
+        return [{"catalog_id": hit.catalog_id,
+                 "description": self.catalog.get(hit.catalog_id).description}
+                for hit in hits]
+
 
 class DiscoveryMissionPlanner:
     """Restart-safe, Project-scoped discovery up to pending approval."""
 
     def __init__(self, store: ProjectMissionStore, project_id: str,
                  discovery: OfflineDiscovery, intent_source: IntentSource,
-                 requirements: MissionRequirements) -> None:
+                 requirements: MissionRequirements,
+                 choice_source: ChoiceSource | None = None) -> None:
         if project_id == "default" or getattr(store.project, "id", None) != project_id:
             raise CapabilityRefusal("PROJECT_MISMATCH")
         self.store, self.project_id = store, project_id
         self.discovery, self.intent_source, self.requirements = discovery, intent_source, requirements
+        self.choice_source = choice_source
 
     async def receive(self, objective: str) -> MissionRecord:
         """Persist the mission before planning or inspecting documentation."""
@@ -237,11 +310,49 @@ class DiscoveryMissionPlanner:
                                            "planning_uncertainty": intent.uncertainty,
                                            "completion_criteria": " | ".join(intent.completion_criteria),
                                            "inventory_count": len(inventory)})
-            elif phase == "searched":
+            elif phase in {"searched", "choosing", "chosen"}:
                 ids = json.loads(str(mission.checkpoint["candidate_ids"]))
                 if type(ids) is not list or not 1 <= len(ids) <= MAX_RESULTS:
                     raise CapabilityRefusal("SEARCH_RESULT_INVALID")
                 hits = tuple(SearchHit(item, 1) for item in ids)
+                if self.choice_source is not None and phase in {"searched", "choosing"}:
+                    if phase == "choosing":
+                        count = int(mission.checkpoint.get("choice_attempt_count", 0))
+                        claim_tick = int(mission.checkpoint.get("choice_claim_tick", 0))
+                        if now_tick <= claim_tick:
+                            return mission
+                        if count >= 2:
+                            raise CapabilityRefusal("PLANNING_INTERRUPTED")
+                    else:
+                        count = 0
+                    mission.checkpoint.update({"discovery_phase": "choosing",
+                                               "choice_attempt_count": count + 1,
+                                               "choice_claim_tick": now_tick})
+                    if not await self.store.save_mission(mission_id, revision, mission.state.value,
+                                                         mission.model_dump_json()):
+                        raise CapabilityRefusal("MISSION_CONCURRENT_CHANGE")
+                    mission, revision = await self._load(mission_id)
+                    choice = await self.choice_source.choose(
+                        mission.objective, self.discovery.metadata(hits))
+                    if type(choice) is not DocumentChoice:
+                        raise CapabilityRefusal("DOCUMENT_CHOICE_INVALID")
+                    if choice.abstain:
+                        raise CapabilityRefusal("DOCUMENT_CHOICE_ABSTAINED")
+                    if choice.catalog_id not in ids:
+                        raise CapabilityRefusal("DOCUMENT_CHOICE_INVALID")
+                    mission.checkpoint.update({"discovery_phase": "chosen",
+                                               "chosen_id": choice.catalog_id})
+                    mission.state_history.append("DOCUMENT_CANDIDATE_PROPOSED")
+                    mission.updated_at = _now()
+                    if not await self.store.save_mission(mission_id, revision, mission.state.value,
+                                                         mission.model_dump_json()):
+                        raise CapabilityRefusal("MISSION_CONCURRENT_CHANGE")
+                    return mission
+                if self.choice_source is not None:
+                    chosen = mission.checkpoint.get("chosen_id")
+                    if chosen not in ids:
+                        raise CapabilityRefusal("DOCUMENT_CHOICE_INVALID")
+                    hits = (SearchHit(str(chosen), 1),)
                 selected = self.discovery.retrieve(hits)
                 compatible = []
                 for document in selected:

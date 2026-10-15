@@ -108,10 +108,10 @@ async def test_reuse_compatible_capability_without_revalidation():
     assert cap.validation_state == "PASSED"
     second = await engine.receive(BOOKS + " again")
     reused = await engine.advance(second.mission_id, now_tick=1)
-    assert reused.state is MissionState.READY
-    assert "reuse_exact_capability" in reused.completed_steps
-    assert reused.capability_gaps == []
-    assert MissionState.GAP.value not in reused.state_history
+    assert reused.state is MissionState.PENDING
+    assert "reuse_validated_capability" in reused.state_history
+    assert reused.capability_gaps == [cap.capability_id]
+    assert MissionState.GAP.value in reused.state_history
     assert reused.checkpoint["digest"] == pending.checkpoint["digest"]
     assert reused.checkpoint["inventory_count"] == 1
 

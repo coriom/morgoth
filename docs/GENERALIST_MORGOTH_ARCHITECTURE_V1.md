@@ -699,3 +699,61 @@ provenance-aware canonical run with matching source SHA and whole copied-tree
 manifest: 2,510 passed, 2 skipped, zero failures/errors, exit 0. The final
 evidence commit only updates documentation. No live model request was made in
 this development milestone, and `SAFE_FOR_WORKLOADS=False` remains.
+
+## V8 bounded mission-driven discovery (2026-10-15)
+
+The operator reported one V7.2 local Ollama `MODEL_PROPOSAL_VALIDATED` result:
+valid JSON/schema, reviewed catalog operation, independent mission compatibility,
+no grant or execution. This is one model-generated selection from a two-item
+reviewed catalog, not evidence of open-ended documentation discovery.
+
+`agents/generalist_discovery.py` adds an opt-in, restart-safe acquisition path.
+A bounded `DiscoveryIntent` proposes an outcome, information fields, search
+terms, missing capability and uncertainty without seeing catalog document or
+operation IDs. The operator-supplied `MissionRequirements` remain a separate
+acceptance oracle. The reviewed offline index exposes short descriptions and
+terms only; search returns at most three metadata hits, retrieval verifies
+source/contract digests and stays within a 49,152-byte total budget. The
+supported OpenAPI 3.0.3 GET subset is parsed deterministically, checked
+against independent reviewed destination binding and response fields, tested
+against an isolated mock response, persisted by Project-scoped CAS checkpoints,
+and left at pending approval. An interrupted interpretation claim can be
+reclaimed at a later tick once; same-tick workers cannot issue two model calls.
+After two uncompleted claims, planning blocks. No real external operation is
+started by this path.
+
+The held-out corpus was added after the initial generic discovery engine commit
+`0278e2a`; the later optional model choice stage was added with the held-out
+evaluation. This is temporal separation for the initial engine, not a frozen
+final-code blind evaluation. Its poisoned `decoy` document ranks above the relevant
+bibliographic document on lexical overlap, yet the separately supplied
+`detail/title` requirement selects the compatible document. A different
+`collection/level` mission selects an unfamiliar reservoir contract with the
+same code; a `detail/status` mission finds two compatible documents and blocks
+as ambiguous. These are fixture-intent demonstrations, not live semantic-model
+proof. Their result depends on the independent oracle and the quality of the
+bounded search terms. Documentation search is confined to an operator-reviewed
+offline corpus, not unrestricted web discovery. Malicious snapshot prose is
+never promoted to instruction or authority. Prose-to-contract drafting is not
+accepted as executable in V8: exact source quotations alone cannot establish
+that a proposed API schema or destination is correct. The first executable
+path remains a machine-readable, tightly supported OpenAPI subset.
+
+An opt-in `generalist_discovery_probe` offers at most two foreground-consented
+local Ollama requests: intent/search-term proposal, then a choice among only
+the short metadata of the search hits. It supplies the mission and empty
+capability inventory, not the answer document or operation ID, and emits only
+fixed status/Boolean fields. The second choice is untrusted: a chosen decoy
+is blocked by the independent oracle rather than automatically accepted.
+The development session did not run it. A positive operator result would prove
+one model-generated intent and independently validated offline acquisition
+candidate, not broad semantic competence, browser procedure learning or a
+production permission grant.
+
+The first future browser/UI modality needs a reviewed observation format,
+origin-bound navigation policy, state/action schema, isolated replay fixtures,
+explicit operator-granted action scopes and durable side-effect receipts. It
+must not treat retrieved page instructions as authority. The V8 intent and
+retrieval boundary can be reused, while its HTTP GET contract parser and
+executor cannot validate browser actions. `SAFE_FOR_WORKLOADS=False`, human
+Gate 3 and all existing provider restrictions remain unchanged.

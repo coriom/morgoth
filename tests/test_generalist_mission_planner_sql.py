@@ -119,8 +119,8 @@ asyncio.run(main())"""
         reused = MissionCapabilityPlanner(store, project.id, catalog, FixtureProposalSource())
         second = await reused.receive(MISSION + " again")
         ready = await reused.advance(second.mission_id, now_tick=1)
-        assert ready.state is MissionState.READY
-        assert "reuse_exact_capability" in ready.completed_steps
+        assert ready.state is MissionState.PENDING
+        assert "reuse_validated_capability" in ready.state_history
     finally:
         if memory is not None:
             await memory.close()

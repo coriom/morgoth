@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,8 @@ import pytest
 
 from agents.generalist_capability import CapabilityRefusal
 from agents.generalist_discovery import (
-    DiscoveryIntent, DiscoveryMissionPlanner, OfflineDiscovery, OllamaIntentSource,
+    DiscoveryIntent, DiscoveryMissionPlanner, OfflineDiscovery,
+    OllamaDocumentChoiceSource, OllamaIntentSource,
 )
 from agents.generalist_mission_engine import MissionState
 from agents.generalist_mission_planner import MissionRequirements, load_fixture_catalog
@@ -182,3 +184,93 @@ async def test_model_intent_fails_closed_without_private_output(content, code):
                                    message=SimpleNamespace(content=content, tool_calls=[]))
     with pytest.raises(CapabilityRefusal, match=code):
         await OllamaIntentSource(FakeClient(), "fixture-model").interpret(BOOK_MISSION, ())
+
+
+@pytest.mark.asyncio
+async def test_interrupted_interpretation_resumes_once_at_later_tick():
+    store, source = MemoryStore(), FixtureIntent(intent())
+    engine = planner(store, source)
+    mission = await engine.receive(BOOK_MISSION)
+    record, revision = store.missions[mission.mission_id]
+    value = json.loads(record)
+    value["checkpoint"] = {"discovery_phase": "interpreting", "intent_attempt_count": 1,
+                           "intent_claim_tick": 1}
+    assert await store.save_mission(mission.mission_id, revision, value["state"], json.dumps(value))
+    assert (await engine.advance(mission.mission_id, now_tick=1)).checkpoint[
+        "discovery_phase"] == "interpreting"
+    assert source.calls == 0
+    resumed = await planner(store, source).advance(mission.mission_id, now_tick=2)
+    assert resumed.checkpoint["discovery_phase"] == "searched"
+    assert resumed.checkpoint["intent_attempt_count"] == 2
+    assert source.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_changed_document_digest_blocks_before_capability_creation():
+    catalog = load_fixture_catalog(CATALOG)
+    altered = replace(catalog.get("books"), contract_sha256="0" * 64)
+    bad = type(catalog)((altered, catalog.get("transit")))
+    store = MemoryStore()
+    engine = DiscoveryMissionPlanner(store, store.project.id, OfflineDiscovery(bad),
+                                     FixtureIntent(intent()),
+                                     MissionRequirements(BOOK_MISSION, "detail", ("title",)))
+    mission = await engine.receive(BOOK_MISSION)
+    await engine.advance(mission.mission_id, now_tick=1)
+    blocked = await engine.advance(mission.mission_id, now_tick=1)
+    assert blocked.state is MissionState.BLOCKED
+    assert blocked.failure_reasons == ["DOCUMENT_SOURCE_UNVERIFIED"]
+    assert store.capabilities == {}
+
+
+@pytest.mark.asyncio
+async def test_model_timeout_is_fixed_and_no_fallback():
+    class Slow:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, *args, **kwargs):
+            self.calls += 1
+            await asyncio.sleep(999)
+
+    source = Slow()
+    import agents.generalist_discovery as module
+    original = module.asyncio.wait_for
+
+    async def short(awaitable, timeout):
+        assert timeout == 90
+        return await original(awaitable, 0.01)
+
+    module.asyncio.wait_for = short
+    try:
+        with pytest.raises(CapabilityRefusal, match="MODEL_TIMEOUT"):
+            await OllamaIntentSource(source, "fixture-model").interpret(BOOK_MISSION, ())
+        assert source.calls == 1
+    finally:
+        module.asyncio.wait_for = original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content,code", [
+    (json.dumps({"catalog_id": "books", "abstain": False,
+                 "uncertainty": "Only index metadata is available"}), None),
+    (json.dumps({"catalog_id": "invented", "abstain": False,
+                 "uncertainty": "Only index metadata is available"}), "DOCUMENT_CHOICE_INVALID"),
+    (json.dumps({"catalog_id": "books", "abstain": False,
+                 "uncertainty": "Only index metadata is available", "grant": True}),
+     "DOCUMENT_CHOICE_INVALID"),
+    ("private raw response", "DOCUMENT_CHOICE_INVALID"),
+])
+async def test_second_model_choice_is_schema_bound_and_allowlisted(content, code):
+    class Fake:
+        async def chat(self, messages, **kwargs):
+            assert kwargs["tools"] is None and kwargs["stream"] is False
+            assert "get_work" not in str(messages)
+            return SimpleNamespace(done=True, done_reason="stop",
+                                   message=SimpleNamespace(content=content, tool_calls=[]))
+    source = OllamaDocumentChoiceSource(Fake(), "fixture-model")
+    hits = [{"catalog_id": "books", "description": "Public bibliographic record"}]
+    if code is None:
+        assert (await source.choose(BOOK_MISSION, hits)).catalog_id == "books"
+    else:
+        with pytest.raises(CapabilityRefusal, match=code):
+            await source.choose(BOOK_MISSION, hits)

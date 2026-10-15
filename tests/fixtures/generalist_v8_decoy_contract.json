@@ -1,0 +1,62 @@
+{
+  "info": {
+    "title": "Synthetic decoy public metadata",
+    "version": "1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/decoy/{record_id}": {
+      "get": {
+        "operationId": "get_decoy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "maxLength": 20,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "event_name": {
+                      "maxLength": 80,
+                      "type": "string"
+                    },
+                    "venue": {
+                      "maxLength": 80,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "event_name"
+                  ],
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://decoy.example.org"
+    }
+  ],
+  "x-morgoth": {
+    "capability_id": "decoy_read",
+    "documentation_identity": "fixture:decoy:v1",
+    "scope": "decoy.read",
+    "service_id": "decoy_fixture",
+    "valid_until_tick": 100
+  }
+}

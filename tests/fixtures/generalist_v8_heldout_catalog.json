@@ -1,0 +1,150 @@
+[
+  {
+    "catalog_id": "books",
+    "description": "Public bibliographic work title and publication metadata",
+    "terms": [
+      "book",
+      "bibliographic",
+      "work",
+      "title",
+      "metadata",
+      "publication"
+    ],
+    "source_identity": "https://openlibrary.org/dev/docs/api/books",
+    "snapshot_file": "generalist_openlibrary_works_snapshot_v1.txt",
+    "snapshot_sha256": "9ac7c0154e4cab140953842add00efebaedd8df61369da5622318b3804654b72",
+    "contract_file": "generalist_openlibrary_work_subset_v1.json",
+    "contract_sha256": "b16ba1247c26ea715f4c766c472daa352d3c488fdff927d8cff1e31bf58b2b64",
+    "inputs": {
+      "work_id": "OL45804W"
+    },
+    "isolated_sample": {
+      "title": "Synthetic work",
+      "key": "/works/OL45804W"
+    },
+    "reviewed_request": {
+      "host": "openlibrary.org",
+      "endpoint": "/works/OL45804W.json",
+      "operation": "get_work",
+      "scope": "open_library.read",
+      "query": {}
+    }
+  },
+  {
+    "catalog_id": "transit",
+    "description": "Fixture transit route name and service status",
+    "terms": [
+      "transit",
+      "route",
+      "service",
+      "status",
+      "arrival"
+    ],
+    "source_identity": "fixture:transit:v1",
+    "snapshot_file": "generalist_transit_snapshot_v1.txt",
+    "snapshot_sha256": "edb5ec789a7c93e94363d14729650c73496b8e6a87e37e4834c7dbf24c14d352",
+    "contract_file": "generalist_transit_route_v1.json",
+    "contract_sha256": "e9d758bfeaec9172dc14a7d87ef5714d42aac4b80b2a8d2999c6cad8b9220aa8",
+    "inputs": {
+      "route_id": "R7"
+    },
+    "isolated_sample": {
+      "route_name": "Synthetic R7",
+      "status": "on_time"
+    },
+    "reviewed_request": {
+      "host": "transit.example.org",
+      "endpoint": "/routes/R7",
+      "operation": "get_route",
+      "scope": "transit.read",
+      "query": {}
+    }
+  },
+  {
+    "catalog_id": "decoy",
+    "description": "Book bibliographic catalog title details and publication records",
+    "terms": [
+      "book",
+      "bibliographic",
+      "catalog",
+      "title"
+    ],
+    "source_identity": "fixture:decoy:v1",
+    "snapshot_file": "generalist_v8_decoy_snapshot.txt",
+    "snapshot_sha256": "b46f809d6de73c85304928fc23da57029c91294b802d3fb5924091a8ba14ca40",
+    "contract_file": "generalist_v8_decoy_contract.json",
+    "contract_sha256": "f3a954f71af31f2b4fe80232d9fcd666def956519646753921b2d4f80d2522ff",
+    "inputs": {
+      "record_id": "R7"
+    },
+    "isolated_sample": {
+      "event_name": "Synthetic fair",
+      "venue": "Synthetic hall"
+    },
+    "reviewed_request": {
+      "host": "decoy.example.org",
+      "endpoint": "/decoy/R7",
+      "operation": "get_decoy",
+      "scope": "decoy.read",
+      "query": {}
+    }
+  },
+  {
+    "catalog_id": "reservoir",
+    "description": "Public water reservoir observations and current level readings",
+    "terms": [
+      "water",
+      "reservoir",
+      "observations",
+      "level"
+    ],
+    "source_identity": "fixture:reservoir:v1",
+    "snapshot_file": "generalist_v8_reservoir_snapshot.txt",
+    "snapshot_sha256": "9e9ae9f24997fc2a718c8b3c55906961a01b0dcc2679ee4929659c7026f93770",
+    "contract_file": "generalist_v8_reservoir_contract.json",
+    "contract_sha256": "515098484dc5c4e331e84dfb6dddfc2d3bb3a0f5f1d0fee1684a491698f6914c",
+    "inputs": {},
+    "isolated_sample": [
+      {
+        "site": "Synthetic dam",
+        "level": 42
+      }
+    ],
+    "reviewed_request": {
+      "host": "reservoir.example.org",
+      "endpoint": "/reservoir",
+      "operation": "get_reservoir",
+      "scope": "reservoir.read",
+      "query": {}
+    }
+  },
+  {
+    "catalog_id": "delivery",
+    "description": "Public delivery service status and tracking details",
+    "terms": [
+      "delivery",
+      "service",
+      "status",
+      "tracking"
+    ],
+    "source_identity": "fixture:delivery:v1",
+    "snapshot_file": "generalist_v8_delivery_snapshot.txt",
+    "snapshot_sha256": "068dd04329020c4c288c4b1fbcaaaaf3c41692d9f71a848f872c80ec5d9eb9a4",
+    "contract_file": "generalist_v8_delivery_contract.json",
+    "contract_sha256": "fe223f22a89db3fd383a571a3d00fd56441d17a183bcfb9260f356699f17f47f",
+    "inputs": {
+      "record_id": "R7"
+    },
+    "isolated_sample": {
+      "status": "in_transit",
+      "carrier": "Synthetic carrier"
+    },
+    "reviewed_request": {
+      "host": "delivery.example.org",
+      "endpoint": "/delivery/R7",
+      "operation": "get_delivery",
+      "scope": "delivery.read",
+      "query": {}
+    }
+  }
+]

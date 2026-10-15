@@ -182,7 +182,7 @@ async def test_real_contract_mocked_restart_reuse_and_revocation():
         await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1)
     assert await restarted.execute(mission.mission_id, DOC, grant=None, grant_id=receipt_grant, now_tick=1) == result
     later = await restarted.receive("Reuse same public issues contract", desc.capability_id)
-    assert (await restarted.assess(later.mission_id, DOC, ROWS, now_tick=1)).state is MissionState.READY
+    assert (await restarted.assess(later.mission_id, DOC, ROWS, now_tick=1)).state is MissionState.PENDING
     assert (await restarted.execute(later.mission_id, DOC, grant=None, grant_id=uuid4(), now_tick=1))["status"] == "MISSION_COMPLETE"
     raw = await store.get_capability(desc.capability_id, desc.version, desc.digest)
     cap = CapabilityRecord.model_validate_json(raw)

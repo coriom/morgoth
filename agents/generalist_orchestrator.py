@@ -260,12 +260,22 @@ class GeneralistMissionOrchestrator:
             raise CapabilityRefusal("PRODUCTION_APPROVAL_UNAVAILABLE")
         if existing and existing.project_id != self.project_id:
             raise CapabilityRefusal("PROJECT_MISMATCH")
-        if existing and existing.validation_state == "PASSED":
+        if (existing and existing.validation_state == "PASSED"
+                and existing.state is CapabilityState.TEST_ONLY_APPROVED):
             cap = existing
             mission.state = MissionState.READY
             mission.state_history.append(MissionState.READY.value)
             mission.completed_steps.append("reuse_exact_capability")
             mission.capability_gaps = []
+        elif (existing and existing.validation_state == "PASSED"
+              and existing.state is CapabilityState.PENDING_APPROVAL):
+            # Reuse validation evidence, never infer a permission grant from it.
+            cap = existing
+            mission.state = MissionState.PENDING
+            mission.state_history.extend([MissionState.GAP.value,
+                                          "reuse_validated_capability",
+                                          MissionState.PENDING.value])
+            mission.capability_gaps = [desc.capability_id]
         else:
             cap = CapabilityRecord(project_id=self.project_id, capability_id=desc.capability_id,
                                    version=desc.version, documentation_identity=desc.documentation_identity,
