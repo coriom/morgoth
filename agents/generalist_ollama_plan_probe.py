@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -30,21 +31,40 @@ MISSION = ("Find public bibliographic information for a book and summarize "
 
 def _foreground_consent() -> bool:
     """Require a controlling foreground terminal and typed local consent."""
-    try:
-        if not all(os.isatty(fd) for fd in (0, 1, 2)):
-            return False
-        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
-        try:
-            if not os.isatty(fd) or os.tcgetpgrp(fd) != os.getpgrp():
-                return False
-            with os.fdopen(fd, "r+", buffering=1, closefd=False) as terminal:
-                terminal.write("One synthetic local Ollama planning proposal; no external API call. Type PLAN ONCE: ")
-                answer = terminal.readline(40).strip()
-            return answer == "PLAN ONCE"
-        finally:
-            os.close(fd)
-    except (OSError, ValueError):
+    if (any(os.environ.get(key) for key in ("CI", "GITHUB_ACTIONS", "CODEBUILD_BUILD_ID"))
+            or any(not os.isatty(fd) for fd in (0, 1, 2))):
         return False
+    reader = None
+    writer = None
+    try:
+        foreground_group = os.getpgrp()
+        stream_devices = [os.fstat(fd).st_rdev for fd in (0, 1, 2)]
+        if (len(set(stream_devices)) != 1
+                or any(not stat.S_ISCHR(os.fstat(fd).st_mode)
+                       or os.tcgetpgrp(fd) != foreground_group
+                       for fd in (0, 1, 2))):
+            return False
+        # /dev/tty is an alias (device 5:0), not the /dev/pts/N device of the
+        # standard streams. Separate handles avoid r+ seeking on a PTY.
+        reader = open("/dev/tty", "r", encoding="utf-8", buffering=1)
+        writer = open("/dev/tty", "w", encoding="utf-8", buffering=1)
+        if (not os.isatty(reader.fileno()) or not os.isatty(writer.fileno())
+                or os.tcgetpgrp(reader.fileno()) != foreground_group
+                or os.tcgetpgrp(writer.fileno()) != foreground_group):
+            return False
+        writer.write("One synthetic local Ollama planning proposal; no external API call. Type PLAN ONCE: ")
+        writer.flush()
+        answer = reader.readline(40)
+        return answer.removesuffix("\n").removesuffix("\r") == "PLAN ONCE"
+    except (OSError, ValueError, UnicodeError):
+        return False
+    finally:
+        try:
+            if writer is not None:
+                writer.close()
+        finally:
+            if reader is not None:
+                reader.close()
 
 
 def _local_model_config() -> SimpleNamespace:

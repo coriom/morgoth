@@ -1433,3 +1433,19 @@ Log files:
   Owned scope peak was 808,579,072 bytes and 95 PIDs, zero OOM kills/PID
   limit hits. One pass does not resolve historical intermittent-runner issues.
   The final follow-up is documentation-only.
+
+
+## 2026-10-15 — Ollama operator consent PTY repair
+
+- Replaced the V7 probe's combined `r+` `/dev/tty` stream with separate read
+  and write handles. A real PTY reproduced `UnsupportedOperation` with the old
+  stream and accepted the corrected foreground consent path.
+- Consent still requires one consistent foreground controlling terminal, no
+  redirected standard stream or CI, and exact typed `PLAN ONCE`. Reader and
+  writer are closed on failure; the probe retains its fixed refusal and
+  `PRODUCTION_QUALIFIED=false` behavior.
+- Focused no-inference PTY, Codex terminal and planner tests: 40 passed.
+  The local model configuration tests use synthetic values and do not display
+  `.env` contents. No model request, provider-routing or permission change.
+- Full canonical suite was not rerun because the change is isolated to the
+  operator-only consent gate and its tests. `SAFE_FOR_WORKLOADS=False` remains.
