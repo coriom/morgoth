@@ -46,6 +46,13 @@ confinement and final text/event canaries pass. No production state was used.
   temporary Unix-socket-only cluster was stopped and removed.
   `SAFE_FOR_WORKLOADS=False`; protected files, Desktop and Human Gate 3 remain
   unchanged. No dependency added.
+- One provenance-aware canonical run tested candidate
+  `d050c273cb77fb0e4530b974ee9c43924433bfcb`: requested/tested SHA and
+  complete copied-tree manifest matched; 2,550 passed, 2 skipped, zero
+  failures/errors, exit 0, 43.4 seconds wall time. Owned cgroup reported
+  zero OOM kills and PID-limit hits. The final follow-up commit records
+  evidence only and was not canonically rerun. Earlier intermittent runner
+  failures are not resolved by one passing run.
 
 ## 2026-10-13 — Restricted Codex text qualification prepared, no inference
 
