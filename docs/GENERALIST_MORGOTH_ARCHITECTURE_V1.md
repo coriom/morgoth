@@ -603,3 +603,13 @@ catalog's validated contract identity. Reuse clears the capability-gap field,
 while a missing capability records the gap only after its required operation
 is identified. The first canonical result on `c05d771` predates this
 correction; the corrected source requires its own canonical evidence.
+
+Corrected V7 candidate `178dcfa78c2fede7da6ddb99dafa763d411bc4f9`
+passed one provenance-aware full canonical run. Requested/tested SHA matched;
+the complete copied-tree manifest matched
+`557b32e63d4b322f2d50832f683a239ea2eec0a633f3087796fbf9e6397d0880`.
+The result was 2,459 passed, 2 skipped, zero failures/errors, exit 0,
+62.9-second runner wall. Owned scope peak was 808,579,072 bytes and 95 PIDs,
+with zero OOM kills or PID-limit hits. This single pass does not resolve the
+historical intermittent-runner concern. The final evidence commit changes
+documentation only.

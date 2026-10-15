@@ -1425,3 +1425,11 @@ Log files:
   complete copied-tree manifest matched; 2,459 passed, 2 skipped, zero
   failures/errors, exit 0. This result precedes the inventory correction and
   is not claimed as validation of the corrected source.
+- Corrected candidate `178dcfa78c2fede7da6ddb99dafa763d411bc4f9`
+  passed one provenance-aware canonical run: requested/tested SHA and complete
+  copied-tree manifest matched
+  `557b32e63d4b322f2d50832f683a239ea2eec0a633f3087796fbf9e6397d0880`;
+  2,459 passed, 2 skipped, zero failures/errors, exit 0, wall 62.9 seconds.
+  Owned scope peak was 808,579,072 bytes and 95 PIDs, zero OOM kills/PID
+  limit hits. One pass does not resolve historical intermittent-runner issues.
+  The final follow-up is documentation-only.
