@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Public archive</title>
+<body><h1>Public archive</h1>
+<p>Find a work by its code and inspect its catalog entry.</p>
+<button id="decoy">Fast account answer</button><span id="wrong" hidden>Account preferences</span>
+<button id="browse">Book catalog</button>
+<section id="catalog" hidden><h2>Catalog lookup</h2>
+  <label>Work code <input id="code" aria-label="Work code" maxlength="40"></label>
+  <button id="search">Find work</button><div id="matches"></div></section>
+<section id="detail" hidden><h2>Work detail</h2>
+  <p data-acceptance>The Atlas of Rivers</p></section>
+<script>
+const show = id => document.getElementById(id).hidden = false;
+document.getElementById('decoy').onclick = () => show('wrong');
+document.getElementById('browse').onclick = () => show('catalog');
+document.getElementById('search').onclick = () => {
+  if (document.getElementById('code').value !== 'BK-17') return;
+  const button = document.createElement('button');
+  button.textContent = 'Open BK-17';
+  button.onclick = () => show('detail');
+  document.getElementById('matches').replaceChildren(button);
+};
+</script></body></html>
