@@ -647,7 +647,8 @@ tokens; this allows more cold-load and reasoning time than the former 20-second,
 Ollama documents an API `format` field for JSON/schema output; Morgoth's
 existing shared client does not expose that field, so this branch retains
 strict parsing and does not change the protected shared client. A reasoning-only
-or truncated response is classified as incomplete. See
+response with no final text is classified as incomplete; an explicit
+`done_reason=length` is classified as a generation-budget failure. See
 https://docs.ollama.com/capabilities/structured-outputs and
 https://docs.ollama.com/api/chat for the upstream protocol.
 
@@ -659,3 +660,9 @@ environment the reviewed local config passed, but the configured loopback
 socket was unreachable; no live Ollama inference was attempted. The disposable
 PostgreSQL demo reported `DISPOSABLE_POSTGRES_UNAVAILABLE`, so this branch does
 not claim a fresh SQL integration pass. `SAFE_FOR_WORKLOADS=False` remains.
+
+Candidate `9c5a7845bfa11b514819115be048c442059523fd` passed one
+provenance-aware canonical run: requested/tested SHA and complete copied-tree
+manifest matched; 2,499 passed, 2 skipped, zero failures/errors, exit 0.
+Owned scope peak was 778,608,640 bytes and 87 PIDs, with zero OOM or PID-limit
+events. This is one clean run, not a repeated-reliability claim.

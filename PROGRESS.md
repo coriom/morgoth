@@ -1449,3 +1449,29 @@ Log files:
   `.env` contents. No model request, provider-routing or permission change.
 - Full canonical suite was not rerun because the change is isolated to the
   operator-only consent gate and its tests. `SAFE_FOR_WORKLOADS=False` remains.
+
+
+## 2026-10-15 — V7.1 local semantic planning contract
+
+- The first operator-consented Ollama result was `MODEL_PROPOSAL_BLOCKED`;
+  its private response was discarded, so its failed stage is unknown. Source
+  review found two defects: operation IDs were requested but omitted from
+  model choices, and the model's selection was gated by lexical overlap.
+- The opt-in planner now supplies digest-verified operation metadata and
+  independently checks a trusted mission's required result fields against
+  the selected contract. No model output grants execution or destination
+  authority. The probe reports fixed, non-disclosing preflight, transport,
+  generation, response, schema and compatibility failures.
+- Focused no-inference protocol, privacy, semantic-boundary and PTY tests:
+  67 passed. Local config metadata passed, but the development sandbox could
+  not reach the configured loopback socket; zero live model calls. Disposable
+  PostgreSQL demo returned `DISPOSABLE_POSTGRES_UNAVAILABLE`, so no fresh SQL
+  PASS is claimed.
+- One canonical run on clean candidate
+  `9c5a7845bfa11b514819115be048c442059523fd` matched requested/tested
+  SHA and full copied-tree manifest: 2,499 passed, 2 skipped, zero failures
+  or errors, exit 0, wall 49.1 seconds. Owned scope peak 778,608,640 bytes,
+  87 PIDs, zero OOM or PID-limit events. No repeat-reliability claim.
+- The operator-only semantic acceptance remains separately consent-gated;
+  no capability execution, external API request, autonomous START, Desktop
+  change, production activation or permission expansion. `SAFE_FOR_WORKLOADS=False`.
