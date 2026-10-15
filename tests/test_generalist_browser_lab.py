@@ -23,6 +23,7 @@ BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/ch
 CASES = [
     ("catalog", "Find the title for book BK-17 in the public catalog", "BK-17", "The Atlas of Rivers"),
     ("support", "Locate support request SR-9 and report its status", "SR-9", "Resolved"),
+    ("heldout", "Check inventory stock item SKU-44 and report its quantity", "SKU-44", "12 units"),
 ]
 
 
@@ -72,6 +73,35 @@ async def test_stale_snapshot_and_external_link_block_before_click() -> None:
     browser._evaluate = fresh  # type: ignore[method-assign]
     with pytest.raises(BrowserRefusal, match="NAVIGATION_NOT_ALLOWED"):
         await browser.act(BrowserAction(kind="click", revision=2, element_id="e0"), "X")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_proposals_cannot_share_one_snapshot() -> None:
+    """Exactly one of two simultaneous actions may consume a revision."""
+    browser = _Browser(Path("/nonexistent"), "http://127.0.0.1:1234")
+    browser.observation = BrowserObservation(revision=1, origin=browser.origin,
+                                             title="", text="", elements=[])
+    browser.revision = 1
+    target = {"id": "e0", "tag": "button", "role": "", "name": "Open",
+              "href": "", "value": "", "x": 10, "y": 10}
+    browser.targets = {"e0": target}
+
+    async def fresh(_expression: str) -> dict:
+        return {"url": browser.origin + "/", "title": "", "text": "",
+                "elements": [target]}
+
+    class FakeCdp:
+        async def call(self, *_args, **_kwargs):
+            await asyncio.sleep(.005)
+
+    browser._evaluate = fresh  # type: ignore[method-assign]
+    browser.cdp = FakeCdp()  # type: ignore[assignment]
+    action = BrowserAction(kind="click", revision=1, element_id="e0")
+    outcomes = await asyncio.gather(browser.act(action, "X"), browser.act(action, "X"),
+                                    return_exceptions=True)
+    assert sum(isinstance(value, BrowserRefusal) and value.code == "STALE_OBSERVATION"
+               for value in outcomes) == 1
+    assert sum(not isinstance(value, Exception) for value in outcomes) == 1
 
 
 def test_procedure_requires_version_and_pending_approval() -> None:

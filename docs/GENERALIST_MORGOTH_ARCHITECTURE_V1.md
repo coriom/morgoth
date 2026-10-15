@@ -1,5 +1,64 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9 opt-in synthetic browser procedure lab (2026-10-15)
+
+`agents/generalist_browser_lab.py` is a new **experimental browser modality**,
+separate from the generic HTTP GET driver and disconnected from Brain, START,
+ToolRouter and production approval. A trusted launcher runs only reviewed local
+HTML fixtures under Bubblewrap with private user, PID, mount and network
+namespaces. It clears the environment, exposes only system libraries, the
+existing Python virtual environment, one reviewed Python worker, one selected
+fixture, and a SHA-256-pinned cached Chromium headless shell. `/tmp` is private
+and the browser uses a fresh temporary profile. There is no mounted operator
+home, browser profile, credential file, upload directory or download target.
+The local fixture server and the browser share the private network namespace;
+it has loopback but no host or internet route. The worker checks that its
+network namespace differs from the launcher, that host-home and `.env` paths
+are absent, and that a metadata-address connection fails. Chromium's own
+sandbox is disabled for nested execution; Bubblewrap is the enforced boundary.
+The reviewed browser binary identity is a hash of an existing local cache, not
+an independently established supply-chain attestation.
+
+The generic controller observes rendered visible controls with ephemeral IDs,
+accessible labels and bounded body text. It never sends full HTML, scripts,
+password/file inputs, hidden fields or coordinates to the proposal source.
+`BrowserAction` permits only click, bounded synthetic text entry or stop. Each
+action is checked against the current observation revision, visible element
+identity and local-origin policy. The browser validates task completion by
+inspecting a visible result element, independently of the proposal source's
+claim. Browser content remains untrusted; a page instruction cannot add an
+action type, destination or permission. The same controller ran four observed
+actions on catalog and support fixtures and, after the controller was committed
+at `f49e797`, on a third inventory-layout fixture without an app-specific
+execution branch. That third fixture was authored by the same engineer after
+the freeze, so it reduces sequence contamination but is not an independent
+blind benchmark. The deterministic lexical policy, not a live LLM, produced
+those measured action sequences.
+
+`OllamaBrowserActionSource` can propose a strict JSON-Schema action from a
+bounded observation. The parent-side private pipe keeps Ollama outside the
+browser namespace and keeps Chromium inside it; only action candidates cross
+into the browser worker. `agents/generalist_browser_operator.py` is an
+operator-only, clean-branch and foreground-consent-gated evaluation of one
+synthetic app, with six model calls maximum and no third-party API. It has **not
+been run**. If the local model fails to plan the observed workflow, the result
+remains blocked; fixture-policy success is not model-learning evidence.
+
+The confirmed fixture procedure records source digest, semantic control
+preconditions, parameter placeholder, bounded steps, expected visible result
+and pending approval. `BrowserMissionCoordinator` claims the Project mission
+before browser I/O; a crash after that claim is not replayed automatically.
+Only independent UI acceptance causes a capability proposal and atomic local
+receipt. A fresh PostgreSQL connection and separate interpreter recovered the
+pending mission, exact capability and receipt in disposable `morgoth_test`.
+Replay requires an explicit **test-only** authorization flag, exact fixture
+digest and fresh semantic preconditions; changed fixture bytes block it.
+Neither that flag nor a validated procedure is authenticated production
+approval. There is no real-site browser broker, cgroup memory cap, durable
+browser-side side-effect idempotency, account identity, upload/download policy
+for external sites, or authority to act on external software. The V9 modality
+must remain restricted to these reviewed synthetic fixtures.
+
 Morgoth's target is a persistent agent that can finish unfamiliar missions by
 identifying capability gaps, learning a constrained interface, validating an
 implementation, requesting the necessary human grant, then executing and

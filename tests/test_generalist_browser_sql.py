@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -66,6 +69,15 @@ async def test_browser_claim_receipt_and_fresh_pool_recovery(tmp_path: Path, mon
         assert calls == 1 and len(procedure.steps) == 4
         receipt = await store.get_receipt(mission.mission_id, "browser_fixture_validation")
         assert receipt is not None and '"ui_state_observed": true' in receipt.lower()
+        child = await asyncio.create_subprocess_exec(
+            sys.executable, str(ROOT / "tests" / "browser_process_probe.py"),
+            project.id, str(mission.mission_id),
+            cwd=str(ROOT), env={**os.environ, "PYTHONPATH": str(ROOT)},
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        output, _ = await asyncio.wait_for(child.communicate(), timeout=15)
+        assert child.returncode == 0 and len(output) < 512
+        assert json.loads(output) == {"RECOVERED": True, "PROCEDURE_PRESENT": True,
+                                      "RECEIPT_PRESENT": True, "APPROVAL_PENDING": True}
         await memory.close()
         memory = None
 

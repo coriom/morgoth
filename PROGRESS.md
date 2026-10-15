@@ -20,6 +20,36 @@ confinement and final text/event canaries pass. No production state was used.
 
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-15 — V9 isolated synthetic browser procedure candidate
+
+- Added an opt-in browser modality with a private Bubblewrap user/PID/mount/net
+  namespace, cleared environment, minimal read-only module/fixture mounts,
+  temporary Chromium profile, local loopback server and pinned browser hash.
+  The worker verifies network namespace separation, absent host-home/.env
+  paths and blocked metadata-address connectivity. No production or external
+  origin can be selected by this entry point.
+- A bounded DOM observation, strict click/fill/stop schema and independent
+  current-element/origin validation drove two different rendered synthetic
+  apps. The generic controller was committed at `f49e797` before adding a
+  third inventory-layout fixture; the same engineer prepared the held-out
+  fixture, so this is not an independent blind benchmark. A prompt-injection
+  string in one page could not change action authority.
+- Versioned procedural steps bind the source digest and semantic UI
+  preconditions. Changed source blocks replay. A Project-scoped mission is
+  claimed before browser I/O; interrupted attempts remain non-replayable.
+  Confirmed UI evidence receives an atomic local receipt and a capability
+  record that stays PENDING_HUMAN_APPROVAL. Fresh-process PostgreSQL recovery
+  in disposable `morgoth_test` passed. Fixture replay needs test-only consent,
+  which is not production approval.
+- An opt-in private observation/action pipe and strict Ollama JSON-Schema
+  action adapter are prepared for one foreground operator-consented local
+  evaluation. No model inference ran in development. The actual rendered
+  workflows used a deterministic observation policy; no claim of model-driven
+  browser learning is made yet. Chromium's internal sandbox is off inside
+  Bubblewrap; only the reviewed synthetic fixtures are supported.
+- `SAFE_FOR_WORKLOADS=False`; no real website/account, production database,
+  service, START, protected file or Desktop change. No new dependency.
+
 ## 2026-10-15 — V8.1 robust intent and offline discovery candidate
 
 - Operator-reported V8 intent request returned `INTENT_SCHEMA_INVALID` after

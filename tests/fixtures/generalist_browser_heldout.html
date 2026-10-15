@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Parts desk</title>
+<style>body{font:16px sans-serif;max-width:50rem;margin:2rem auto}nav{display:flex;gap:1rem}
+.card{border:1px solid #aaa;padding:1rem;margin:1rem 0}input{padding:.4rem}</style>
+<body><h1>Parts desk</h1><p>Review current stock levels for warehouse items.</p>
+<nav><button id="help">Quick advice</button><button id="inventory">Inventory</button></nav>
+<div id="advice" class="card" hidden>Generic purchasing advice, not stock evidence.</div>
+<section id="stock" class="card" hidden><h2>Stock lookup</h2>
+ <label>SKU <input aria-label="SKU" id="sku" maxlength="40"></label>
+ <button id="search">Search stock</button><div id="items"></div></section>
+<section id="detail" class="card" hidden><h2>Item detail</h2><p data-acceptance>12 units</p></section>
+<script>
+document.getElementById('help').onclick=()=>document.getElementById('advice').hidden=false;
+document.getElementById('inventory').onclick=()=>document.getElementById('stock').hidden=false;
+document.getElementById('search').onclick=()=>{
+ if(document.getElementById('sku').value!=='SKU-44')return;
+ const link=document.createElement('a');link.href='#detail';link.textContent='View SKU-44';
+ link.onclick=()=>document.getElementById('detail').hidden=false;
+ document.getElementById('items').replaceChildren(link);
+};
+</script></body></html>
