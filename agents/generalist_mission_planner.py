@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from agents.generalist_approval_broker import ProjectApprovalBroker, ReviewedReadRequest
 from agents.generalist_capability import CapabilityRefusal, _unique_pairs
 from agents.generalist_documentation import DocumentationEvidence, reviewed_offline_snapshot
-from agents.generalist_generic_read import extract_openapi_read, validated_request
+from agents.generalist_generic_read import LearnedReadContract, extract_openapi_read, validated_request
 from agents.generalist_mission_engine import (
     CapabilityRecord, CapabilityState, MissionRecord, MissionState, _now,
 )
@@ -87,6 +87,30 @@ class SelectedDocument:
     document: str
 
 
+@dataclass(frozen=True)
+class MissionRequirements:
+    """Trusted outcome constraints supplied separately from a model proposal."""
+
+    objective: str
+    shape: str
+    required_result_fields: tuple[str, ...]
+
+    def check(self, objective: str, contract: LearnedReadContract) -> None:
+        """Reject a proposed operation unable to produce required fields."""
+        if (objective != self.objective or type(self.objective) is not str
+                or self.shape not in {"detail", "collection"}
+                or type(self.required_result_fields) is not tuple
+                or not 1 <= len(self.required_result_fields) <= 6
+                or any(type(field) is not str or _IDENTIFIER.fullmatch(field) is None
+                       for field in self.required_result_fields)):
+            raise CapabilityRefusal("MISSION_REQUIREMENTS_INVALID")
+        schema = contract.response_schema
+        result_schema = schema["items"] if contract.shape == "collection" else schema
+        if (contract.shape != self.shape
+                or not set(self.required_result_fields).issubset(result_schema["required"])):
+            raise CapabilityRefusal("MISSION_CAPABILITY_INCOMPATIBLE")
+
+
 class DocumentationCatalog:
     """Select only reviewed, digest-pinned offline sources by generic relevance."""
 
@@ -148,6 +172,38 @@ class DocumentationCatalog:
             raise CapabilityRefusal("UNREVIEWED_DESTINATION")
         return SelectedDocument(entry, evidence, document)
 
+    def operation_choices(self) -> list[dict[str, object]]:
+        """Expose only digest-verified operation metadata, never document prose."""
+        choices = []
+        for entry in self.entries:
+            selected = self.load(entry)
+            contract = extract_openapi_read(selected.document)
+            schema = contract.response_schema
+            fields = schema["items"]["properties"] if contract.shape == "collection" else schema["properties"]
+            choices.append({"catalog_id": entry.catalog_id, "description": entry.description,
+                            "operation_id": contract.operation_id, "shape": contract.shape,
+                            "result_fields": sorted(fields)})
+        return choices
+
+
+def validate_planning_candidate(catalog: DocumentationCatalog, proposal: PlanningProposal,
+                                requirements: MissionRequirements,
+                                objective: str) -> SelectedDocument:
+    """Check an untrusted choice against reviewed identity and outcome schema."""
+    try:
+        entry = catalog.get(proposal.catalog_id)
+    except CapabilityRefusal:
+        raise CapabilityRefusal("UNKNOWN_CATALOG_OR_OPERATION") from None
+    try:
+        selected = catalog.load(entry)
+        contract = extract_openapi_read(selected.document)
+    except CapabilityRefusal:
+        raise CapabilityRefusal("DOCUMENTATION_VALIDATION_FAILED") from None
+    if proposal.operation_id != contract.operation_id:
+        raise CapabilityRefusal("UNKNOWN_CATALOG_OR_OPERATION")
+    requirements.check(objective, contract)
+    return selected
+
 
 def load_fixture_catalog(path: Path) -> DocumentationCatalog:
     """Load reviewed local catalog data; this command never fetches a URL."""
@@ -201,48 +257,83 @@ class FixtureProposalSource:
                                 uncertainty="Intent selection is lexical fixture evidence only")
 
 
+@dataclass
+class ProposalEvidence:
+    """Non-sensitive, single-request diagnostic facts; never stores response text."""
+
+    inference_attempted: bool = False
+    response_received: bool = False
+    proposal_validated: bool = False
+
+
 class OllamaProposalSource:
     """Opt-in local proposal adapter; output is candidate data, not authority."""
 
-    def __init__(self, client: object, model: str) -> None:
-        self.client, self.model = client, model
+    def __init__(self, client: object, model: str,
+                 evidence: ProposalEvidence | None = None) -> None:
+        self.client, self.model, self.evidence = client, model, evidence
 
     async def propose(self, mission: str, catalog: DocumentationCatalog) -> PlanningProposal:
         """Bound one existing Ollama chat call and strictly parse its JSON text."""
         from core.llm_client import ChatMessage
         if not 1 <= len(mission) <= 240 or len(self.model) > 80:
             raise CapabilityRefusal("MISSION_INVALID")
-        candidates = [{"catalog_id": e.catalog_id, "description": e.description,
-                       "terms": list(e.terms)} for e in catalog.entries]
+        candidates = catalog.operation_choices()
         instruction = ("Choose one relevant catalog_id for the user's mission and describe the "
                        "observable outcome. Return ONLY JSON with catalog_id, operation_id, outcome, "
                        "completion_criteria (1-4 short strings), uncertainty. You have no tool or "
                        "permission authority. If uncertain, return an unsupported catalog_id.")
         try:
+            if self.evidence is not None:
+                self.evidence.inference_attempted = True
             response = await asyncio.wait_for(self.client.chat(
                 [ChatMessage(role="system", content=instruction),
                  ChatMessage(role="user", content=json.dumps({"mission": mission,
                                                                "catalog": candidates}))],
                 model=self.model, tools=None, stream=False,
-                options={"temperature": 0, "num_predict": 320}), timeout=20)
+                options={"temperature": 0, "num_predict": 640}), timeout=90)
+        except (TimeoutError, httpx.TimeoutException):
+            raise CapabilityRefusal("INFERENCE_TIMEOUT") from None
+        except (httpx.ConnectError, httpx.NetworkError):
+            raise CapabilityRefusal("OLLAMA_UNREACHABLE") from None
+        except (httpx.HTTPError, OSError, ValueError, ValidationError, TypeError, KeyError):
+            raise CapabilityRefusal("MODEL_SERVICE_ERROR") from None
+        if self.evidence is not None:
+            self.evidence.response_received = True
+        try:
             content = response.message.content
-            if (not response.done or response.message.tool_calls or type(content) is not str
-                    or len(content.encode()) > 2048):
-                raise ValueError("unusable response")
+            if response.message.tool_calls:
+                raise CapabilityRefusal("FORBIDDEN_TOOL_ACTIVITY")
+            if getattr(response, "done_reason", None) == "length":
+                raise CapabilityRefusal("GENERATION_BUDGET_EXHAUSTED")
+            if (response.done is not True or getattr(response, "done_reason", None) not in {None, "stop"}
+                    or type(content) is not str
+                    or not content.strip() or len(content.encode()) > 2048):
+                raise CapabilityRefusal("RESPONSE_MISSING_OR_INCOMPLETE")
+        except (AttributeError, TypeError):
+            raise CapabilityRefusal("RESPONSE_MISSING_OR_INCOMPLETE") from None
+        try:
             raw = json.loads(content, object_pairs_hook=_unique_pairs)
-            return PlanningProposal.model_validate(raw)
-        except (TimeoutError, ValueError, ValidationError, httpx.HTTPError, OSError):
-            raise CapabilityRefusal("MODEL_PROPOSAL_INVALID") from None
+        except (ValueError, UnicodeError):
+            raise CapabilityRefusal("INVALID_JSON") from None
+        try:
+            proposal = PlanningProposal.model_validate(raw)
+        except ValidationError:
+            raise CapabilityRefusal("INVALID_PROPOSAL_SCHEMA") from None
+        if self.evidence is not None:
+            self.evidence.proposal_validated = True
+        return proposal
 
 
 class MissionCapabilityPlanner:
     """Persist planning evidence, then delegate validation to existing engine."""
 
     def __init__(self, store: ProjectMissionStore, project_id: str, catalog: DocumentationCatalog,
-                 source: ProposalSource) -> None:
+                 source: ProposalSource, requirements: MissionRequirements | None = None) -> None:
         if project_id == "default" or getattr(store.project, "id", None) != project_id:
             raise CapabilityRefusal("PROJECT_MISMATCH")
         self.store, self.project_id, self.catalog, self.source = store, project_id, catalog, source
+        self.requirements = requirements
 
     async def receive(self, objective: str) -> MissionRecord:
         """Persist the mission before any proposal or documentation inspection."""
@@ -276,19 +367,28 @@ class MissionCapabilityPlanner:
             if "catalog_id" in mission.checkpoint:
                 entry = self.catalog.get(str(mission.checkpoint["catalog_id"]))
             else:
+                if self.requirements is None and type(self.source) is not FixtureProposalSource:
+                    raise CapabilityRefusal("MISSION_REQUIREMENTS_MISSING")
+                if self.requirements is not None and self.requirements.objective != mission.objective:
+                    raise CapabilityRefusal("MISSION_REQUIREMENTS_INVALID")
                 inventory = await self.store.list_capability_identities()
                 proposal = await self.source.propose(mission.objective, self.catalog)
                 if type(proposal) is not PlanningProposal:
                     raise CapabilityRefusal("MODEL_PROPOSAL_INVALID")
-                entry = self.catalog.get(proposal.catalog_id)
-                # A model may nominate a reviewed source, but cannot override
-                # the independent relevance gate or select an unrelated host.
-                if self.catalog.select(mission.objective).catalog_id != entry.catalog_id:
-                    raise CapabilityRefusal("PROPOSED_SOURCE_UNSUPPORTED")
-                selected = self.catalog.load(entry)
+                if self.requirements is not None:
+                    selected = validate_planning_candidate(
+                        self.catalog, proposal, self.requirements, mission.objective)
+                    entry = selected.entry
+                else:
+                    # Deterministic fixture-only planning retains its lexical
+                    # selector. A model requires independent outcome constraints.
+                    entry = self.catalog.get(proposal.catalog_id)
+                    if self.catalog.select(mission.objective).catalog_id != entry.catalog_id:
+                        raise CapabilityRefusal("PROPOSED_SOURCE_UNSUPPORTED")
+                    selected = self.catalog.load(entry)
                 contract = extract_openapi_read(selected.document)
                 if proposal.operation_id != contract.operation_id:
-                    raise CapabilityRefusal("PROPOSED_OPERATION_UNSUPPORTED")
+                    raise CapabilityRefusal("UNKNOWN_CATALOG_OR_OPERATION")
                 if now_tick > contract.valid_until_tick:
                     raise CapabilityRefusal("DOCUMENT_STALE")
                 preview_driver = DeclarativeHttpReadDriver(

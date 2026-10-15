@@ -13,12 +13,14 @@ from agents.generalist_capability import CapabilityRefusal
 from agents.generalist_mission_engine import CapabilityRecord, CapabilityState, MissionRecord, MissionState
 from agents.generalist_mission_planner import (
     DocumentationCatalog, FixtureProposalSource, MissionCapabilityPlanner,
-    OllamaProposalSource, PlanningProposal, load_fixture_catalog,
+    MissionRequirements, OllamaProposalSource, PlanningProposal, load_fixture_catalog,
 )
 
 CATALOG = Path(__file__).parent / "fixtures" / "generalist_discovery_catalog_v1.json"
 BOOKS = "Find public bibliographic information for a book and summarize its title and publication metadata"
 TRANSIT = "Check the public transit route service status and report a route arrival"
+BOOK_REQUIREMENTS = MissionRequirements(BOOKS, "detail", ("title",))
+TRANSIT_REQUIREMENTS = MissionRequirements(TRANSIT, "detail", ("route_name", "status"))
 
 
 class MemoryStore:
@@ -56,11 +58,11 @@ class MemoryStore:
         self.capabilities[(capability_id, version, digest)] = record
 
 
-def planner(store=None, catalog=None, source=None):
+def planner(store=None, catalog=None, source=None, requirements=None):
     store = store or MemoryStore()
     return MissionCapabilityPlanner(
         store, store.project.id, catalog or load_fixture_catalog(CATALOG),
-        source or FixtureProposalSource(),
+        source or FixtureProposalSource(), requirements,
     )
 
 
@@ -163,10 +165,10 @@ async def test_candidate_operation_and_destination_are_independently_checked():
                                     completion_criteria=["Deletion is recorded"],
                                     uncertainty="none")
 
-    engine = planner(source=Forged())
+    engine = planner(source=Forged(), requirements=BOOK_REQUIREMENTS)
     received = await engine.receive(BOOKS)
     result = await engine.advance(received.mission_id, now_tick=1)
-    assert result.failure_reasons == ["PROPOSED_OPERATION_UNSUPPORTED"]
+    assert result.failure_reasons == ["UNKNOWN_CATALOG_OR_OPERATION"]
     assert not engine.store.capabilities
 
 
@@ -196,7 +198,7 @@ async def test_model_json_is_untrusted_and_never_receives_docs_or_tools():
                                     "uncertainty": "The API response remains unobserved"}),
                 tool_calls=[]))
     source = OllamaProposalSource(FakeOllama(), "fixture-model")
-    engine = planner(source=source)
+    engine = planner(source=source, requirements=BOOK_REQUIREMENTS)
     received = await engine.receive(BOOKS)
     assert (await engine.advance(received.mission_id, now_tick=1)).state is MissionState.PENDING
 
@@ -212,10 +214,13 @@ async def test_bad_model_output_never_persists_raw_content(content):
     class Bad:
         async def chat(self, *_args, **_kwargs):
             return SimpleNamespace(done=True, message=SimpleNamespace(content=content, tool_calls=[]))
-    engine = planner(source=OllamaProposalSource(Bad(), "fixture-model"))
+    engine = planner(source=OllamaProposalSource(Bad(), "fixture-model"),
+                     requirements=BOOK_REQUIREMENTS)
     received = await engine.receive(BOOKS)
     result = await engine.advance(received.mission_id, now_tick=1)
-    assert result.failure_reasons == ["MODEL_PROPOSAL_INVALID"]
+    assert result.failure_reasons == ["INVALID_JSON" if content.startswith("Ignore")
+                                      or content.count('"catalog_id"') > 1 else
+                                      "INVALID_PROPOSAL_SCHEMA"]
     assert "TOP_SECRET_DO_NOT_PERSIST" not in str(engine.store.missions)
 
 
@@ -230,16 +235,16 @@ async def test_missing_model_timeout_is_bounded_and_checkpointed():
     original = asyncio.wait_for
 
     async def short_wait(awaitable, timeout):
-        assert timeout == 20
+        assert timeout == 90
         return await original(awaitable, timeout=0.01)
 
     from agents import generalist_mission_planner as module
     module.asyncio.wait_for = short_wait
     try:
-        engine = planner(source=source)
+        engine = planner(source=source, requirements=BOOK_REQUIREMENTS)
         mission = await engine.receive(BOOKS)
         assert (await engine.advance(mission.mission_id, now_tick=1)).failure_reasons == [
-            "MODEL_PROPOSAL_INVALID"]
+            "INFERENCE_TIMEOUT"]
     finally:
         module.asyncio.wait_for = original
 
@@ -276,10 +281,10 @@ async def test_model_cannot_choose_an_unrelated_reviewed_source():
                                     completion_criteria=["Route status is validated"],
                                     uncertainty="Source relevance is unproven")
 
-    engine = planner(source=Hallucinated())
+    engine = planner(source=Hallucinated(), requirements=BOOK_REQUIREMENTS)
     mission = await engine.receive(BOOKS)
     result = await engine.advance(mission.mission_id, now_tick=1)
-    assert result.failure_reasons == ["PROPOSED_SOURCE_UNSUPPORTED"]
+    assert result.failure_reasons == ["MISSION_CAPABILITY_INCOMPATIBLE"]
     assert not engine.store.capabilities
 
 
@@ -318,9 +323,93 @@ async def test_committed_document_injection_never_enters_model_prompt_or_grants_
                                     "completion_criteria": ["Route status has a valid schema"],
                                     "uncertainty": "Fixture source may be stale"}), tool_calls=[]))
 
-    engine = planner(catalog=catalog, source=OllamaProposalSource(InspectPrompt(), "fixture-model"))
+    engine = planner(catalog=catalog, source=OllamaProposalSource(InspectPrompt(), "fixture-model"),
+                     requirements=TRANSIT_REQUIREMENTS)
     mission = await engine.receive(TRANSIT)
     result = await engine.advance(mission.mission_id, now_tick=1)
     assert result.state is MissionState.PENDING
     assert result.checkpoint["catalog_id"] == "transit"
     assert not engine.store.receipts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mission,fields,catalog_id,operation_id", [
+    ("Locate a public catalog record for a chosen novel; report its name and available details",
+     ("title",), "books", "get_work"),
+    ("Summarize the state and label of a public bus line",
+     ("route_name", "status"), "transit", "get_route"),
+])
+async def test_model_candidate_can_pass_without_lexical_selection(
+        mission, fields, catalog_id, operation_id):
+    catalog = load_fixture_catalog(CATALOG)
+    with pytest.raises(CapabilityRefusal, match="DOCUMENTATION_NOT_FOUND"):
+        catalog.select(mission)
+
+    class Candidate:
+        async def propose(self, *_):
+            return PlanningProposal(catalog_id=catalog_id, operation_id=operation_id,
+                                    outcome="Provide independently validated public metadata",
+                                    completion_criteria=["Required result fields pass schema validation"],
+                                    uncertainty="No external operation has been authorized")
+
+    engine = planner(catalog=catalog, source=Candidate(),
+                     requirements=MissionRequirements(mission, "detail", fields))
+    received = await engine.receive(mission)
+    result = await engine.advance(received.mission_id, now_tick=1)
+    assert result.state is MissionState.PENDING
+    assert result.checkpoint["catalog_id"] == catalog_id
+    assert result.checkpoint["planning_uncertainty"]
+    assert not engine.store.receipts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required_fields", [("title", "status"), ("pixels",)])
+async def test_ambiguous_or_unsupported_outcome_cannot_gain_capability(required_fields):
+    class Candidate:
+        async def propose(self, *_):
+            return PlanningProposal(catalog_id="books", operation_id="get_work",
+                                    outcome="Provide the requested public metadata",
+                                    completion_criteria=["Required result fields are observed"],
+                                    uncertainty="Candidate has not been authorized")
+
+    mission = "Summarize an unfamiliar public record with the requested fields"
+    engine = planner(source=Candidate(),
+                     requirements=MissionRequirements(mission, "detail", required_fields))
+    received = await engine.receive(mission)
+    result = await engine.advance(received.mission_id, now_tick=1)
+    assert result.state is MissionState.BLOCKED
+    assert result.failure_reasons == ["MISSION_CAPABILITY_INCOMPATIBLE"]
+    assert not engine.store.capabilities
+
+
+@pytest.mark.asyncio
+async def test_model_source_without_independent_requirements_is_blocked():
+    class Candidate:
+        async def propose(self, *_):
+            raise AssertionError("model called before requirements preflight")
+
+    engine = planner(source=Candidate())
+    received = await engine.receive(BOOKS)
+    result = await engine.advance(received.mission_id, now_tick=1)
+    assert result.failure_reasons == ["MISSION_REQUIREMENTS_MISSING"]
+    assert not engine.store.capabilities
+
+
+@pytest.mark.asyncio
+async def test_misleading_reviewed_description_cannot_override_schema():
+    catalog = load_fixture_catalog(CATALOG)
+    transit = replace(catalog.get("transit"),
+                      description="Public bibliographic title and book record metadata")
+    misleading = DocumentationCatalog((catalog.get("books"), transit))
+
+    class Misled:
+        async def propose(self, *_):
+            return PlanningProposal(catalog_id="transit", operation_id="get_route",
+                                    outcome="Produce a public book record title",
+                                    completion_criteria=["Book title is validated"],
+                                    uncertainty="Description may be misleading")
+
+    engine = planner(catalog=misleading, source=Misled(), requirements=BOOK_REQUIREMENTS)
+    received = await engine.receive(BOOKS)
+    assert (await engine.advance(received.mission_id, now_tick=1)).failure_reasons == [
+        "MISSION_CAPABILITY_INCOMPATIBLE"]

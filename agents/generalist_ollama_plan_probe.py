@@ -13,20 +13,33 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
+import httpx
 from loguru import logger
 
 from agents.generalist_capability import CapabilityRefusal
-from agents.generalist_generic_read import extract_openapi_read
+from agents.generalist_generic_read import extract_openapi_read, validate_response
 from agents.generalist_mission_planner import (
-    OllamaProposalSource, load_fixture_catalog,
+    MissionRequirements, OllamaProposalSource, ProposalEvidence, load_fixture_catalog,
+    validate_planning_candidate,
 )
 from core.llm_client import OllamaLLMClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "tests" / "fixtures" / "generalist_discovery_catalog_v1.json"
-MISSION = ("Find public bibliographic information for a book and summarize "
-           "its title and publication metadata")
+MISSION = "Locate a public catalog record for a chosen novel; report its name and available details"
+REQUIREMENTS = MissionRequirements(MISSION, "detail", ("title",))
+_FAILURES = frozenset({
+    "LOCAL_CONFIG_REJECTED", "MODEL_NOT_INSTALLED", "OLLAMA_UNREACHABLE",
+    "INFERENCE_TIMEOUT", "MODEL_SERVICE_ERROR", "RESPONSE_MISSING_OR_INCOMPLETE",
+    "GENERATION_BUDGET_EXHAUSTED",
+    "INVALID_JSON", "INVALID_PROPOSAL_SCHEMA", "UNKNOWN_CATALOG_OR_OPERATION",
+    "MISSION_CAPABILITY_INCOMPATIBLE", "DOCUMENTATION_VALIDATION_FAILED",
+    "FORBIDDEN_TOOL_ACTIVITY", "PLANNING_FAILURE_UNKNOWN",
+})
+_DOCUMENT_FAILURES = frozenset({"CATALOG_INVALID", "DOCUMENT_SOURCE_UNVERIFIED",
+                                "DOCUMENT_INVALID", "EXTERNAL_RESPONSE_INVALID",
+                                "UNREVIEWED_DESTINATION"})
 
 
 def _foreground_consent() -> bool:
@@ -90,31 +103,39 @@ def _local_model_config() -> SimpleNamespace:
                            ollama_num_ctx=4096)
 
 
-async def _one_proposal() -> dict[str, object]:
+async def _one_proposal(evidence: ProposalEvidence) -> None:
     """Run one bounded proposal and validate its selected documented operation."""
-    config = _local_model_config()
+    try:
+        config = _local_model_config()
+    except (CapabilityRefusal, OSError, ValueError):
+        raise CapabilityRefusal("LOCAL_CONFIG_REJECTED") from None
     catalog = load_fixture_catalog(CATALOG)
+    # Fail before inference if a pinned operation or snapshot has drifted.
+    catalog.operation_choices()
     # The existing client logs full payloads at DEBUG. This dedicated process
     # removes the logger sink before any request so raw prompt/response stays local.
     logger.remove()
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
                 "https_proxy", "all_proxy"):
         os.environ.pop(key, None)
-    client = OllamaLLMClient(config, timeout=20)
+    client = OllamaLLMClient(config, timeout=90)
     try:
-        proposal = await OllamaProposalSource(client, config.ollama_primary_model).propose(
+        try:
+            models = await asyncio.wait_for(client.list_models(), timeout=5)
+        except (TimeoutError, httpx.ConnectError, httpx.NetworkError):
+            raise CapabilityRefusal("OLLAMA_UNREACHABLE") from None
+        except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError):
+            raise CapabilityRefusal("MODEL_SERVICE_ERROR") from None
+        requested = config.ollama_primary_model
+        available = {item.name for item in models}
+        if requested not in available and (":" in requested or requested + ":latest" not in available):
+            raise CapabilityRefusal("MODEL_NOT_INSTALLED")
+        proposal = await OllamaProposalSource(client, config.ollama_primary_model, evidence).propose(
             MISSION, catalog)
-        entry = catalog.get(proposal.catalog_id)
-        if catalog.select(MISSION).catalog_id != entry.catalog_id:
-            raise CapabilityRefusal("PROPOSED_SOURCE_UNSUPPORTED")
-        selected = catalog.load(entry)
+        selected = validate_planning_candidate(catalog, proposal, REQUIREMENTS, MISSION)
         contract = extract_openapi_read(selected.document)
-        if proposal.operation_id != contract.operation_id:
-            raise CapabilityRefusal("PROPOSED_OPERATION_UNSUPPORTED")
-        return {"VERDICT": "MODEL_PROPOSAL_VALIDATED",
-                "MODEL_PROPOSAL": True, "INDEPENDENT_CONTRACT_VALIDATION": True,
-                "EXECUTED_CAPABILITY": False, "MISSION_COMPLETED": False,
-                "PRODUCTION_QUALIFIED": False}
+        validate_response(contract, selected.entry.isolated_sample)
+        evidence.proposal_validated = True
     finally:
         await client.close()
 
@@ -125,15 +146,24 @@ def main() -> int:
         sys.stdout.write(json.dumps({"VERDICT": "LOCAL_CONSENT_REQUIRED",
                                      "PRODUCTION_QUALIFIED": False}) + "\n")
         return 2
+    evidence = ProposalEvidence()
     try:
-        result = asyncio.run(_one_proposal())
-        code = 0
-    except (CapabilityRefusal, OSError, ValueError, TimeoutError):
-        result = {"VERDICT": "MODEL_PROPOSAL_BLOCKED", "MODEL_PROPOSAL": False,
-                  "INDEPENDENT_CONTRACT_VALIDATION": False,
-                  "EXECUTED_CAPABILITY": False, "MISSION_COMPLETED": False,
-                  "PRODUCTION_QUALIFIED": False}
-        code = 2
+        asyncio.run(_one_proposal(evidence))
+        failure, code = "VALID_PROPOSAL", 0
+    except CapabilityRefusal as exc:
+        failure, code = (exc.code if exc.code in _FAILURES else
+                         "DOCUMENTATION_VALIDATION_FAILED" if exc.code in _DOCUMENT_FAILURES else
+                         "PLANNING_FAILURE_UNKNOWN"), 2
+    except (OSError, ValueError, TimeoutError, TypeError, KeyError):
+        failure, code = "PLANNING_FAILURE_UNKNOWN", 2
+    result = {"VERDICT": "MODEL_PROPOSAL_VALIDATED" if code == 0 else "MODEL_PROPOSAL_BLOCKED",
+              "FAILURE_CLASS": failure,
+              "INFERENCE_ATTEMPTED": evidence.inference_attempted,
+              "RESPONSE_RECEIVED": evidence.response_received,
+              "MODEL_PROPOSAL": evidence.proposal_validated,
+              "INDEPENDENT_CONTRACT_VALIDATION": code == 0,
+              "EXECUTED_CAPABILITY": False, "MISSION_COMPLETED": False,
+              "PRODUCTION_QUALIFIED": False}
     sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")
     return code
 

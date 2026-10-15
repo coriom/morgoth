@@ -613,3 +613,49 @@ The result was 2,459 passed, 2 skipped, zero failures/errors, exit 0,
 with zero OOM kills or PID-limit hits. This single pass does not resolve the
 historical intermittent-runner concern. The final evidence commit changes
 documentation only.
+
+
+## V7.1 local semantic proposal contract (opt-in)
+
+The first operator-consented Ollama run ended at `MODEL_PROPOSAL_BLOCKED`.
+Its private response was discarded, so the actual failed stage **cannot be
+recovered**. Two source defects are confirmed independently: the model was
+asked for an `operation_id` absent from its catalog choices, and a model
+selection was compared to an unrelated lexical keyword selector. Neither
+fact alone proves the cause of that historical run.
+
+The opt-in proposal source now supplies only catalog ID, reviewed description,
+digest-verified operation ID, operation shape and result field names. It never
+passes documentation bodies, hosts, URLs, executable instructions or approval
+data as model directions. For model planning, a separately supplied trusted
+`MissionRequirements` record defines the requested result shape and required
+schema fields. The independent check verifies the model's catalog and operation
+against the pinned document and exact reviewed request, then requires those
+fields in the supported response schema. The fixture proposal source remains
+explicitly lexical. Passing this check establishes bounded schema feasibility,
+not that the model understood all semantic nuance or acquired permission.
+Unsupported, ambiguous or misleading choices remain blocked. A valid candidate
+can enter the Project-scoped pending-approval checkpoint; it cannot execute.
+
+The operator probe checks loopback configuration and installed-model listing
+before any generation. It reports fixed failure classes with separate
+`INFERENCE_ATTEMPTED`, `RESPONSE_RECEIVED` and independent-validation Booleans.
+It accepts only one complete, tool-free, strict JSON response with no duplicate
+keys or extra proposal fields. The opt-in bound is 90 seconds and 640 generated
+tokens; this allows more cold-load and reasoning time than the former 20-second,
+320-token contract, but is not a claim about the configured model's speed.
+Ollama documents an API `format` field for JSON/schema output; Morgoth's
+existing shared client does not expose that field, so this branch retains
+strict parsing and does not change the protected shared client. A reasoning-only
+or truncated response is classified as incomplete. See
+https://docs.ollama.com/capabilities/structured-outputs and
+https://docs.ollama.com/api/chat for the upstream protocol.
+
+The actual operator acceptance still requires one foreground `PLAN ONCE`
+consent. It performs no external API request, capability execution, Project
+mutation or production activation. A successful run would prove one local
+model-generated candidate for the tested mission only. In this development
+environment the reviewed local config passed, but the configured loopback
+socket was unreachable; no live Ollama inference was attempted. The disposable
+PostgreSQL demo reported `DISPOSABLE_POSTGRES_UNAVAILABLE`, so this branch does
+not claim a fresh SQL integration pass. `SAFE_FOR_WORKLOADS=False` remains.
