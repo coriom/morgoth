@@ -121,8 +121,9 @@ async def _exercise(dsn: str) -> dict[str, object]:
         if reused.state is not MissionState.READY or "reuse_exact_capability" not in reused.completed_steps:
             raise CapabilityRefusal("CAPABILITY_REUSE_FAILED")
         return {"VERDICT": "FIXTURE_WORKFLOW_PASS",
-                "TIMELINE": ["MISSION_RECEIVED", "PLAN_CREATED", "CAPABILITY_GAP_IDENTIFIED",
-                             "DOCUMENTATION_SELECTED", "OPERATION_PROPOSED",
+                "TIMELINE": ["MISSION_RECEIVED", "PLAN_CREATED", "CAPABILITY_INVENTORY_CHECKED",
+                             "DOCUMENTATION_SELECTED", "DOCUMENTATION_INSPECTED",
+                             "CAPABILITY_GAP_IDENTIFIED", "OPERATION_PROPOSED",
                              "ISOLATED_VALIDATION", "PENDING_HUMAN_APPROVAL",
                              "TEST_ONLY_AUTHORIZATION", "MISSION_COMPLETE",
                              "CAPABILITY_REUSED"],

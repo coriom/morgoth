@@ -595,3 +595,11 @@ deselected), and 23 selected tests passed against one owned disposable
 bounded offline demo passed with one mock request, zero network requests,
 pending-state and receipt recovery in distinct interpreters, and later reuse.
 The canonical source-verification result is recorded in the V7 progress entry.
+
+A post-canonical review found and corrected a misleading inventory label. The
+planner now performs a bounded Project-scoped SQL inventory query **before**
+calling a proposal source; an exact existing capability is checked against the
+catalog's validated contract identity. Reuse clears the capability-gap field,
+while a missing capability records the gap only after its required operation
+is identified. The first canonical result on `c05d771` predates this
+correction; the corrected source requires its own canonical evidence.

@@ -49,6 +49,9 @@ class MemoryStore:
     async def get_capability(self, capability_id, version, digest):
         return self.capabilities.get((capability_id, version, digest))
 
+    async def list_capability_identities(self):
+        return list(self.capabilities)
+
     async def save_capability(self, user_id, capability_id, version, digest, record):
         self.capabilities[(capability_id, version, digest)] = record
 
@@ -75,10 +78,13 @@ async def test_two_unfamiliar_missions_stop_at_independent_approval(mission, cho
     assert result.state is MissionState.PENDING
     assert result.required_capabilities == [capability]
     assert result.checkpoint["catalog_id"] == chosen
+    assert result.checkpoint["inventory_count"] == 0
     assert result.checkpoint["planning_uncertainty"]
     assert result.checkpoint["source_digest"]
     assert "CAPABILITY_PROPOSAL" in result.state_history
     assert "ISOLATED_VALIDATION" in result.state_history
+    assert result.state_history.index("CAPABILITY_INVENTORY_CHECKED") < result.state_history.index(
+        "DOCUMENTATION_SELECTED")
     assert result.capability_gaps == [capability]
     assert not engine.store.receipts
     persisted = MissionRecord.model_validate_json(
@@ -102,7 +108,10 @@ async def test_reuse_compatible_capability_without_revalidation():
     reused = await engine.advance(second.mission_id, now_tick=1)
     assert reused.state is MissionState.READY
     assert "reuse_exact_capability" in reused.completed_steps
+    assert reused.capability_gaps == []
+    assert MissionState.GAP.value not in reused.state_history
     assert reused.checkpoint["digest"] == pending.checkpoint["digest"]
+    assert reused.checkpoint["inventory_count"] == 1
 
 
 @pytest.mark.asyncio

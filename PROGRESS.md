@@ -1416,3 +1416,12 @@ Log files:
   deselected. One owned disposable `morgoth_test` selection: 23 passed, 3
   nonintegration deselected. The offline demo additionally verified
   pending-state and receipt recovery in fresh interpreters.
+- Post-canonical review found that the initial planner labeled inventory
+  inspection before performing a real Project inventory query. Added a bounded
+  Project-scoped SQL inventory method and exact-record reuse check. Reuse now
+  clears the gap marker, and the fixture timeline reflects actual ordering.
+  Focused 167/167 and disposable SQL 23/23 passed after the correction.
+- The first canonical run tested candidate `c05d771103f2b3c678d1a21bb931047874d6c416`:
+  complete copied-tree manifest matched; 2,459 passed, 2 skipped, zero
+  failures/errors, exit 0. This result precedes the inventory correction and
+  is not claimed as validation of the corrected source.

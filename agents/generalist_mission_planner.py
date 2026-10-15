@@ -22,7 +22,10 @@ from agents.generalist_approval_broker import ProjectApprovalBroker, ReviewedRea
 from agents.generalist_capability import CapabilityRefusal, _unique_pairs
 from agents.generalist_documentation import DocumentationEvidence, reviewed_offline_snapshot
 from agents.generalist_generic_read import extract_openapi_read, validated_request
-from agents.generalist_mission_engine import MissionRecord, MissionState, _now
+from agents.generalist_mission_engine import (
+    CapabilityRecord, CapabilityState, MissionRecord, MissionState, _now,
+)
+from agents.generalist_mission_store import ProjectMissionStore
 from agents.generalist_orchestrator import DeclarativeHttpReadDriver, GeneralistMissionOrchestrator
 
 
@@ -235,7 +238,7 @@ class OllamaProposalSource:
 class MissionCapabilityPlanner:
     """Persist planning evidence, then delegate validation to existing engine."""
 
-    def __init__(self, store: object, project_id: str, catalog: DocumentationCatalog,
+    def __init__(self, store: ProjectMissionStore, project_id: str, catalog: DocumentationCatalog,
                  source: ProposalSource) -> None:
         if project_id == "default" or getattr(store.project, "id", None) != project_id:
             raise CapabilityRefusal("PROJECT_MISMATCH")
@@ -273,6 +276,7 @@ class MissionCapabilityPlanner:
             if "catalog_id" in mission.checkpoint:
                 entry = self.catalog.get(str(mission.checkpoint["catalog_id"]))
             else:
+                inventory = await self.store.list_capability_identities()
                 proposal = await self.source.propose(mission.objective, self.catalog)
                 if type(proposal) is not PlanningProposal:
                     raise CapabilityRefusal("MODEL_PROPOSAL_INVALID")
@@ -287,12 +291,38 @@ class MissionCapabilityPlanner:
                     raise CapabilityRefusal("PROPOSED_OPERATION_UNSUPPORTED")
                 if now_tick > contract.valid_until_tick:
                     raise CapabilityRefusal("DOCUMENT_STALE")
+                preview_driver = DeclarativeHttpReadDriver(
+                    entry.reviewed_request, entry.inputs,
+                    transport=httpx.MockTransport(
+                        lambda _: httpx.Response(200, json=entry.isolated_sample)),
+                    documentation=selected.evidence)
+                descriptor = preview_driver.inspect(selected.document, now_tick=now_tick)
+                identity = (descriptor.capability_id, descriptor.version, descriptor.digest)
+                existing_raw = await self.store.get_capability(*identity)
+                if existing_raw is not None:
+                    try:
+                        existing = CapabilityRecord.model_validate_json(existing_raw)
+                    except ValueError:
+                        raise CapabilityRefusal("CAPABILITY_RECORD_INVALID") from None
+                    if existing.project_id != self.project_id:
+                        raise CapabilityRefusal("PROJECT_MISMATCH")
+                    if existing.state in {CapabilityState.STALE, CapabilityState.REVOKED}:
+                        raise CapabilityRefusal("CAPABILITY_REVOKED_OR_STALE")
+                    reusable = existing.validation_state == "PASSED"
+                else:
+                    reusable = False
+                if existing_raw is not None and identity not in inventory:
+                    # An inventory/record race cannot authorize execution.
+                    raise CapabilityRefusal("CAPABILITY_INVENTORY_CHANGED")
                 mission.required_capabilities = [contract.capability_id]
-                mission.capability_gaps = [contract.capability_id]
+                mission.capability_gaps = [] if reusable else [contract.capability_id]
                 mission.state_history.extend(["PLAN_CREATED", "CAPABILITY_INVENTORY_CHECKED",
-                                              MissionState.GAP.value, "DOCUMENTATION_SELECTED",
-                                              "DOCUMENTATION_INSPECTED", "OPERATION_PROPOSED"])
+                                              "DOCUMENTATION_SELECTED", "DOCUMENTATION_INSPECTED"])
+                if not reusable:
+                    mission.state_history.append(MissionState.GAP.value)
+                mission.state_history.append("OPERATION_PROPOSED")
                 mission.checkpoint.update({"catalog_id": entry.catalog_id,
+                                           "inventory_count": len(inventory),
                                            "source_identity": selected.evidence.source_identity,
                                            "source_digest": selected.evidence.content_digest,
                                            "source_replayed_at": _now().isoformat(),

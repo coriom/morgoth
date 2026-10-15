@@ -175,6 +175,21 @@ class ProjectMissionStore:
             )
         return row["record"] if row else None
 
+    async def list_capability_identities(self) -> list[tuple[str, str, str]]:
+        """Bounded Project-only inventory for opt-in gap assessment."""
+        pool = self._pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT capability_id, version, document_digest
+                   FROM generalist_capabilities WHERE project_id=$1
+                   ORDER BY capability_id, version, document_digest LIMIT 65""",
+                self.project.id,
+            )
+        if len(rows) > 64:
+            raise MissionStoreError("CAPABILITY_INVENTORY_TOO_LARGE")
+        return [(row["capability_id"], row["version"], row["document_digest"])
+                for row in rows]
+
     async def get_receipt(self, mission_id: UUID, key: str) -> str | None:
         """Find a committed local result before considering duplicate work."""
         pool = self._pool()

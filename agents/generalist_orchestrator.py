@@ -265,6 +265,7 @@ class GeneralistMissionOrchestrator:
             mission.state = MissionState.READY
             mission.state_history.append(MissionState.READY.value)
             mission.completed_steps.append("reuse_exact_capability")
+            mission.capability_gaps = []
         else:
             cap = CapabilityRecord(project_id=self.project_id, capability_id=desc.capability_id,
                                    version=desc.version, documentation_identity=desc.documentation_identity,
@@ -297,7 +298,7 @@ class GeneralistMissionOrchestrator:
         # Retain only reviewed planner provenance across the assessment step.
         # Arbitrary caller-supplied checkpoint keys must not flow into the
         # execution/approval checkpoint.
-        planning_keys = {"catalog_id", "source_identity", "source_digest",
+        planning_keys = {"catalog_id", "inventory_count", "source_identity", "source_digest",
                          "source_replayed_at", "contract_digest", "planning_outcome",
                          "planning_uncertainty", "completion_criteria"}
         mission.checkpoint = {key: value for key, value in mission.checkpoint.items()
