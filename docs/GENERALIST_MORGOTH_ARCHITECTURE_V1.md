@@ -693,3 +693,9 @@ service failures, with private bodies neither logged nor published. A
 schema-valid proposal never grants permission or performs a capability action.
 The final operator check remains one foreground `PLAN ONCE` request; no
 production gate changes, external API calls or autonomous START are permitted.
+
+Candidate `f1cc40b97803fbfac3ef4741a59a914c070a6b40` passed one
+provenance-aware canonical run with matching source SHA and whole copied-tree
+manifest: 2,510 passed, 2 skipped, zero failures/errors, exit 0. The final
+evidence commit only updates documentation. No live model request was made in
+this development milestone, and `SAFE_FOR_WORKLOADS=False` remains.

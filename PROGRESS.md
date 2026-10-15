@@ -1494,3 +1494,10 @@ Log files:
   The reviewed local config path validated, but this agent environment could
   not reach the local Ollama loopback within a bounded non-inference check.
   Zero live model calls; no capability action or production authority.
+- One provenance-aware canonical run on clean candidate
+  `f1cc40b97803fbfac3ef4741a59a914c070a6b40` matched requested/tested SHA
+  and complete copied-tree manifest. Result: 2,510 passed, 2 skipped,
+  zero failures/errors, exit 0, wall 39.6 seconds. Owned scope peak:
+  799,498,240 bytes, 88 PIDs, zero OOM kills or PID-limit hits. This is
+  one run, not repeated-reliability evidence. Final follow-up changes are
+  documentation-only and were not separately canonically tested.
