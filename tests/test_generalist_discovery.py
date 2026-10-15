@@ -57,12 +57,12 @@ class MemoryStore:
         self.capabilities[(capability_id, version, digest)] = record
 
 
-def intent(*, shape="detail", fields=("title",), terms=("book", "bibliographic"),
+def intent(*, shape="detail", terms=("book", "bibliographic"),
            abstain=False):
     return DiscoveryIntent(outcome="Retrieve verified public information",
-                           shape=shape, required_fields=list(fields),
-                           search_terms=list(terms),
-                           missing_capabilities=["public_record_read"],
+                           information_need="Find a source-grounded public record",
+                           shape=shape, search_queries=list(terms),
+                           missing_capabilities=["Read a public record"],
                            completion_criteria=["Source grounded title is present"],
                            uncertainty="No authorization to perform a real request",
                            abstain=abstain)
@@ -111,11 +111,25 @@ async def test_unknown_capability_search_restart_and_pending_approval():
 
 
 @pytest.mark.asyncio
+async def test_model_free_text_is_not_persisted_in_checkpoint():
+    private = "TOP_SECRET_DO_NOT_PERSIST"
+    proposed = intent().model_copy(update={
+        "outcome": f"Find public title {private}",
+        "information_need": f"Bibliographic facts {private}",
+        "completion_criteria": [f"Title is grounded {private}"],
+        "uncertainty": f"Unverified {private}",
+    })
+    store = MemoryStore()
+    mission = await planner(store, FixtureIntent(proposed)).receive(BOOK_MISSION)
+    await planner(store, FixtureIntent(proposed)).advance(mission.mission_id, now_tick=1)
+    assert private not in store.missions[mission.mission_id][0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("proposal,code", [
-    (intent(abstain=True), "INTENT_ABSTAINED"),
+    (DiscoveryIntent(abstain=True), "INTENT_ABSTAINED"),
     (intent(terms=("unrelated",)), "DOCUMENTATION_NOT_FOUND"),
     (intent(shape="collection"), "INTENT_ORACLE_MISMATCH"),
-    (intent(fields=("status",)), "INTENT_ORACLE_MISMATCH"),
 ])
 async def test_abstention_or_incompatibility_blocks_without_acquisition(proposal, code):
     store = MemoryStore()
@@ -171,10 +185,36 @@ async def test_model_intent_receives_no_catalog_or_operation_id():
     assert "openlibrary" not in str(client.messages).lower()
 
 
+def test_intent_schema_accepts_abstention_and_matches_actionability_boundary():
+    schema = DiscoveryIntent.model_json_schema()
+    assert schema["required"] == ["abstain"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["uncertainty"].get("minLength", 0) == 0
+    abstention = DiscoveryIntent.model_validate({"abstain": True})
+    with pytest.raises(CapabilityRefusal, match="INTENT_ABSTAINED"):
+        abstention.require_actionable()
+    valid = DiscoveryIntent.model_validate(intent(shape="unknown").model_dump())
+    valid.require_actionable()
+    incomplete = DiscoveryIntent.model_validate({"abstain": False})
+    with pytest.raises(CapabilityRefusal, match="INTENT_INCOMPLETE"):
+        incomplete.require_actionable()
+
+
+def test_natural_search_phrases_are_bounded_and_normalized():
+    discovery = OfflineDiscovery(load_fixture_catalog(CATALOG))
+    assert discovery.search(["A novel BOOK record", "Publication details"])[0].catalog_id == "books"
+    with pytest.raises(CapabilityRefusal, match="SEARCH_QUERY_INVALID"):
+        discovery.search(["? "])
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content,code", [
-    ("```json\n{}\n```", "INTENT_SCHEMA_INVALID"),
-    ('{"outcome":"x","outcome":"y"}', "INTENT_SCHEMA_INVALID"),
+    ("```json\n{}\n```", "INTENT_INVALID_JSON"),
+    ('{"outcome":"x","outcome":"y"}', "INTENT_DUPLICATE_KEY"),
+    ('{"outcome":"x"}', "INTENT_MISSING_FIELD"),
+    ('{"abstain":"false"}', "INTENT_WRONG_TYPE"),
+    ('{"abstain":false,"search_queries":["x"]}', "INTENT_CONSTRAINT_INVALID"),
+    ('{"abstain":true,"grant":true}', "INTENT_EXTRA_FIELD"),
     ("", "MODEL_RESPONSE_INCOMPLETE"),
 ])
 async def test_model_intent_fails_closed_without_private_output(content, code):
@@ -183,6 +223,17 @@ async def test_model_intent_fails_closed_without_private_output(content, code):
             return SimpleNamespace(done=True, done_reason="stop",
                                    message=SimpleNamespace(content=content, tool_calls=[]))
     with pytest.raises(CapabilityRefusal, match=code):
+        await OllamaIntentSource(FakeClient(), "fixture-model").interpret(BOOK_MISSION, ())
+
+
+@pytest.mark.asyncio
+async def test_forbidden_tool_event_is_not_mislabeled_as_json_failure():
+    class FakeClient:
+        async def chat(self, *args, **kwargs):
+            return SimpleNamespace(done=True, done_reason="stop",
+                                   message=SimpleNamespace(content=intent().model_dump_json(),
+                                                           tool_calls=[{"name": "shell"}]))
+    with pytest.raises(CapabilityRefusal, match="FORBIDDEN_TOOL_ACTIVITY"):
         await OllamaIntentSource(FakeClient(), "fixture-model").interpret(BOOK_MISSION, ())
 
 

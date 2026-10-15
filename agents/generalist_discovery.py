@@ -22,46 +22,58 @@ from agents.generalist_capability import CapabilityRefusal
 from agents.generalist_generic_read import extract_openapi_read
 from agents.generalist_mission_engine import MissionRecord, MissionState, _now
 from agents.generalist_mission_planner import (
-    DocumentationCatalog, MissionRequirements, _proposal_pairs,
+    DocumentationCatalog, DuplicateProposalKeyError, MissionRequirements, _proposal_pairs,
 )
 from agents.generalist_mission_store import ProjectMissionStore
 from agents.generalist_orchestrator import DeclarativeHttpReadDriver, GeneralistMissionOrchestrator
 
 
-_TERM = re.compile(r"[a-z][a-z0-9_]{2,31}\Z")
 _WORDS = re.compile(r"[a-z][a-z0-9_]{2,31}")
 MAX_RESULTS = 3
 MAX_DOCUMENT_BYTES = 49152
-Term = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{2,31}$")]
-Criterion = Annotated[str, Field(min_length=8, max_length=160)]
+SafeText = Annotated[str, Field(min_length=2, max_length=160,
+                                pattern=r"^[^\x00-\x1f\x7f]*$")]
+SearchPhrase = Annotated[str, Field(min_length=2, max_length=64,
+                                    pattern=r"^[^\x00-\x1f\x7f]*$")]
 
 
 class DiscoveryIntent(BaseModel):
-    """Untrusted bounded mission interpretation; never an approval."""
+    """Untrusted semantic intent, with no API fields or authority claims."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    outcome: str = Field(min_length=8, max_length=160)
-    shape: Literal["detail", "collection"]
-    required_fields: list[Term] = Field(min_length=1, max_length=6)
-    search_terms: list[Term] = Field(min_length=1, max_length=4)
-    missing_capabilities: list[Term] = Field(min_length=1, max_length=4)
-    completion_criteria: list[Criterion] = Field(min_length=1, max_length=4)
-    uncertainty: str = Field(min_length=1, max_length=160)
+    outcome: str = Field(default="", max_length=160, pattern=r"^[^\x00-\x1f\x7f]*$")
+    information_need: str = Field(default="", max_length=160,
+                                  pattern=r"^[^\x00-\x1f\x7f]*$")
+    shape: Literal["detail", "collection", "unknown"] = "unknown"
+    search_queries: list[SearchPhrase] = Field(default_factory=list, max_length=4)
+    missing_capabilities: list[SafeText] = Field(default_factory=list, max_length=4)
+    completion_criteria: list[SafeText] = Field(default_factory=list, max_length=4)
+    uncertainty: str = Field(default="", max_length=160,
+                             pattern=r"^[^\x00-\x1f\x7f]*$")
     abstain: bool
 
-    @classmethod
-    def validate_terms(cls, intent: DiscoveryIntent) -> DiscoveryIntent:
-        """Bound identifiers and reject control/instruction payloads in claims."""
-        if type(intent) is not DiscoveryIntent:
-            raise CapabilityRefusal("INTENT_SCHEMA_INVALID")
-        for term in intent.required_fields + intent.search_terms + intent.missing_capabilities:
-            if type(term) is not str or _TERM.fullmatch(term) is None:
-                raise CapabilityRefusal("INTENT_SCHEMA_INVALID")
-        for claim in [intent.outcome, intent.uncertainty, *intent.completion_criteria]:
-            if (type(claim) is not str or not 8 <= len(claim) <= 160
-                    or any(ord(c) < 32 or ord(c) == 127 for c in claim)):
-                raise CapabilityRefusal("INTENT_SCHEMA_INVALID")
-        return intent
+    def require_actionable(self) -> None:
+        """Classify semantic incompleteness separately from schema validity."""
+        if self.abstain:
+            raise CapabilityRefusal("INTENT_ABSTAINED")
+        if (not self.outcome.strip() or not self.information_need.strip()
+                or not self.search_queries or not self.missing_capabilities
+                or not self.completion_criteria):
+            raise CapabilityRefusal("INTENT_INCOMPLETE")
+
+
+def require_compatible_intent(intent: DiscoveryIntent,
+                              requirements: MissionRequirements) -> None:
+    """Check actionability without treating semantic claims as trusted schema."""
+    if type(intent) is not DiscoveryIntent:
+        raise CapabilityRefusal("INTENT_SCHEMA_INVALID")
+    try:
+        DiscoveryIntent.model_validate(intent.model_dump())
+    except ValidationError:
+        raise CapabilityRefusal("INTENT_SCHEMA_INVALID") from None
+    intent.require_actionable()
+    if intent.shape != "unknown" and intent.shape != requirements.shape:
+        raise CapabilityRefusal("INTENT_ORACLE_MISMATCH")
 
 
 class IntentSource(Protocol):
@@ -144,10 +156,14 @@ class OllamaIntentSource:
         from core.llm_client import ChatMessage
         if not 8 <= len(mission) <= 240 or len(inventory) > 64:
             raise CapabilityRefusal("MISSION_INVALID")
-        prompt = ("Propose an information need for the mission as one JSON object under "
-                  "the supplied schema. Use short lowercase search_terms and required_fields. "
-                  "Set abstain true if the mission is ambiguous or unsupported. "
-                  "Inventory names are not grants. Do not claim completion or authority.")
+        prompt = ("Describe the user's desired outcome and information need as one JSON "
+                  "object under the supplied schema. Search queries and missing capabilities "
+                  "are short natural-language phrases, not API field names or operation IDs. "
+                  "For a non-abstaining answer, fill outcome, information_need, "
+                  "search_queries, missing_capabilities, and completion_criteria. "
+                  "Set abstain true for ambiguity or unsupported requests; then empty lists "
+                  "and empty descriptions are valid. Inventory names are not grants. "
+                  "Do not claim completion or authority.")
         try:
             response = await asyncio.wait_for(self.client.chat(
                 [ChatMessage(role="system", content=prompt),
@@ -168,11 +184,30 @@ class OllamaIntentSource:
                     or type(content) is not str or not 1 <= len(content.encode()) <= 2048):
                 raise CapabilityRefusal("MODEL_RESPONSE_INCOMPLETE")
             value = json.loads(content, object_pairs_hook=_proposal_pairs)
-            return DiscoveryIntent.validate_terms(DiscoveryIntent.model_validate(value))
         except CapabilityRefusal:
             raise
-        except (AttributeError, UnicodeError, ValueError, TypeError, ValidationError):
-            raise CapabilityRefusal("INTENT_SCHEMA_INVALID") from None
+        except DuplicateProposalKeyError:
+            raise CapabilityRefusal("INTENT_DUPLICATE_KEY") from None
+        except json.JSONDecodeError:
+            raise CapabilityRefusal("INTENT_INVALID_JSON") from None
+        except (AttributeError, UnicodeError, ValueError, TypeError):
+            raise CapabilityRefusal("INTENT_INVALID_JSON") from None
+        try:
+            return DiscoveryIntent.model_validate(value)
+        except ValidationError as exc:
+            kinds = {item["type"] for item in exc.errors()}
+            if "missing" in kinds:
+                code = "INTENT_MISSING_FIELD"
+            elif kinds & {"string_type", "list_type", "literal_error", "bool_type"}:
+                code = "INTENT_WRONG_TYPE"
+            elif "extra_forbidden" in kinds:
+                code = "INTENT_EXTRA_FIELD"
+            elif kinds & {"string_too_short", "string_too_long", "too_long",
+                           "string_pattern_mismatch"}:
+                code = "INTENT_CONSTRAINT_INVALID"
+            else:
+                code = "INTENT_SCHEMA_INVALID"
+            raise CapabilityRefusal(code) from None
 
 
 @dataclass(frozen=True)
@@ -189,12 +224,15 @@ class OfflineDiscovery:
     def __init__(self, catalog: DocumentationCatalog) -> None:
         self.catalog = catalog
 
-    def search(self, terms: list[str]) -> tuple[SearchHit, ...]:
-        """Return at most three metadata hits; no full document is read."""
-        if (not 1 <= len(terms) <= 4 or any(type(t) is not str or _TERM.fullmatch(t) is None
-                                            for t in terms)):
+    def search(self, phrases: list[str]) -> tuple[SearchHit, ...]:
+        """Normalize bounded natural phrases and return at most three index hits."""
+        if (not 1 <= len(phrases) <= 4 or any(type(t) is not str or
+                not 2 <= len(t) <= 64 or any(ord(c) < 32 or ord(c) == 127 for c in t)
+                for t in phrases)):
             raise CapabilityRefusal("SEARCH_QUERY_INVALID")
-        query = set(terms)
+        query = set(word for phrase in phrases for word in _WORDS.findall(phrase.lower()))
+        if not 1 <= len(query) <= 12:
+            raise CapabilityRefusal("SEARCH_QUERY_INVALID")
         hits = []
         for entry in self.catalog.entries:
             indexed = set(_WORDS.findall(entry.description.lower())) | set(entry.terms)
@@ -289,14 +327,9 @@ class DiscoveryMissionPlanner:
                 mission, revision = await self._load(mission_id)
                 inventory = await self.store.list_capability_identities()
                 names = tuple(sorted({capability_id for capability_id, _, _ in inventory}))
-                intent = DiscoveryIntent.validate_terms(
-                    await self.intent_source.interpret(mission.objective, names))
-                if intent.abstain:
-                    raise CapabilityRefusal("INTENT_ABSTAINED")
-                if (intent.shape != self.requirements.shape or
-                    not set(self.requirements.required_result_fields).issubset(intent.required_fields)):
-                    raise CapabilityRefusal("INTENT_ORACLE_MISMATCH")
-                hits = self.discovery.search(intent.search_terms)
+                intent = await self.intent_source.interpret(mission.objective, names)
+                require_compatible_intent(intent, self.requirements)
+                hits = self.discovery.search(intent.search_queries)
                 if not hits:
                     raise CapabilityRefusal("DOCUMENTATION_NOT_FOUND")
                 mission.state_history.extend(["PLAN_CREATED", "CAPABILITY_INVENTORY_CHECKED",
@@ -305,10 +338,9 @@ class DiscoveryMissionPlanner:
                                            "candidate_ids": json.dumps([h.catalog_id for h in hits]),
                                            "lexical_top_id": hits[0].catalog_id,
                                            "intent_shape": intent.shape,
-                                           "intent_fields": json.dumps(intent.required_fields),
-                                           "planning_outcome": intent.outcome,
-                                           "planning_uncertainty": intent.uncertainty,
-                                           "completion_criteria": " | ".join(intent.completion_criteria),
+                                           "intent_uncertain": bool(intent.uncertainty.strip()),
+                                           "criteria_count": len(intent.completion_criteria),
+                                           "missing_capability_count": len(intent.missing_capabilities),
                                            "inventory_count": len(inventory)})
             elif phase in {"searched", "choosing", "chosen"}:
                 ids = json.loads(str(mission.checkpoint["candidate_ids"]))

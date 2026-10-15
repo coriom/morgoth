@@ -15,6 +15,7 @@ from loguru import logger
 from agents.generalist_capability import CapabilityRefusal
 from agents.generalist_discovery import (
     OfflineDiscovery, OllamaDocumentChoiceSource, OllamaIntentSource, SearchHit,
+    require_compatible_intent,
 )
 from agents.generalist_generic_read import extract_openapi_read, validate_response
 from agents.generalist_mission_planner import MissionRequirements, load_fixture_catalog
@@ -23,9 +24,9 @@ from core.llm_client import OllamaLLMClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "morgoth-generalist-autonomous-learning-v1"
+BRANCH = "morgoth-generalist-robust-intent-v1"
 CORPUS = ROOT / "tests" / "fixtures" / "generalist_v8_heldout_catalog.json"
-MISSION = "Find a novel's public catalog title and other available details"
+MISSION = "Locate a publicly listed novel and summarize its name and known bibliographic attributes"
 REQUIREMENTS = MissionRequirements(MISSION, "detail", ("title",))
 
 
@@ -47,9 +48,12 @@ async def _evaluate() -> dict[str, object]:
     """Run at most two local planning calls with offline reviewed evidence."""
     report: dict[str, object] = {
         "VERDICT": "MODEL_DISCOVERY_BLOCKED", "INTENT_PROPOSED": False,
+        "INTENT_READY": False, "INTENT_ABSTAINED": False,
+        "SEARCH_HITS_FOUND": False, "DOCUMENT_RETRIEVED": False,
         "DOCUMENT_DISCOVERED": False, "SOURCE_GROUNDED": False,
         "DOCUMENT_CHOICE_PROPOSED": False,
-        "CONTRACT_VALIDATED": False, "ISOLATED_TEST_PASSED": False,
+        "CONTRACT_EXTRACTED": False, "CONTRACT_VALIDATED": False,
+        "ISOLATED_TEST_PASSED": False,
         "APPROVAL_PENDING": False, "LEXICAL_TOP_MATCHES_SELECTED": False,
         "AUTHORIZATION_GRANTED": False, "EXECUTED_CAPABILITY": False,
         "MODEL_CALL_COUNT": 0, "PRODUCTION_QUALIFIED": False,
@@ -85,16 +89,14 @@ async def _evaluate() -> dict[str, object]:
         try:
             intent = await OllamaIntentSource(client, requested).interpret(MISSION, ())
             report["INTENT_PROPOSED"] = True
-            if intent.abstain:
-                raise CapabilityRefusal("INTENT_ABSTAINED")
-            if (intent.shape != REQUIREMENTS.shape or
-                not set(REQUIREMENTS.required_result_fields).issubset(intent.required_fields)):
-                raise CapabilityRefusal("INTENT_ORACLE_MISMATCH")
+            report["INTENT_ABSTAINED"] = intent.abstain
+            require_compatible_intent(intent, REQUIREMENTS)
+            report["INTENT_READY"] = True
             discovery = OfflineDiscovery(catalog)
-            hits = discovery.search(intent.search_terms)
+            hits = discovery.search(intent.search_queries)
             if not hits:
                 raise CapabilityRefusal("DOCUMENTATION_NOT_FOUND")
-            report["DOCUMENT_DISCOVERED"] = True
+            report["SEARCH_HITS_FOUND"] = True
             report["MODEL_CALL_COUNT"] = 2
             choice = await OllamaDocumentChoiceSource(client, requested).choose(
                 MISSION, discovery.metadata(hits))
@@ -104,9 +106,12 @@ async def _evaluate() -> dict[str, object]:
             if choice.catalog_id not in {hit.catalog_id for hit in hits}:
                 raise CapabilityRefusal("DOCUMENT_CHOICE_INVALID")
             documents = discovery.retrieve((SearchHit(choice.catalog_id, 1),))
+            report["DOCUMENT_RETRIEVED"] = True
+            report["DOCUMENT_DISCOVERED"] = True
             compatible = []
             for selected in documents:
                 contract = extract_openapi_read(selected.document)
+                report["CONTRACT_EXTRACTED"] = True
                 try:
                     REQUIREMENTS.check(MISSION, contract)
                 except CapabilityRefusal:
@@ -126,7 +131,10 @@ async def _evaluate() -> dict[str, object]:
             report["FAILURE_CLASS"] = "NONE"
         except CapabilityRefusal as exc:
             allowed = {"MODEL_TIMEOUT", "MODEL_UNAVAILABLE", "MODEL_RESPONSE_INCOMPLETE",
-                       "INTENT_SCHEMA_INVALID", "FORBIDDEN_TOOL_ACTIVITY", "INTENT_ABSTAINED",
+                       "INTENT_INVALID_JSON", "INTENT_DUPLICATE_KEY", "INTENT_MISSING_FIELD",
+                       "INTENT_WRONG_TYPE", "INTENT_CONSTRAINT_INVALID", "INTENT_EXTRA_FIELD",
+                       "INTENT_SCHEMA_INVALID", "INTENT_INCOMPLETE",
+                       "FORBIDDEN_TOOL_ACTIVITY", "INTENT_ABSTAINED",
                        "INTENT_ORACLE_MISMATCH", "DOCUMENTATION_NOT_FOUND",
                        "DOCUMENTATION_AMBIGUOUS", "DOCUMENTATION_INCOMPATIBLE",
                        "DOCUMENT_CHOICE_ABSTAINED", "DOCUMENT_CHOICE_INVALID",
@@ -147,7 +155,9 @@ def main() -> int:
         return 2
     try:
         result = asyncio.run(_evaluate())
-    except (OSError, ValueError, TypeError, httpx.HTTPError):
+    except Exception:
+        # Unexpected private transport or fixture errors remain local and
+        # cannot spill a model response or document through a traceback.
         result = {"VERDICT": "EVALUATION_BLOCKED", "PRODUCTION_QUALIFIED": False}
     print(json.dumps(result, sort_keys=True))
     return 0 if result["VERDICT"] == "MODEL_DISCOVERY_VALIDATED_PENDING_APPROVAL" else 2

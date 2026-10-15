@@ -757,3 +757,45 @@ must not treat retrieved page instructions as authority. The V8 intent and
 retrieval boundary can be reused, while its HTTP GET contract parser and
 executor cannot validate browser actions. `SAFE_FOR_WORKLOADS=False`, human
 Gate 3 and all existing provider restrictions remain unchanged.
+
+## V8.1 semantic intent repair (2026-10-15)
+
+The operator's first V8 local Ollama attempt made one intent request and
+returned `INTENT_SCHEMA_INVALID`; its private response was discarded. Its
+specific defect is unknown. Source review found a separate, reproducible
+contract defect: `uncertainty` permitted one character in Pydantic but the
+secondary validator required eight. Abstention also required invented search
+and API-field claims. Neither finding proves the historical response contained
+that defect.
+
+`DiscoveryIntent` now describes the desired outcome, information need,
+conceptual result shape, short natural-language search phrases, missing ability,
+completion criteria and uncertainty. Only `abstain` is structurally required;
+`{"abstain":true}` is a valid abstention. A non-abstaining but empty object is
+schema-valid and separately blocked as `INTENT_INCOMPLETE`. There is no second
+length or identifier validator contradicting the generated Ollama JSON Schema.
+Technical result-field names come solely from the independently supplied
+`MissionRequirements` and the retrieved, digest-checked OpenAPI-subset contract.
+The model never supplies an operation ID, destination permission or grant.
+
+The intent parser distinguishes syntax, duplicate-key, missing-field,
+wrong-type, constraint, extra-field, incomplete-content, timeout and service
+failures with fixed codes. No private response or raw exception is emitted.
+Checkpoints store fixed statuses, trusted catalog identities and bounded
+counts/Booleans, rather than the model's outcome, search text, criteria or
+uncertainty prose. Search deterministically tokenizes at most four bounded
+phrases, returns at most three index hits and does not treat rank as authority.
+The optional second Ollama call sees only those short hit summaries; source
+hashes, exact destination binding, independent contract compatibility and
+isolated validation still decide whether a capability can remain pending.
+
+The V8.1 fixture tests cover a differently worded bibliographic goal, a
+collection result, a misleading lexical-top decoy, ambiguity and valid
+abstention. They use programmed intent/choice responses; they are not proof of
+real model understanding. The foreground-consented operator probe now reports
+separate intent, search-hit, retrieval, extraction, validation and approval
+stages. Its mission contains no document or operation identifier, it allows
+at most two local tool-free model calls, and it never executes a capability or
+third-party request. The corpus remains operator-reviewed and offline; prose
+to executable contract, unrestricted web discovery and production approval
+are still unsupported. `SAFE_FOR_WORKLOADS=False` remains unchanged.

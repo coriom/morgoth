@@ -57,10 +57,27 @@ async def test_misleading_lexical_top_loses_to_independently_compatible_document
 
 
 @pytest.mark.asyncio
+async def test_paraphrased_bibliographic_goal_needs_no_api_field_guess():
+    mission = "Locate a publicly listed novel and summarize its name and known bibliographic attributes"
+    store = MemoryStore()
+    source = FixtureIntent(intent(shape="unknown", terms=("book publication", "bibliographic")))
+    choice = FixtureChoice("books")
+    planner = engine(store, source, mission, "detail", ("title",), choice)
+    received = await planner.receive(mission)
+    searched = await planner.advance(received.mission_id, now_tick=1)
+    assert searched.checkpoint["intent_shape"] == "unknown"
+    for _ in range(3):
+        result = await planner.advance(received.mission_id, now_tick=1)
+    assert result.state is MissionState.PENDING
+    assert result.checkpoint["catalog_id"] == "books"
+    assert source.calls == choice.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_unseen_collection_operation_uses_same_engine_and_stays_pending():
     mission = "Summarize public measurements from a water storage site"
     store = MemoryStore()
-    source = FixtureIntent(intent(shape="collection", fields=("level",),
+    source = FixtureIntent(intent(shape="collection",
                                   terms=("water", "reservoir")))
     first, second, final = await finish(engine(store, source, mission, "collection",
                                                 ("level",)), mission)
@@ -75,7 +92,7 @@ async def test_unseen_collection_operation_uses_same_engine_and_stays_pending():
 async def test_ambiguous_documentation_abstains_without_capability():
     mission = "Report the current status of an unfamiliar public service"
     store = MemoryStore()
-    source = FixtureIntent(intent(fields=("status",), terms=("service",)))
+    source = FixtureIntent(intent(terms=("service",)))
     first, second, final = await finish(engine(store, source, mission, "detail", ("status",)),
                                        mission)
     assert first.checkpoint["lexical_top_id"] == "delivery"
@@ -122,7 +139,7 @@ async def test_revoked_capability_blocks_later_discovery_reuse():
 async def test_stale_contract_does_not_reach_isolated_validation():
     mission = "Summarize public measurements from a water storage site"
     store = MemoryStore()
-    source = FixtureIntent(intent(shape="collection", fields=("level",),
+    source = FixtureIntent(intent(shape="collection",
                                   terms=("water", "reservoir")))
     planner = engine(store, source, mission, "collection", ("level",))
     received = await planner.receive(mission)

@@ -20,6 +20,33 @@ confinement and final text/event canaries pass. No production state was used.
 
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-15 — V8.1 robust intent and offline discovery candidate
+
+- Operator-reported V8 intent request returned `INTENT_SCHEMA_INVALID` after
+  one local model call. Its private response was discarded; no exact cause is
+  claimed. Source-confirmed contract inconsistencies were repaired separately.
+- `DiscoveryIntent` now accepts minimal abstention, describes natural-language
+  information needs and search phrases, and does not require guessed API field
+  identifiers. Pydantic's generated schema and runtime constraints agree.
+  Non-abstaining incomplete proposals, syntax errors, duplicate keys, missing
+  fields, wrong types and invalid constraints have distinct fixed codes.
+- Project checkpoints retain only bounded derived metadata from model output.
+  The existing reviewed corpus, hash checks, generic contract extraction,
+  isolated mock validation and pending-human-approval boundary remain in place.
+  The operator-only probe targets this feature branch, preserves `PLAN ONCE`
+  consent and makes no more than two local inference requests. No live model
+  request or external API request occurred during development.
+- Fixture acceptance includes a paraphrased bibliographic mission, an
+  unfamiliar collection operation, misleading lexical metadata, ambiguous
+  documentation, abstention, malformed model output and authorization refusal.
+  This is not genuine semantic-model evidence or unrestricted web discovery.
+  Focused no-inference planning, probe, PTY and discovery tests: 108 passed.
+  Two actual disposable
+  `morgoth_test` PostgreSQL tests passed after the checkpoint change; the
+  temporary Unix-socket-only cluster was stopped and removed.
+  `SAFE_FOR_WORKLOADS=False`; protected files, Desktop and Human Gate 3 remain
+  unchanged. No dependency added.
+
 ## 2026-10-13 — Restricted Codex text qualification prepared, no inference
 
 - Audited pinned 0.162.1 model metadata precedence and CodeMode/CodeModeOnly

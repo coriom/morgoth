@@ -52,6 +52,32 @@ async def test_declined_consent_uses_zero_model_calls(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_valid_abstention_uses_only_first_model_call(monkeypatch):
+    client = FakeClient('{"abstain":true}')
+    install(monkeypatch, client)
+    monkeypatch.setattr(probe, "_foreground_consent", lambda: True)
+    result = await probe._evaluate()
+    assert result["FAILURE_CLASS"] == "INTENT_ABSTAINED"
+    assert result["INTENT_ABSTAINED"] is True
+    assert result["INTENT_PROPOSED"] is True
+    assert result["MODEL_CALL_COUNT"] == client.calls == 1
+    assert result["EXECUTED_CAPABILITY"] is False
+
+
+@pytest.mark.asyncio
+async def test_private_invalid_response_reports_fixed_syntax_code(monkeypatch):
+    private = "TOP_SECRET_DO_NOT_PERSIST"
+    client = FakeClient(private)
+    install(monkeypatch, client)
+    monkeypatch.setattr(probe, "_foreground_consent", lambda: True)
+    result = await probe._evaluate()
+    assert result["FAILURE_CLASS"] == "INTENT_INVALID_JSON"
+    assert result["MODEL_CALL_COUNT"] == client.calls == 1
+    assert private not in json.dumps(result)
+    assert result["PRODUCTION_QUALIFIED"] is False
+
+
+@pytest.mark.asyncio
 async def test_one_model_intent_discovers_nonlexical_top_without_authority(monkeypatch):
     client = FakeClient(intent(terms=("book", "bibliographic", "catalog")).model_dump_json(),
                         json.dumps({"catalog_id": "books", "abstain": False,
@@ -65,6 +91,10 @@ async def test_one_model_intent_discovers_nonlexical_top_without_authority(monke
                                                 "ISOLATED_TEST_PASSED", "APPROVAL_PENDING"))
     assert result["LEXICAL_TOP_MATCHES_SELECTED"] is False
     assert result["DOCUMENT_CHOICE_PROPOSED"] is True
+    assert result["INTENT_READY"] is True
+    assert result["SEARCH_HITS_FOUND"] is True
+    assert result["DOCUMENT_RETRIEVED"] is True
+    assert result["CONTRACT_EXTRACTED"] is True
     assert result["MODEL_CALL_COUNT"] == client.calls == 2
     assert result["AUTHORIZATION_GRANTED"] is False
     assert result["EXECUTED_CAPABILITY"] is False
@@ -79,3 +109,15 @@ def test_unverified_checkout_blocks_before_evaluation(monkeypatch, capsys):
     assert probe.main() == 2
     result = json.loads(capsys.readouterr().out)
     assert result == {"VERDICT": "CHECKOUT_REJECTED", "PRODUCTION_QUALIFIED": False}
+
+
+def test_unexpected_private_error_is_sanitized(monkeypatch, capsys):
+    async def fail():
+        raise RuntimeError("TOP_SECRET_DO_NOT_PERSIST")
+    monkeypatch.setattr(probe, "_checkout_verified", lambda: True)
+    monkeypatch.setattr(probe.sys, "argv", ["probe"])
+    monkeypatch.setattr(probe, "_evaluate", fail)
+    assert probe.main() == 2
+    captured = capsys.readouterr()
+    assert "TOP_SECRET_DO_NOT_PERSIST" not in captured.out + captured.err
+    assert json.loads(captured.out)["VERDICT"] == "EVALUATION_BLOCKED"
