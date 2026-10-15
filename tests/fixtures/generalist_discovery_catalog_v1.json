@@ -1,0 +1,63 @@
+[
+  {
+    "catalog_id": "books",
+    "description": "Public bibliographic work title and publication metadata",
+    "terms": [
+      "book",
+      "bibliographic",
+      "work",
+      "title",
+      "metadata",
+      "publication"
+    ],
+    "source_identity": "https://openlibrary.org/dev/docs/api/books",
+    "snapshot_file": "generalist_openlibrary_works_snapshot_v1.txt",
+    "snapshot_sha256": "9ac7c0154e4cab140953842add00efebaedd8df61369da5622318b3804654b72",
+    "contract_file": "generalist_openlibrary_work_subset_v1.json",
+    "contract_sha256": "b16ba1247c26ea715f4c766c472daa352d3c488fdff927d8cff1e31bf58b2b64",
+    "inputs": {
+      "work_id": "OL45804W"
+    },
+    "isolated_sample": {
+      "title": "Synthetic work",
+      "key": "/works/OL45804W"
+    },
+    "reviewed_request": {
+      "host": "openlibrary.org",
+      "endpoint": "/works/OL45804W.json",
+      "operation": "get_work",
+      "scope": "open_library.read",
+      "query": {}
+    }
+  },
+  {
+    "catalog_id": "transit",
+    "description": "Fixture transit route name and service status",
+    "terms": [
+      "transit",
+      "route",
+      "service",
+      "status",
+      "arrival"
+    ],
+    "source_identity": "fixture:transit:v1",
+    "snapshot_file": "generalist_transit_snapshot_v1.txt",
+    "snapshot_sha256": "edb5ec789a7c93e94363d14729650c73496b8e6a87e37e4834c7dbf24c14d352",
+    "contract_file": "generalist_transit_route_v1.json",
+    "contract_sha256": "e9d758bfeaec9172dc14a7d87ef5714d42aac4b80b2a8d2999c6cad8b9220aa8",
+    "inputs": {
+      "route_id": "R7"
+    },
+    "isolated_sample": {
+      "route_name": "Synthetic R7",
+      "status": "on_time"
+    },
+    "reviewed_request": {
+      "host": "transit.example.org",
+      "endpoint": "/routes/R7",
+      "operation": "get_route",
+      "scope": "transit.read",
+      "query": {}
+    }
+  }
+]

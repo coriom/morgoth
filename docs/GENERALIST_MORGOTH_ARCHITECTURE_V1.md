@@ -515,3 +515,83 @@ The final operator command's Git remote check uses no stdin and disables Git
 terminal prompts while retaining existing SSH configuration. That small
 follow-up has focused negative tests and was not included in the
 canonical-tested code SHA.
+
+## V7: opt-in mission-driven documentation selection (2026-10-15)
+
+The operator reported a V6 Open Library result of
+`LIVE_PUBLIC_READ_CONFIRMED`: one generic public GET, a schema-valid result,
+verified documentation digest and fresh-process receipt recovery; response
+SHA-256 `1f8295bba7533eb01dc40ba7564c255b54fa68fa6cfa1b65ec8fd1b0d671a6`.
+That result was **not reproduced in V7**. The operator's consent was for that
+one GET, not blanket destination approval.
+
+`agents/generalist_mission_planner.py` is a narrow, opt-in planning adapter
+over the existing Project mission store and orchestrator. It accepts a bounded
+natural-language objective, persists `MISSION_RECEIVED`, chooses a unique
+relevant source from a reviewed local catalog, checks the offline snapshot and
+OpenAPI-subset candidate against independent content digests, and verifies
+that the selected operation and typed inputs match the separately reviewed
+request. The existing driver validates a mocked response and records the
+versioned capability as `PENDING_HUMAN_APPROVAL`. Checkpoints retain the
+catalog ID, source identity and digest, replay time, contract digest, bounded
+outcome/criteria/uncertainty, and the existing capability identity. Crash
+recovery reopens that checkpoint; a compatible validated capability is reused
+on a later mission. No catalog item, document, fixture planner or model
+proposal can mint an approval or turn an endpoint into an executable host.
+
+The fixture planner performs **lexical catalog matching** and mechanically
+extracts one supported GET from a pinned candidate. It is independently
+automated documentation-to-contract selection within a tiny supplied catalog,
+not general semantic understanding or autonomous web discovery. Two missions
+use the same code: public bibliographic metadata from an operator-reviewed
+Open Library snapshot and a held-out synthetic transit route/status document.
+The latter is fixture evidence, not a real service observation. Ambiguous or
+unsupported missions remain blocked with a fixed reason. The local
+`OllamaProposalSource` adapter is prepared but has **not** been run against a
+live model. Its JSON output is strict, bounded and independently checked
+against catalog relevance and operation identity. It receives only a synthetic
+mission and catalog summaries in the optional operator probe, no document
+body, tool schema, credentials or execution authority. A model-generated
+proposal would still require exact schema validation and permission review.
+
+`python -m agents.generalist_discovery_demo` demonstrates the complete
+fixture-only path in an owned disposable `morgoth_test` cluster: planning,
+offline validation, pending permission, explicitly simulated **test-only**
+approval, one mocked GET, durable receipt, fresh-interpreter recovery and
+capability reuse. It performs zero external network requests. The simulated
+grant is not an authenticated production operator grant. A real external GET
+still requires a separately reviewed destination policy, foreground local
+operator consent and the existing SQL broker. An atomic local receipt does not
+establish remote exactly-once behavior. The generalist planner is not
+registered with Brain, Scheduler, ToolRouter or autonomous START.
+
+The optional single-call `agents.generalist_ollama_plan_probe` requires a
+foreground local terminal and typed consent. It uses a synthetic mission,
+loopback Ollama, no tools, a 20-second client bound, fixed proposal metadata
+only, and no external service request. Its output can demonstrate one actual
+model-generated *candidate*; it does not approve execution or complete a
+mission. The existing Ollama client logs request payloads at DEBUG, so this
+dedicated probe removes its process-local Loguru sink before invoking it.
+No live Ollama call was made in this development milestone.
+
+Offline snapshots are replayed; the stored replay timestamp is **not** an
+original retrieval timestamp. Online documentation retrieval, independent
+semantic extraction from prose, production-grade human approval, browser/file/
+CLI/desktop modalities, natural-language completion verification and durable
+multi-step planning remain future work. The host and endpoint review in this
+fixture is data-only and not a network permission. The protected identity,
+specification and human Gate 3 stay unchanged. `SAFE_FOR_WORKLOADS=False`.
+
+The three nonfatal `self_modify_proposals` warnings observed while initializing
+a brand-new disposable Project arise because `memory/persistent.py` attempts
+three optional ALTERs before its later CREATE. That engine is protected in this
+phase; no migration or production schema was changed. A separate reviewed
+small migration-order correction would be appropriate if those warnings need
+removal. They did not invalidate the disposable SQL result.
+
+V7 verification: 167 no-network generalist tests passed (23 integration tests
+deselected), and 23 selected tests passed against one owned disposable
+`morgoth_test` PostgreSQL cluster (3 nonintegration tests deselected). The
+bounded offline demo passed with one mock request, zero network requests,
+pending-state and receipt recovery in distinct interpreters, and later reuse.
+The canonical source-verification result is recorded in the V7 progress entry.

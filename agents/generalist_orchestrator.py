@@ -294,8 +294,16 @@ class GeneralistMissionOrchestrator:
                                           "CAPABILITY_PROPOSAL", "ISOLATED_VALIDATION",
                                           MissionState.PENDING.value])
             mission.completed_steps.extend(["assess_capability", "validate_isolated"])
-        mission.checkpoint = {"capability_id": desc.capability_id, "version": desc.version,
-                              "digest": desc.digest, "valid_until_tick": desc.valid_until_tick}
+        # Retain only reviewed planner provenance across the assessment step.
+        # Arbitrary caller-supplied checkpoint keys must not flow into the
+        # execution/approval checkpoint.
+        planning_keys = {"catalog_id", "source_identity", "source_digest",
+                         "source_replayed_at", "contract_digest", "planning_outcome",
+                         "planning_uncertainty", "completion_criteria"}
+        mission.checkpoint = {key: value for key, value in mission.checkpoint.items()
+                              if key in planning_keys}
+        mission.checkpoint.update({"capability_id": desc.capability_id, "version": desc.version,
+                                   "digest": desc.digest, "valid_until_tick": desc.valid_until_tick})
         mission.updated_at = _now()
         if not await self.store.save_mission(mission_id, revision, mission.state.value,
                                              mission.model_dump_json()):

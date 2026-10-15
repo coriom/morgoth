@@ -1,0 +1,63 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Fixture public transit route detail",
+    "version": "1.0"
+  },
+  "x-morgoth": {
+    "documentation_identity": "fixture:transit:v1",
+    "service_id": "transit_fixture",
+    "capability_id": "transit_route_read",
+    "scope": "transit.read",
+    "valid_until_tick": 100
+  },
+  "servers": [
+    {
+      "url": "https://transit.example.org"
+    }
+  ],
+  "paths": {
+    "/routes/{route_id}": {
+      "get": {
+        "operationId": "get_route",
+        "parameters": [
+          {
+            "name": "route_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "route_name",
+                    "status"
+                  ],
+                  "properties": {
+                    "route_name": {
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "status": {
+                      "type": "string",
+                      "maxLength": 30
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

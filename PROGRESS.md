@@ -1386,3 +1386,33 @@ Log files:
   A subsequent small Git preflight hardening uses no stdin, disables Git
   terminal prompts and retains the operator's existing SSH configuration;
   it has focused negative tests and was not separately canonical-tested.
+
+## 2026-10-15 — V7 opt-in mission capability planner
+
+- Added an opt-in, catalog-bounded planner in the evolvable `agents/` zone.
+  Natural-language mission input becomes an explicit Project checkpoint,
+  deterministic source relevance check, digest-bound offline documentation,
+  one validated GET candidate and an isolated sample validation. Unsupported
+  or ambiguous missions persist a fixed blocked reason; no execution grant is
+  inferred from documentation or a model.
+- Reused the existing Project mission store, versioned capability inventory,
+  generic read driver and disposable approval broker. Preserved planning
+  checkpoint evidence when the orchestrator records capability identity.
+  Added a fixture-only transit route service as a held-out second shape; no
+  service-specific runtime driver was added.
+- Prepared a bounded opt-in Ollama JSON proposal adapter and a one-call
+  foreground-consent probe. Neither was run live. This branch demonstrates
+  deterministic catalog/contract learning, not actual model semantic planning.
+- An owned disposable `morgoth_test` demo completed the fixture workflow:
+  one mocked GET, zero external network requests, test-only simulated
+  authorization, fresh-interpreter receipt recovery and compatible reuse.
+  Initial run inside the development sandbox could not start PostgreSQL;
+  the same command passed with approved local-process access. The disposable
+  setup emitted the inherited ALTER-before-CREATE warnings for
+  `self_modify_proposals`; protected `memory/persistent.py` was unchanged.
+- `SAFE_FOR_WORKLOADS=False`. No live model inference, external GET,
+  production Project, autonomous START, Desktop edit or protected-file change.
+- Focused generalist no-network selection: 167 passed, 23 integration
+  deselected. One owned disposable `morgoth_test` selection: 23 passed, 3
+  nonintegration deselected. The offline demo additionally verified
+  pending-state and receipt recovery in fresh interpreters.
