@@ -49,6 +49,16 @@ confinement and final text/event canaries pass. No production state was used.
   Bubblewrap; only the reviewed synthetic fixtures are supported.
 - `SAFE_FOR_WORKLOADS=False`; no real website/account, production database,
   service, START, protected file or Desktop change. No new dependency.
+- Final focused regression selection: 127 passed, exit 0, including real
+  rendered browser checks under escalated test permissions. One actual
+  disposable `morgoth_test` SQL test passed with a fresh-process receipt and
+  capability recovery proof. The temporary Unix-socket PostgreSQL cluster was
+  stopped and removed. One provenance-aware canonical run requested/tested
+  candidate `afa3c81adfb6df1e949aa4a9a3a9982a381ebe53` with matching
+  whole-tree manifest: 2,563 passed, 8 skipped, 0 failed/errors, exit 0,
+  29.4 seconds. The canonical sandbox did not mount the cached browser binary;
+  the actual-browser tests were verified separately rather than claimed from
+  those skips. No retry of the canonical suite was performed.
 
 ## 2026-10-15 — V8.1 robust intent and offline discovery candidate
 

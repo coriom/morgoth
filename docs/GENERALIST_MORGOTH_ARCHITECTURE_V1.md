@@ -59,6 +59,17 @@ browser-side side-effect idempotency, account identity, upload/download policy
 for external sites, or authority to act on external software. The V9 modality
 must remain restricted to these reviewed synthetic fixtures.
 
+V9 verification: 127 focused tests passed; one actual disposable PostgreSQL
+test passed, including fresh-process recovery. The separate actual-browser
+selection used a cached Chromium binary under the new namespace and passed.
+The provenance-aware canonical suite tested clean source
+`afa3c81adfb6df1e949aa4a9a3a9982a381ebe53` with identical source and
+sandbox tree manifests: 2,563 passed, 8 skipped, no failures or errors, exit 0.
+The canonical sandbox did not mount the cached browser binary, so that run's
+browser skips are not counted as real-browser proof. Historical intermittent
+canonical instability remains a separate unresolved concern; one V9 green run
+does not establish repeated reliability.
+
 Morgoth's target is a persistent agent that can finish unfamiliar missions by
 identifying capability gaps, learning a constrained interface, validating an
 implementation, requesting the necessary human grant, then executing and
