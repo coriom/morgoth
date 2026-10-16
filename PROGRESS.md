@@ -18,6 +18,13 @@
   or 6 after a decoy. This is protocol/browser proof, not model reasoning.
   The deferred layout is a same-engineer temporal holdout, not blind.
 - Focused browser/protocol selection: 96 passed with actual confined Chromium.
+  One provenance-aware canonical run on clean code SHA
+  `cd380d7baffd44e601a0f152103989f722f47626` matched requested/tested
+  SHA and copied-tree manifest: 2,616 passed, 32 skipped, zero failures or
+  errors, exit 0, wall 40.5 seconds. Owned cgroup peak was 784,977,920
+  bytes and 87 PIDs, with zero OOM or PID-limit hits. Canonical skips are
+  separate from actual Chromium proof. The follow-up evidence commit is
+  documentation-only and was not separately canonical-tested.
   No live Ollama inference, SQL persistence change, external website,
   production resource or Desktop change. Existing Project-scoped procedure
   records remain pending approval; the operator lab remains nonpersistent.

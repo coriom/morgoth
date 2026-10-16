@@ -54,6 +54,16 @@ unsupported. The operator experiment remains nonpersistent; Project SQL and
 versioned procedure/replay contracts are unchanged. Validated procedures
 remain pending human approval. `SAFE_FOR_WORKLOADS=False`.
 
+Verification on clean committed code `cd380d7baffd44e601a0f152103989f722f47626`:
+96 focused browser/protocol tests passed with actual Bubblewrap-confined
+Chromium. One provenance-aware canonical run requested and tested that same
+SHA; the copied-tree manifest matched exactly. It passed 2,616 tests with 32
+skips, zero failures/errors and exit 0 in 40.5 seconds. The owned cgroup
+peaked at 784,977,920 bytes and 87 PIDs, with zero OOM kills or PID-limit
+hits. Canonical browser skips are not counted as rendered-browser proof. This
+follow-up evidence entry changes documentation only; no second canonical run
+was needed. No PostgreSQL test was run because persistence did not change.
+
 ## V9.5 verified closed-loop synthetic browser planning (2026-10-16)
 
 The operator reported six V9.4 model-selected actions that passed schema and
