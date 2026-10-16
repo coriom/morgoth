@@ -1,5 +1,63 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9.3 grounded browser choices (2026-10-16)
+
+The operator reported that V9.2's first actual local-model action arrived as
+a schema-valid proposal after 15,439 ms, including 12,784 ms reported load
+time and 35 output tokens. The browser refused it as `FILL_TARGET_INVALID`;
+zero actions executed. The raw response was discarded, so the exact selected
+element is unknown. The source-level defect was broader: the previous wire
+schema let the model combine `fill` with any visible element ID, even when the
+only first-page affordances were navigation buttons.
+
+V9.3 derives a bounded action menu from rendered visible controls. The
+trusted browser observer records element type, enabled/read-only state and
+same-origin link target. The controller issues ephemeral `c0`...`c23` choice
+IDs for permitted click/fill operations, plus `stop`; it excludes disabled,
+read-only, unsupported input types and off-origin links. The model sees a
+compact list of permitted operation, role, accessible name and, for text
+fields, current value. It returns only `revision`, `choice_id` and `text` via
+the existing native Ollama JSON Schema. The schema's choice enum and revision
+are generated from the current observation. The model does not issue an
+element ID, action kind or destination. Unknown/stale IDs, invalid text and
+extra fields fail closed before the worker sees an action.
+
+Conversion still yields the original strict `BrowserAction`. Immediately
+before execution, the confined worker rereads the rendered DOM and compares
+element type, role, name, destination, value, input type, disabled and
+read-only state against its snapshot. The original same-origin and current
+element policy remains authoritative. An admissible click can still be
+irrelevant; only the actual rendered acceptance element proves task success.
+Page prose, including malicious instructions, is never an authority source.
+
+Public evidence separately counts normalized model responses, parsed
+candidates, schema-valid candidates, candidates matching an issued choice,
+worker policy acknowledgements, post-action observations and independent
+acceptance. The worker acknowledges an action only after a fresh rendered
+observation. No rejected choice causes an automatic retry or substituted
+action. V9.2's 60/45/35-second request, 70-second worker, 260-second
+interactive and six-call limits remain unchanged, as do non-generative
+resource preflight and privacy restrictions.
+
+The choice-mapping and fresh-DOM policy were committed at `db4f517` before
+introducing the relayout fixture. That separately added synthetic page
+reorders navigation, places an irrelevant button first, contains a forbidden
+external link and exposes two distinct text fields after navigation. The
+same controller and scripted mock Ollama response protocol completed it in
+four actual Chromium actions. Existing catalog, support and inventory pages
+also passed confined rendered tests. These mock responses select candidates
+by names visible in each observation; they are protocol tests, **not** live
+model reasoning. The fixture was prepared by the same engineer after the
+code freeze, so this is a temporal holdout, not an independent blind benchmark.
+
+No persistence code changed. The operator experiment constructs a versioned
+procedure in memory and remains pending human approval; it reports
+`PROCEDURE_PERSISTED=false`. A source digest mismatch blocks replay on a
+different layout. The browser remains synthetic-only inside Bubblewrap's
+private network namespace, with Chromium's nested sandbox disabled and no
+cgroup memory cap. No real-site, account or production browser authority is
+granted, and `SAFE_FOR_WORKLOADS=False`.
+
 ## V9.2 resource-aware browser inference (2026-10-16)
 
 The operator-reported first V9.1 model action timed out before a normalized

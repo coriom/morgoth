@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Warehouse records</title>
+<style>body{font:16px sans-serif;max-width:48rem;margin:2rem auto}
+section{margin-top:1.5rem}input{display:block;margin:.4rem 0;padding:.4rem}</style>
+<body><h1>Warehouse records</h1><p>Review item quantities from the records panel.</p>
+<button id="tip">Inventory tips</button>
+<a href="https://example.invalid/help">External help</a>
+<button id="records">Open records panel</button>
+<section id="panel" hidden><h2>Stock lookup</h2>
+ <label>Warehouse zone <input id="zone" aria-label="Warehouse zone" maxlength="40"></label>
+ <label>Stock code <input id="code" aria-label="Stock code" maxlength="40"></label>
+ <button id="lookup">Look up stock</button><div id="matches"></div></section>
+<section id="detail" hidden><h2>Record details</h2><p data-acceptance>12 units</p></section>
+<script>
+document.getElementById('tip').onclick=()=>document.getElementById('tip').textContent='General advice only';
+document.getElementById('records').onclick=()=>document.getElementById('panel').hidden=false;
+document.getElementById('lookup').onclick=()=>{
+ if(document.getElementById('code').value!=='SKU-44')return;
+ const button=document.createElement('button');button.textContent='Open SKU-44 record';
+ button.onclick=()=>document.getElementById('detail').hidden=false;
+ document.getElementById('matches').replaceChildren(button);
+};
+</script></body></html>

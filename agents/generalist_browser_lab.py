@@ -122,6 +122,8 @@ class BrowserRunProgress:
     action_schema_valid: bool = False
     action_policy_validated: bool = False
     isolated_action_executed: bool = False
+    post_action_state_observed: bool = False
+    post_action_observation_count: int = 0
     expected_ui_state_observed: bool = False
     task_acceptance_passed: bool = False
     action_count: int = 0
@@ -134,6 +136,8 @@ class BrowserRunProgress:
             "ACTION_SCHEMA_VALID": self.action_schema_valid,
             "ACTION_POLICY_VALIDATED": self.action_policy_validated,
             "ISOLATED_ACTION_EXECUTED": self.isolated_action_executed,
+            "POST_ACTION_STATE_OBSERVED": self.post_action_state_observed,
+            "POST_ACTION_OBSERVATION_COUNT": self.post_action_observation_count,
             "EXPECTED_UI_STATE_OBSERVED": self.expected_ui_state_observed,
             "TASK_ACCEPTANCE_PASSED": self.task_acceptance_passed,
             "ACTION_COUNT": self.action_count,
@@ -938,6 +942,10 @@ async def run_isolated_policy(*, checkout: Path, browser_dir: Path, fixture: str
                         raise BrowserRefusal("INTERACTIVE_PROTOCOL_INVALID")
                     progress.action_policy_validated = True
                     progress.isolated_action_executed = True
+                    # The worker emits this acknowledgement only after act()
+                    # has made a fresh rendered observation.
+                    progress.post_action_state_observed = True
+                    progress.post_action_observation_count += 1
                     progress.action_count += 1
                     continue
                 if event.get("type") != "observation":

@@ -10,9 +10,9 @@ import pytest
 
 from agents import generalist_browser_operator as operator
 from agents.generalist_browser_lab import (
-    BrowserAction, BrowserObservation, BrowserRefusal, BrowserRunProgress,
+    BrowserAction, BrowserObservation, BrowserProcedure, BrowserRefusal, BrowserRunProgress,
     ObservedElement, OllamaBrowserActionSource, _Browser, available_actions,
-    run_isolated_policy,
+    run_isolated_fixture, run_isolated_policy,
 )
 
 
@@ -128,9 +128,10 @@ async def test_fresh_dom_type_and_enabled_state_must_match() -> None:
                 "readonly": False, "x": 1, "y": 1}
     browser.targets = {"e0": original}
     for changed in ({**original, "disabled": True},
-                    {**original, "tag": "input", "input_type": "text"}):
+                    {**original, "tag": "input", "input_type": "text"},
+                    None):
         async def fresh(_expression: str):
-            return {"elements": [changed]}
+            return {"elements": [changed] if changed is not None else []}
         browser._evaluate = fresh  # type: ignore[method-assign]
         with pytest.raises(BrowserRefusal, match="ELEMENT_CHANGED"):
             await browser.act(BrowserAction(kind="click", revision=1, element_id="e0"), "X")
@@ -217,3 +218,123 @@ async def test_actual_observation_reveals_fill_only_after_navigation() -> None:
     assert not any(kind == "fill" for kind, _ in source.snapshots[0])
     assert ("fill", "SKU") in source.snapshots[1]
     assert progress.action_count == 4 and progress.task_acceptance_passed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fixture,objective,target,expected,names", [
+    ("catalog", "Find the title for book BK-17 in the public catalog", "BK-17",
+     "The Atlas of Rivers", ("Book catalog", "Work code", "Find work", "Open BK-17")),
+    ("support", "Locate support request SR-9 and report its status", "SR-9",
+     "Resolved", ("Support requests", "Request number", "Look up request", "View SR-9")),
+])
+async def test_same_choice_transport_on_other_rendered_apps(
+        fixture: str, objective: str, target: str, expected: str,
+        names: tuple[str, ...]) -> None:
+    """Scripted mock responses select observed candidates, not fixture-specific IDs."""
+    if not BROWSER.joinpath("chrome-headless-shell").is_file():
+        pytest.skip("reviewed Chromium unavailable")
+
+    class ScriptedClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            observation = json.loads(messages[1].content)["observation"]
+            desired = names[self.calls]
+            self.calls += 1
+            selected = next(item for item in observation["actions"]
+                            if item["name"] == desired)
+            return SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "revision": observation["revision"], "choice_id": selected["id"],
+                "text": target if selected["kind"] == "fill" else ""}), tool_calls=[]),
+                done=True, done_reason="stop")
+
+    client = ScriptedClient()
+    source = OllamaBrowserActionSource(client, "fixture")
+    progress = BrowserRunProgress()
+    result = await run_isolated_policy(
+        checkout=ROOT, browser_dir=BROWSER, fixture=fixture, objective=objective,
+        target=target, expected=expected, source=source, progress=progress)
+    assert result["VERDICT"] == "ISOLATED_PROCEDURE_VALIDATED"
+    assert client.calls == source.choice_valid_count == progress.action_count == 4
+    assert progress.task_acceptance_passed
+
+
+@pytest.mark.asyncio
+async def test_changed_layout_fixture_uses_frozen_generic_choice_protocol() -> None:
+    """A separately added fixture needs no new controller branch or execution code."""
+    if not BROWSER.joinpath("chrome-headless-shell").is_file():
+        pytest.skip("reviewed Chromium unavailable")
+
+    class ScriptedModelClient:
+        """Recorded response shape tests transport; it is not model reasoning."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.snapshots: list[list[dict]] = []
+
+        async def chat(self, messages, **kwargs):
+            assert kwargs["tools"] is None and kwargs["stream"] is False
+            observation = json.loads(messages[1].content)["observation"]
+            choices = observation["actions"]
+            self.snapshots.append(choices)
+            desired = ("Open records panel", "Stock code", "Look up stock",
+                       "Open SKU-44 record")[self.calls]
+            self.calls += 1
+            selected = next(item for item in choices if item["name"] == desired)
+            payload = {"revision": observation["revision"], "choice_id": selected["id"],
+                       "text": "SKU-44" if selected["kind"] == "fill" else ""}
+            return SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload),
+                                                           tool_calls=[]), done=True,
+                                   done_reason="stop")
+
+    client = ScriptedModelClient()
+    source = OllamaBrowserActionSource(client, "fixture")
+    progress = BrowserRunProgress()
+    result = await run_isolated_policy(
+        checkout=ROOT, browser_dir=BROWSER, fixture="relayout",
+        objective="Check inventory stock item SKU-44 and report its quantity",
+        target="SKU-44", expected="12 units", source=source, progress=progress)
+    assert result["VERDICT"] == "ISOLATED_PROCEDURE_VALIDATED"
+    assert client.calls == source.choice_valid_count == progress.action_count == 4
+    assert progress.post_action_state_observed and progress.post_action_observation_count == 4
+    assert [(item["kind"], item["name"]) for item in client.snapshots[0]][:2] == [
+        ("click", "Inventory tips"), ("click", "Open records panel")]
+    assert all(item["name"] != "External help" for item in client.snapshots[0])
+    assert [(item["kind"], item["name"]) for item in client.snapshots[1]
+            if item["kind"] == "fill"] == [
+                ("fill", "Warehouse zone"), ("fill", "Stock code")]
+    assert result["PROCEDURE"]["approval"] == "PENDING_HUMAN_APPROVAL"
+
+    # The learned procedure may not be silently replayed on an older layout.
+    procedure = BrowserProcedure.model_validate(result["PROCEDURE"])
+    with pytest.raises(BrowserRefusal, match="PROCEDURE_SOURCE_CHANGED"):
+        await run_isolated_fixture(
+            checkout=ROOT, browser_dir=BROWSER, fixture="heldout",
+            objective="Check inventory stock item SKU-44 and report its quantity",
+            target="SKU-44", expected="12 units", procedure=procedure,
+            test_only_authorized=True)
+
+
+@pytest.mark.asyncio
+async def test_actual_browser_abstains_without_any_interaction() -> None:
+    """A model stop is a blocked mission, not independent task acceptance."""
+    if not BROWSER.joinpath("chrome-headless-shell").is_file():
+        pytest.skip("reviewed Chromium unavailable")
+
+    class AbstainingClient:
+        async def chat(self, messages, **_kwargs):
+            revision = json.loads(messages[1].content)["observation"]["revision"]
+            return SimpleNamespace(message=SimpleNamespace(content=json.dumps(
+                {"revision": revision, "choice_id": "stop", "text": ""}), tool_calls=[]),
+                done=True, done_reason="stop")
+
+    source = OllamaBrowserActionSource(AbstainingClient(), "fixture")
+    progress = BrowserRunProgress()
+    with pytest.raises(BrowserRefusal, match="MODEL_ABSTAINED"):
+        await run_isolated_policy(
+            checkout=ROOT, browser_dir=BROWSER, fixture="relayout",
+            objective="Find unavailable record", target="X", expected="Not present",
+            source=source, progress=progress)
+    assert source.choice_valid_count == 1 and progress.page_observed
+    assert progress.action_count == 0 and not progress.task_acceptance_passed

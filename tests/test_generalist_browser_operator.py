@@ -329,7 +329,8 @@ async def test_actual_interactive_pipe_validates_observation_actions() -> None:
     assert progress.public() == {
         "PAGE_OBSERVED": True, "ACTION_PROPOSED": True,
         "ACTION_SCHEMA_VALID": True, "ACTION_POLICY_VALIDATED": True,
-        "ISOLATED_ACTION_EXECUTED": True, "EXPECTED_UI_STATE_OBSERVED": True,
+        "ISOLATED_ACTION_EXECUTED": True, "POST_ACTION_STATE_OBSERVED": True,
+        "POST_ACTION_OBSERVATION_COUNT": 4, "EXPECTED_UI_STATE_OBSERVED": True,
         "TASK_ACCEPTANCE_PASSED": True, "ACTION_COUNT": 4,
     }
 

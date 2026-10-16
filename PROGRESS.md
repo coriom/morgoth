@@ -1,3 +1,30 @@
+## 2026-10-16 — V9.3 grounded synthetic browser actions
+
+- Operator-reported V9.2 first local-model response was schema-valid but the
+  worker rejected a `fill` on a non-input (`FILL_TARGET_INVALID`); zero browser
+  actions executed. The private response was discarded, so the selected
+  element and reason for the model's choice remain unknown.
+- The opt-in Ollama wire proposal now chooses a controller-issued action ID
+  from a dynamic current-observation enum, plus strict revision and bounded
+  text. Visible enabled buttons, local links and permitted text fields yield
+  distinct click/fill choices; off-origin, disabled, read-only and unsupported
+  controls yield none. The browser still checks fresh DOM and exact origin
+  before acting. Malicious page text cannot add action authority.
+- Bounded public counters separate parsed candidate, schema validity, issued
+  choice, worker acceptance, post-action observation and independent UI
+  completion. Invalid choices trigger no automatic retry or fallback. V9.2
+  resource/timing budgets and the foreground operator consent remain intact.
+- The generic action-selection code was committed at `db4f517` before a
+  relayout fixture with reordered controls, decoy, external link and two text
+  inputs was added. Scripted mock responses completed four actual confined
+  Chromium actions on that page; this is not a live-model or blind benchmark.
+  Existing catalog, support and inventory paths remain testable through the
+  same controller. No persistence code was changed; operator procedures stay
+  in memory and pending human approval.
+- No live Ollama inference, external website/account, production state,
+  protected governance file, Desktop or autonomous START was touched.
+  `SAFE_FOR_WORKLOADS=False`.
+
 ## 2026-10-16 — V9.2 resource-aware browser inference candidate
 
 - Operator-reported V9.1 first action timed out with one attempted model call,
