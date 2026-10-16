@@ -13,7 +13,8 @@ import httpx
 from loguru import logger
 
 from agents.generalist_browser_lab import (
-    BrowserRefusal, BrowserRunProgress, OllamaBrowserActionSource, _sandbox_command,
+    BrowserRefusal, BrowserRunProgress, OllamaBrowserActionSource, SyntheticTracePolicy,
+    _sandbox_command,
     run_isolated_fixture, run_isolated_policy,
 )
 from agents.generalist_ollama_resources import _memory_evidence, loaded_model_evidence
@@ -23,13 +24,22 @@ from scripts.codex_local_warning_review import ReviewUnavailable, _consent, open
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "morgoth-generalist-closed-loop-browser-v1"
+BRANCH = "morgoth-generalist-goal-directed-browser-v1"
 BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64")
 OBJECTIVE = "Check inventory stock item SKU-44 and report its quantity"
 TARGET = "SKU-44"
 EXPECTED = "12 units"
 MIN_HOST_MEMORY_MIB = 2048
 MIN_CGROUP_HEADROOM_MIB = 1024
+
+
+def _decision_verdict(failure: str, progress: BrowserRunProgress) -> str:
+    """Classify only evidence from this run, never historical discarded choices."""
+    if (failure == "BROWSER_LOOP_DETECTED" or
+            failure in {"MODEL_CALL_BUDGET_EXCEEDED", "MODEL_ABSTAINED"} and
+            progress.no_progress_count >= 2 and progress.action_count >= 2):
+        return "MODEL_BROWSER_DECISION_LIMITED"
+    return "MODEL_BROWSER_PROTOCOL_OR_RESOURCE_BLOCKED"
 
 
 def _git(*args: str) -> str:
@@ -62,7 +72,7 @@ def _checkout_verified() -> None:
 async def _evaluate() -> dict[str, object]:
     """Preflight and obtain foreground consent before any local inference."""
     report: dict[str, object] = {
-        "VERDICT": "MODEL_BROWSER_BLOCKED", "MODEL_CALL_COUNT": 0,
+        "VERDICT": "MODEL_BROWSER_PROTOCOL_OR_RESOURCE_BLOCKED", "MODEL_CALL_COUNT": 0,
         "MODEL_RESPONSE_COUNT": 0, "MODEL_REQUEST_ATTEMPTED": False,
         "MODEL_RESPONSE_RECEIVED": False, "HTTP_RESPONSE_RECEIVED": False,
         "HTTP_STATUS": None,
@@ -74,6 +84,8 @@ async def _evaluate() -> dict[str, object]:
         "ACTION_POLICY_VALIDATED": False, "ACTION_COUNT": 0,
         "VALID_ACTION_COUNT": 0, "STATE_TRANSITION_COUNT": 0,
         "NO_PROGRESS_COUNT": 0, "LOOP_DETECTED": False,
+        "SUPPRESSED_CHOICE_COUNT": 0, "TRACE_SOURCE_VERIFIED": False,
+        "SYNTHETIC_ACTION_TRACE": [],
         "ISOLATED_ACTION_EXECUTED": False, "POST_ACTION_STATE_OBSERVED": False,
         "POST_ACTION_OBSERVATION_COUNT": 0, "EXPECTED_UI_STATE_OBSERVED": False,
         "TASK_ACCEPTANCE_PASSED": False, "PROCEDURE_PERSISTED": False,
@@ -90,6 +102,7 @@ async def _evaluate() -> dict[str, object]:
     try:
         _checkout_verified()
         _sandbox_command(ROOT, BROWSER, "heldout", "--interactive-worker")
+        SyntheticTracePolicy.from_checkout(ROOT, "heldout")
         config = _local_model_config()
     except (BrowserRefusal, OSError, ValueError) as exc:
         report["FAILURE_CLASS"] = exc.code if isinstance(exc, BrowserRefusal) else "PREFLIGHT_REJECTED"
@@ -144,15 +157,19 @@ async def _evaluate() -> dict[str, object]:
             await run_isolated_policy(
                 checkout=ROOT, browser_dir=BROWSER, fixture="heldout",
                 objective=OBJECTIVE, target=TARGET, expected=EXPECTED,
-                source=source, max_model_calls=6, progress=progress)
-            report.update({"VERDICT": "MODEL_BROWSER_PROCEDURE_VALIDATED_PENDING_APPROVAL",
+                source=source, max_model_calls=6, progress=progress,
+                synthetic_trace=True)
+            report.update({"VERDICT": "MODEL_BROWSER_QUALIFIED",
                            "FAILURE_CLASS": "NONE", "APPROVAL_PENDING": True})
         except BrowserRefusal as exc:
             report["FAILURE_CLASS"] = exc.code
+            report["VERDICT"] = _decision_verdict(exc.code, progress)
         except Exception:
             report["FAILURE_CLASS"] = "EVALUATION_ERROR"
         finally:
             report.update(progress.public())
+            report["TRACE_SOURCE_VERIFIED"] = progress.trace_source_verified
+            report["SYNTHETIC_ACTION_TRACE"] = progress.synthetic_trace[:6]
             report["MODEL_CANDIDATE_COUNT"] = source.candidate_count
             report["ACTION_SCHEMA_VALID_COUNT"] = source.schema_valid_count
             report["ACTION_CHOICE_VALID_COUNT"] = source.choice_valid_count
@@ -182,7 +199,8 @@ def main() -> None:
     try:
         result = asyncio.run(_evaluate())
     except (OSError, ValueError, RuntimeError):
-        result = {"VERDICT": "MODEL_BROWSER_BLOCKED", "FAILURE_CLASS": "EVALUATION_ERROR",
+        result = {"VERDICT": "MODEL_BROWSER_PROTOCOL_OR_RESOURCE_BLOCKED",
+                  "FAILURE_CLASS": "EVALUATION_ERROR",
                   "PRODUCTION_QUALIFIED": False}
     sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")
 

@@ -1,0 +1,26 @@
+{
+  "heldout": {
+    "sha256": "8d4d3d5dd624cc48057e4b999e31847fb96d51a769db8b6b58172e42e5101c01",
+    "controls": {"Quick advice": "C01", "Inventory": "C02", "SKU": "C03", "Search stock": "C04", "View SKU-44": "C05"}
+  },
+  "catalog": {
+    "sha256": "8c1512fdc1ce80102b346b66848d2acb30fdb255af2b05a9e41ad491bcad06f9",
+    "controls": {"Fast account answer": "C01", "Book catalog": "C02", "Work code": "C03", "Find work": "C04", "Open BK-17": "C05"}
+  },
+  "support": {
+    "sha256": "84653df0f963a408388b1fc8a468c220e99cfb5c5aa3e4e626f1b66fab887138",
+    "controls": {"Home dashboard": "C01", "Support requests": "C02", "Request number": "C03", "Look up request": "C04", "View SR-9": "C05"}
+  },
+  "relayout": {
+    "sha256": "0a251b8f86f6cf8dc45b5a90905803a25f7ebfce253343cbbcfba64adddd7f25",
+    "controls": {"Inventory tips": "C01", "General advice only": "C02", "Open records panel": "C03", "Warehouse zone": "C04", "Stock code": "C05", "Look up stock": "C06", "Open SKU-44 record": "C07"}
+  },
+  "dualfield": {
+    "sha256": "8ef5ef1387ec5945d5866567b6112c2000c0a01851e4181f887038a38f9443ae",
+    "controls": {"Safety bulletin": "C01", "Bulletin only": "C02", "Open dispatch register": "C03", "Warehouse zone": "C04", "Stock code": "C05", "Find record": "C06", "Open SKU-44 dispatch record": "C07"}
+  },
+  "switchboard": {
+    "sha256": "b5ace8022d0e671b9da6d5d8b8ea6d28f16d277e32ef5d68dc84985058c51219",
+    "controls": {"Open records desk": "C01", "Back to menu": "C02", "Stock code": "C03", "Find record": "C04", "Open stock record": "C05"}
+  }
+}

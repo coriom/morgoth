@@ -123,16 +123,28 @@ async def test_worker_confirmed_history_and_recovery_after_irrelevant_action() -
 @pytest.mark.asyncio
 @REQUIRES_BROWSER
 async def test_rendered_repeated_no_change_blocks_without_extra_action() -> None:
-    """A second identical no-op is acknowledged, then the controller stops."""
-    client = _ScriptedClient(("Inventory", "Inventory", "Inventory"))
+    """A repeated no-op is omitted from the next menu and cannot execute."""
+    class RepeatingClient(_ScriptedClient):
+        async def chat(self, messages, **kwargs):
+            if self.calls == 2:
+                data = json.loads(messages[1].content)
+                self.planning.append(data["planning"])
+                self.calls += 1
+                return SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                    "revision": data["observation"]["revision"], "choice_id": "c1"}),
+                    tool_calls=[]), done=True, done_reason="stop")
+            return await super().chat(messages, **kwargs)
+
+    client = RepeatingClient(("Inventory", "Inventory"))
     progress = BrowserRunProgress()
-    with pytest.raises(BrowserRefusal, match="BROWSER_LOOP_DETECTED"):
+    with pytest.raises(BrowserRefusal, match="MODEL_CHOICE_NOT_AVAILABLE"):
         await run_isolated_policy(
             checkout=ROOT, browser_dir=BROWSER, fixture="heldout",
             objective="Check stock item SKU-44", target="SKU-44", expected="12 units",
             source=OllamaBrowserActionSource(client, "fixture"), progress=progress)
-    assert progress.action_count == 3 and progress.state_transition_count == 3
-    assert progress.no_progress_count == 2 and progress.loop_detected
+    assert progress.action_count == 2 and progress.state_transition_count == 2
+    assert progress.no_progress_count == 1 and not progress.loop_detected
+    assert progress.suppressed_choice_count == 1
     assert client.planning[2]["ineffective_actions"] == [
         {"action": "click", "label": "Inventory", "input_ref": None}]
 
