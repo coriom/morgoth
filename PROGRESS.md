@@ -18,8 +18,11 @@
 - In the development-agent environment the existing allowed config path was
   present, but the configured loopback TCP socket was blocked; one read-only
   internal preflight stopped before HTTP with zero inference. This is not
-  evidence of an ordinary-WSL failure. No live model inference, external
-  website, production resource, SQL path, protected file or Desktop change.
+  evidence of an ordinary-WSL failure. The full default command in the agent
+  sandbox stopped at live-remote preflight during intermittent GitHub DNS;
+  a separate remote lookup confirmed the pushed code SHA. No live model
+  inference, external website, production resource, SQL path, protected file
+  or Desktop change.
   Focused no-inference diagnostic, consent, timeout, cleanup and existing
   confined-browser regressions: 71 passed. No canonical run was needed: the
   production browser/action policy and shared Ollama request behavior did not

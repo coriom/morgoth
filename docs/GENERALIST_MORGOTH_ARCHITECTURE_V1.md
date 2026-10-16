@@ -59,6 +59,12 @@ swap free, a visible unlimited cgroup memory limit, zero visible Ollama
 processes and unknown active request contention. Those measurements are a
 momentary agent-namespace snapshot, not an explanation of the historical
 operator timeout. No live model call was made during development.
+After push, the complete default entry point itself stopped at its required
+live-remote equality check because this development agent's GitHub DNS was
+intermittently unavailable. A separate live remote lookup later confirmed the
+pushed SHA. The loopback finding above came from the same read-only diagnostic
+core with only the Git checkout gate bypassed for development measurement;
+the operator entry point never bypasses that gate.
 
 Focused hermetic and existing confined-browser regressions passed 71 tests.
 The first unprivileged test attempt had four confined-worker launch failures
