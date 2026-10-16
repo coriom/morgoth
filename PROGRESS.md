@@ -24,6 +24,12 @@
 - No live Ollama inference, external website/account, production state,
   protected governance file, Desktop or autonomous START was touched.
   `SAFE_FOR_WORKLOADS=False`.
+- Focused grounded/browser tests: 67 passed with actual Bubblewrap-confined
+  Chromium. Persistence was unchanged, so no PostgreSQL run was made. One
+  provenance-aware canonical run requested/tested clean source `5758395`,
+  with matching whole-tree manifests: 2,604 passed, 15 skipped, zero failures
+  or errors, exit 0. Actual browser proof remains the separate focused run;
+  the canonical sandbox skipped browser cases. No retry was performed.
 
 ## 2026-10-16 — V9.2 resource-aware browser inference candidate
 

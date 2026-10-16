@@ -58,6 +58,16 @@ private network namespace, with Chromium's nested sandbox disabled and no
 cgroup memory cap. No real-site, account or production browser authority is
 granted, and `SAFE_FOR_WORKLOADS=False`.
 
+V9.3 focused grounded/browser regressions passed 67 tests with actual
+Chromium under Bubblewrap. No disposable PostgreSQL run was required because
+the persistence path was unchanged. One provenance-aware canonical run on
+committed source SHA `575839574470b9d53464fce2a5f649b40d20d814`
+verified matching whole-tree manifests and reported 2,604 passed, 15 skipped,
+zero failures/errors, exit 0. Canonical browser skips are not counted as the
+actual-Chromium proof. No live Ollama inference occurred in development;
+only a separately consented operator run can establish whether the installed
+model can choose and complete the multi-step action sequence.
+
 ## V9.2 resource-aware browser inference (2026-10-16)
 
 The operator-reported first V9.1 model action timed out before a normalized
