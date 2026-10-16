@@ -21,6 +21,9 @@ the existing native Ollama JSON Schema. The schema's choice enum and revision
 are generated from the current observation. The model does not issue an
 element ID, action kind or destination. Unknown/stale IDs, invalid text and
 extra fields fail closed before the worker sees an action.
+The input type, disabled state and read-only state are required, strictly
+typed worker-observation fields. Missing or malformed affordance metadata
+rejects the observation; it cannot default to an executable control.
 
 Conversion still yields the original strict `BrowserAction`. Immediately
 before execution, the confined worker rereads the rendered DOM and compares
@@ -58,12 +61,19 @@ private network namespace, with Chromium's nested sandbox disabled and no
 cgroup memory cap. No real-site, account or production browser authority is
 granted, and `SAFE_FOR_WORKLOADS=False`.
 
-V9.3 focused grounded/browser regressions passed 67 tests with actual
+V9.3 focused grounded/browser regressions passed 68 tests with actual
 Chromium under Bubblewrap. No disposable PostgreSQL run was required because
 the persistence path was unchanged. One provenance-aware canonical run on
 committed source SHA `575839574470b9d53464fce2a5f649b40d20d814`
 verified matching whole-tree manifests and reported 2,604 passed, 15 skipped,
-zero failures/errors, exit 0. Canonical browser skips are not counted as the
+zero failures/errors, exit 0. A later fail-closed review made the new
+affordance metadata mandatory rather than defaulted, so a second canonical
+run tested corrective source SHA `e1b1a40e6f91161e5250ad3634b36f65cb225d56`.
+Requested/tested SHA and complete copied-tree manifests matched; 2,605 passed,
+15 skipped, zero failures/errors, exit 0, wall 71.2 seconds. Its owned scope
+peaked at 810,438,656 bytes and 88 PIDs, with zero OOM kills or PID-limit hits.
+The later documentation-only commit was not separately canonically tested.
+Canonical browser skips are not counted as the
 actual-Chromium proof. No live Ollama inference occurred in development;
 only a separately consented operator run can establish whether the installed
 model can choose and complete the multi-step action sequence.

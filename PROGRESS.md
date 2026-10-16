@@ -10,6 +10,9 @@
   distinct click/fill choices; off-origin, disabled, read-only and unsupported
   controls yield none. The browser still checks fresh DOM and exact origin
   before acting. Malicious page text cannot add action authority.
+- Affordance metadata is now required and strictly typed in worker
+  observations; missing input-type, disabled or read-only fields block rather
+  than default to an executable control.
 - Bounded public counters separate parsed candidate, schema validity, issued
   choice, worker acceptance, post-action observation and independent UI
   completion. Invalid choices trigger no automatic retry or fallback. V9.2
@@ -24,12 +27,17 @@
 - No live Ollama inference, external website/account, production state,
   protected governance file, Desktop or autonomous START was touched.
   `SAFE_FOR_WORKLOADS=False`.
-- Focused grounded/browser tests: 67 passed with actual Bubblewrap-confined
+- Focused grounded/browser tests: 68 passed with actual Bubblewrap-confined
   Chromium. Persistence was unchanged, so no PostgreSQL run was made. One
   provenance-aware canonical run requested/tested clean source `5758395`,
   with matching whole-tree manifests: 2,604 passed, 15 skipped, zero failures
-  or errors, exit 0. Actual browser proof remains the separate focused run;
-  the canonical sandbox skipped browser cases. No retry was performed.
+  or errors, exit 0. A subsequent fail-closed correction required complete
+  affordance metadata, so a second canonical run tested committed `e1b1a40`
+  with equal requested/tested SHA and complete tree manifests: 2,605 passed,
+  15 skipped, zero failures/errors, exit 0; owned memory peak 810,438,656
+  bytes, 88 PIDs, zero OOM or PID-limit events. Actual browser proof remains
+  the separate focused run; the canonical sandbox skipped browser cases.
+  The final evidence-only commit was not separately canonically tested.
 
 ## 2026-10-16 — V9.2 resource-aware browser inference candidate
 
