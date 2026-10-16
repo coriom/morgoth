@@ -13,7 +13,9 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from agents.generalist_browser_lab import BrowserRefusal, run_isolated_fixture
+from agents.generalist_browser_lab import (
+    BrowserRefusal, OllamaBrowserActionSource, run_isolated_policy,
+)
 from agents.generalist_browser_mission import BrowserMissionCoordinator
 from agents.generalist_mission_engine import MissionState
 from agents.generalist_mission_store import ProjectMissionStore
@@ -28,7 +30,7 @@ BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/ch
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_browser_claim_receipt_and_fresh_pool_recovery(tmp_path: Path, monkeypatch):
-    """A real fixture browser run commits only confirmed UI evidence."""
+    """A mocked model-action stream persists only confirmed rendered UI evidence."""
     if not BROWSER.joinpath("chrome-headless-shell").is_file():
         pytest.skip("reviewed headless Chromium unavailable")
     dsn = os.environ["MORGOTH_TEST_POSTGRES_URL"]
@@ -54,19 +56,40 @@ async def test_browser_claim_receipt_and_fresh_pool_recovery(tmp_path: Path, mon
         coordinator = BrowserMissionCoordinator(store, project.id)
         mission = await coordinator.receive("Find book BK-17", "browser_catalog")
         calls = 0
+        model_calls = 0
+
+        class ScriptedClient:
+            """Response fixture exercises Ollama protocol, not semantic reasoning."""
+
+            async def chat(self, messages, **_kwargs):
+                nonlocal model_calls
+                observation = json.loads(messages[1].content)["observation"]
+                name = ("Book catalog", "Work code", "Find work", "Open BK-17")[model_calls]
+                model_calls += 1
+                matches = [item for item in observation["elements"] if item["name"] == name]
+                assert len(matches) == 1
+                content = json.dumps({"kind": "fill" if name == "Work code" else "click",
+                                      "revision": observation["revision"],
+                                      "element_id": matches[0]["id"],
+                                      "text": "BK-17" if name == "Work code" else ""})
+                return SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]),
+                                       done=True, done_reason="stop")
 
         async def browser_run():
             nonlocal calls
             calls += 1
-            return await run_isolated_fixture(
+            source = OllamaBrowserActionSource(ScriptedClient(), "fixture-model")
+            result = await run_isolated_policy(
                 checkout=ROOT, browser_dir=BROWSER, fixture="catalog",
                 objective="Find the title for book BK-17 in the public catalog",
-                target="BK-17", expected="The Atlas of Rivers")
+                target="BK-17", expected="The Atlas of Rivers", source=source)
+            assert source.calls == source.responses == 4
+            return result
 
         pending, procedure = await coordinator.validate_fixture(
             mission.mission_id, capability_id="browser_catalog", run=browser_run)
         assert pending.state is MissionState.PENDING
-        assert calls == 1 and len(procedure.steps) == 4
+        assert calls == 1 and model_calls == 4 and len(procedure.steps) == 4
         receipt = await store.get_receipt(mission.mission_id, "browser_fixture_validation")
         assert receipt is not None and '"ui_state_observed": true' in receipt.lower()
         child = await asyncio.create_subprocess_exec(
@@ -85,7 +108,7 @@ async def test_browser_claim_receipt_and_fresh_pool_recovery(tmp_path: Path, mon
         recovered, loaded = await BrowserMissionCoordinator(store, project.id).recover(mission.mission_id)
         assert recovered.state is MissionState.PENDING
         assert loaded == procedure
-        assert calls == 1
+        assert calls == 1 and model_calls == 4
         with pytest.raises(BrowserRefusal, match="MISSION_ALREADY_CLAIMED"):
             await BrowserMissionCoordinator(store, project.id).validate_fixture(
                 mission.mission_id, capability_id="browser_catalog", run=browser_run)

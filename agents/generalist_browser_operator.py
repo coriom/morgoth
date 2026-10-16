@@ -13,7 +13,7 @@ import httpx
 from loguru import logger
 
 from agents.generalist_browser_lab import (
-    BrowserRefusal, OllamaBrowserActionSource, _sandbox_command,
+    BrowserRefusal, BrowserRunProgress, OllamaBrowserActionSource, _sandbox_command,
     run_isolated_fixture, run_isolated_policy,
 )
 from agents.generalist_ollama_plan_probe import _local_model_config
@@ -22,7 +22,7 @@ from scripts.codex_local_warning_review import ReviewUnavailable, _consent, open
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "morgoth-generalist-browser-learning-v1"
+BRANCH = "morgoth-generalist-browser-model-v1"
 BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64")
 OBJECTIVE = "Check inventory stock item SKU-44 and report its quantity"
 TARGET = "SKU-44"
@@ -55,8 +55,12 @@ async def _evaluate() -> dict[str, object]:
     """Preflight and obtain foreground consent before any local inference."""
     report: dict[str, object] = {
         "VERDICT": "MODEL_BROWSER_BLOCKED", "MODEL_CALL_COUNT": 0,
+        "MODEL_RESPONSE_COUNT": 0, "MODEL_REQUEST_ATTEMPTED": False,
+        "MODEL_RESPONSE_RECEIVED": False, "HTTP_RESPONSE_RECEIVED": False,
+        "HTTP_STATUS": None,
         "BROWSER_ISOLATED": False, "PAGE_OBSERVED": False,
-        "ACTION_PROPOSED": False, "ACTION_POLICY_VALIDATED": False,
+        "ACTION_PROPOSED": False, "ACTION_SCHEMA_VALID": False,
+        "ACTION_POLICY_VALIDATED": False, "ACTION_COUNT": 0,
         "ISOLATED_ACTION_EXECUTED": False, "EXPECTED_UI_STATE_OBSERVED": False,
         "TASK_ACCEPTANCE_PASSED": False, "PROCEDURE_PERSISTED": False,
         "REPLAY_VALIDATED": False, "APPROVAL_PENDING": False,
@@ -103,21 +107,27 @@ async def _evaluate() -> dict[str, object]:
         except ReviewUnavailable:
             report["FAILURE_CLASS"] = "LOCAL_CONSENT_REQUIRED"
             return report
+        source = OllamaBrowserActionSource(client, model)
+        progress = BrowserRunProgress()
         try:
-            source = OllamaBrowserActionSource(client, model)
-            outcome = await run_isolated_policy(
+            await run_isolated_policy(
                 checkout=ROOT, browser_dir=BROWSER, fixture="heldout",
                 objective=OBJECTIVE, target=TARGET, expected=EXPECTED,
-                source=source, max_model_calls=6)
+                source=source, max_model_calls=6, progress=progress)
             report.update({"VERDICT": "MODEL_BROWSER_PROCEDURE_VALIDATED_PENDING_APPROVAL",
-                           "FAILURE_CLASS": "NONE", "MODEL_CALL_COUNT": outcome["MODEL_CALL_COUNT"],
-                           "PAGE_OBSERVED": True, "ACTION_PROPOSED": True,
-                           "ACTION_POLICY_VALIDATED": True, "ISOLATED_ACTION_EXECUTED": True,
-                           "EXPECTED_UI_STATE_OBSERVED": True, "TASK_ACCEPTANCE_PASSED": True,
-                           "APPROVAL_PENDING": True})
+                           "FAILURE_CLASS": "NONE", "APPROVAL_PENDING": True})
         except BrowserRefusal as exc:
             report["FAILURE_CLASS"] = exc.code
+        except Exception:
+            report["FAILURE_CLASS"] = "EVALUATION_ERROR"
+        finally:
+            report.update(progress.public())
             report["MODEL_CALL_COUNT"] = source.calls
+            report["MODEL_RESPONSE_COUNT"] = source.responses
+            report["MODEL_REQUEST_ATTEMPTED"] = source.calls > 0
+            report["MODEL_RESPONSE_RECEIVED"] = source.responses > 0
+            report["HTTP_RESPONSE_RECEIVED"] = source.http_response_received
+            report["HTTP_STATUS"] = source.http_status
         return report
     finally:
         await client.close()

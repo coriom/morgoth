@@ -1,5 +1,67 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9.1 browser model protocol and evidence (2026-10-16)
+
+The operator reported that V9's first consented local Ollama action attempt
+ended as `MODEL_UNAVAILABLE`, with browser isolation established but all later
+stage fields false. The private response was discarded. Its exact failure
+cannot be reconstructed. Source review did confirm two independent defects:
+the adapter combined transport, HTTP, envelope and schema exceptions under
+that one code; the operator marked `PAGE_OBSERVED` only after the entire
+procedure succeeded, despite receiving a rendered observation before asking
+the model for an action.
+
+V9.1 keeps the existing `OllamaLLMClient.chat` transport and native JSON
+Schema request. Its small model-facing wire object requires `kind`, `revision`,
+`element_id` and `text` as scalars; unused strings are empty. It removes the
+previous nullable, conditionally related fields from the generation schema.
+The candidate is still converted into the original strict `BrowserAction`,
+then checked against the current rendered revision, observed element and
+same-origin policy. It is never authority. The bounded prompt contains the
+synthetic objective, target, revision, title, at most 600 characters of page
+text and the observed controls. The local generation budget is 384 tokens;
+tools and streaming remain disabled, and there is no free-text fallback or
+automatic retry. [Ollama's structured-output contract](https://docs.ollama.com/capabilities/structured-outputs)
+supports sending a JSON Schema in `/api/chat`'s `format` field. Whether this
+specific local model can produce the new action object is reserved for the
+separately consented operator run.
+
+Failure codes now distinguish connection and transport errors, bounded HTTP
+4xx/5xx (including 503), timeout, malformed normalized envelope, absent final
+content, truncated generation, JSON syntax, duplicate keys, action schema,
+tool activity and browser-policy rejection. `MODEL_FORMAT_UNSUPPORTED` requires
+an explicit machine-readable `unsupported_format` error code on HTTP 400/422;
+`MODEL_RESOURCE_EXHAUSTED` likewise requires an explicit `resource_exhausted`
+code on HTTP 500/503. A bare 400/500 or arbitrary error prose remains its
+HTTP status family. Ollama's current local API is not assumed to emit those
+optional codes. `HTTP_STATUS` is a bounded
+integer or null, and no private response or server error body is exported.
+`MODEL_RESPONSE_RECEIVED` counts only a normalized chat envelope; a non-2xx
+HTTP response is tracked separately as `HTTP_RESPONSE_RECEIVED`.
+
+The interactive worker now acknowledges an action only after independent
+policy validation, actual synthetic interaction and a fresh page observation.
+Parent-side stage evidence survives later failure: page observed, model request
+attempted, normalized response received, action schema valid, policy accepted,
+interaction executed and independent UI acceptance each have separate fields.
+The acknowledgement cannot prove external side-effect idempotency. The
+operator-only run still does **not** open a Project database, so
+`PROCEDURE_PERSISTED=false`; a validated in-memory procedure is pending human
+approval but cannot be invoked against a real site. A mocked Ollama response
+sequence is tested through actual confined Chromium and the existing
+Project-scoped coordinator into a disposable PostgreSQL receipt with fresh
+process recovery. That is protocol/persistence evidence, not live-model
+semantic learning. The previously verified deterministic procedure remains
+separate baseline evidence.
+
+The browser remains limited to reviewed synthetic fixtures inside private
+Bubblewrap user/PID/mount/network namespaces. Chromium's internal sandbox is
+disabled in that nested environment, and no cgroup memory cap exists. These
+controls are **not** a qualification for untrusted external sites. There is no
+production browser approval broker, external-origin policy or authority for
+real accounts, credentials, uploads, purchases or mutations. The restricted
+Codex workload gate remains `SAFE_FOR_WORKLOADS=False`.
+
 ## V9 opt-in synthetic browser procedure lab (2026-10-15)
 
 `agents/generalist_browser_lab.py` is a new **experimental browser modality**,
