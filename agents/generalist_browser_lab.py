@@ -555,6 +555,8 @@ class OllamaBrowserActionSource:
         self.last_load_ms: int | None = None
         self.last_prompt_tokens: int | None = None
         self.last_output_tokens: int | None = None
+        self.last_prompt_eval_ms: int | None = None
+        self.last_generation_ms: int | None = None
         self.candidate_count = 0
         self.schema_valid_count = 0
         self.choice_valid_count = 0
@@ -617,6 +619,8 @@ class OllamaBrowserActionSource:
         self.last_load_ms = None
         self.last_prompt_tokens = None
         self.last_output_tokens = None
+        self.last_prompt_eval_ms = None
+        self.last_generation_ms = None
         try:
             self.calls += 1
             response = await asyncio.wait_for(self.client.chat(
@@ -668,6 +672,8 @@ class OllamaBrowserActionSource:
         self.last_load_ms = _bounded_ns_ms(getattr(response, "load_duration", None))
         self.last_prompt_tokens = _bounded_count(getattr(response, "prompt_eval_count", None))
         self.last_output_tokens = _bounded_count(getattr(response, "eval_count", None))
+        self.last_prompt_eval_ms = _bounded_ns_ms(getattr(response, "prompt_eval_duration", None))
+        self.last_generation_ms = _bounded_ns_ms(getattr(response, "eval_duration", None))
         try:
             content = response.message.content
             if response.message.tool_calls:

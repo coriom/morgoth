@@ -1,5 +1,80 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9.6.1 local Ollama reliability diagnosis (2026-10-16)
+
+The operator reported one V9.6 browser action request timing out after 60,063
+ms: the model was `NOT_LOADED` at preflight, the confined browser was observed,
+no complete model response arrived, and zero actions executed. Earlier local
+runs did receive responses. The discarded request cannot identify whether
+loading, concurrent work, prompt processing, structured generation, transport
+or resource pressure consumed the deadline. No decision-quality verdict is
+possible when the model made no decision.
+
+The source has a 90-second HTTP client timeout and a shorter total
+`asyncio.wait_for` around each browser model call: 60 seconds for the first
+unloaded/unknown call, 45 for an already loaded first call, and 35 for later
+calls. The confined worker waits 70 seconds for each action, the interactive
+controller has 260 seconds, and the reviewed shell command has 330 seconds.
+These deadlines are ordered; the observed 60-second timeout matches the first
+call's bound. A complete Ollama response can report total, load, prompt and
+generation durations plus token counts, but a timed-out request supplies none
+of those generation metrics ([Ollama chat API](https://docs.ollama.com/api/chat)).
+The shared client serializes calls within one
+Python process; other local sessions remain unobserved. No deadline, model,
+browser planner, retry or residency setting was changed on this evidence.
+
+`agents.generalist_ollama_reliability` defaults to a **non-generative** local
+preflight. It checks the exact clean pushed branch, reads only allowed local
+Ollama configuration in memory, samples bounded host/cgroup memory and swap,
+counts fixed Ollama-related process names without command lines, and checks
+the configured loopback TCP socket. Only if that socket is available does it
+request bounded [model inventory](https://docs.ollama.com/api/tags) and
+[loaded-model](https://docs.ollama.com/api/ps) metadata. Both requests reject
+redirects and proxies, cap response bytes and deadlines, and export only
+fixed statuses, Booleans, counts and elapsed times. The model name, metadata
+bodies, config values and process command lines are never exported. Ollama's
+reported `size_vram` is not proof of precise CPU/GPU placement; process and
+loaded-model counts are not proof of competing inference requests. A cgroup
+measurement describes the diagnostic process's visible cgroup, not necessarily
+the Ollama service's effective memory limit. Missing evidence stays unknown.
+
+The separate `--probe` mode is available only after a complete preflight and
+foreground typed `MODEL ONCE` consent. It makes at most one tool-free,
+nonstreaming, schema-constrained request through the same browser action
+source, using a fixed synthetic menu without Chromium or any capability
+execution. It does not warm or unload the model first. It reports the starting
+residency, bounded response timing if a complete response arrives, and a
+second non-generative residency/resource snapshot afterward. It cannot measure
+the effect of concurrent Chromium memory use. If it times out before a full
+response, load versus generation remains unresolved; cancellation does not
+prove a server-side generation has stopped. An outer operator shell deadline
+is retained for cleanup if local transport cancellation stalls.
+
+In this development-agent environment the existing allowed config file was
+present, but a bounded TCP connection to its configured loopback Ollama port
+was blocked. A read-only internal preflight therefore reported
+`LOCAL_TCP_CONNECT_BLOCKED` with zero inference; it is not an operator-WSL
+result. It observed approximately 5,027 MiB host memory available, 480 MiB
+swap free, a visible unlimited cgroup memory limit, zero visible Ollama
+processes and unknown active request contention. Those measurements are a
+momentary agent-namespace snapshot, not an explanation of the historical
+operator timeout. No live model call was made during development.
+
+Focused hermetic and existing confined-browser regressions passed 71 tests.
+The first unprivileged test attempt had four confined-worker launch failures
+from the development tool sandbox; the same selection passed under the
+repository's reviewed Bubblewrap local-process permission. No browser path or
+SQL persistence path changed, so no new database run was claimed. The new
+opt-in diagnostic and timing fields do not change production request or
+action semantics; a canonical full-suite run was not warranted.
+
+The safe next step is one ordinary-WSL non-generative preflight. If service,
+residency and resource evidence remain inconclusive, the separately consented
+one-call probe can distinguish a complete cold response and its reported load
+time from another fixed timeout. Do not retry automatically or resume browser
+planning until this local inference boundary is understood. Browser and
+Project authority remain unchanged; `SAFE_FOR_WORKLOADS=False`.
+
 ## V9.6 goal-directed synthetic browser evidence (2026-10-16)
 
 The operator reported five valid, acknowledged V9.5 Ollama actions, three with
