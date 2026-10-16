@@ -191,6 +191,8 @@ async def _evaluate() -> dict[str, object]:
             report["MODEL_LOAD_DURATION_MS_LAST"] = source.last_load_ms
             report["MODEL_PROMPT_TOKENS_LAST"] = source.last_prompt_tokens
             report["MODEL_OUTPUT_TOKENS_LAST"] = source.last_output_tokens
+            report["PROMPT_EVAL_DURATION_MS_LAST"] = source.last_prompt_eval_ms
+            report["GENERATION_DURATION_MS_LAST"] = source.last_generation_ms
         return report
     finally:
         await client.close()
