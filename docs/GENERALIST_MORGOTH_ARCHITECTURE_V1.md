@@ -1,5 +1,59 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9.6 goal-directed synthetic browser evidence (2026-10-16)
+
+The operator reported five valid, acknowledged V9.5 Ollama actions, three with
+no observable UI change, followed by `BROWSER_LOOP_DETECTED`. The choices were
+discarded, so their controls and the reason for the model's decisions remain
+unknown. A permitted action, a rendered change, and independently verified
+task completion are separate facts.
+
+The opt-in controller now binds each proved-ineffective action to its exact
+rendered-state fingerprint and complete controller-issued action binding. It
+omits that choice only while both still match. A changed state can offer the
+same control again; `stop` always remains. This restricts the menu without
+choosing a replacement, adding a model call, or relaxing fresh-DOM checks.
+The next model request separates the task, trusted current action menu,
+confirmed action/outcome history, and bounded current evidence such as whether
+the task target is visible or already entered. These signals are not a claim
+of semantic progress; the fixture checker alone accepts the task.
+
+A fixture-scoped synthetic trace identifies acknowledged controls with fixed
+allowlisted codes, their action class, changed/unchanged rendered state, newly
+available reviewed controls, and independent acceptance. The trace manifest
+pins each fixture's SHA-256 and is checked both at the parent and mounted
+worker; unknown controls or changed fixture bytes fail closed. Arbitrary page
+text, model output and raw URLs never enter the public trace. Partial failures
+retain only independently acknowledged transitions and indicate whether the
+trace is complete. This facility is limited to the reviewed synthetic lab and
+is not production telemetry or permission authority.
+
+The offline lexical baseline uses the same confined Chromium, task inputs,
+six-choice cap and acceptance checker. It completed heldout, catalog and
+support in four actions each, and relayout in six, all with zero no-change
+actions. It abstained on the later deferred-layout fixture after four actions
+and one no-change. The deferred fixture was added after the generic planning
+policy commit, but the same engineer authored it and a later trace hardening
+edit followed; it is a temporal holdout, not a blind benchmark. Actual local
+Ollama choices have not been tested in V9.6 development. The operator's next
+single consent-gated run decides whether the configured model can complete
+the reviewed synthetic task under the unchanged budget. A completion is
+synthetic qualification only; repeated ineffective choices indicate a model
+decision limitation, while service, schema, resource or isolation failure is
+a protocol/resource block.
+
+The worker briefly polls for a settled rendered state after an action, within
+its existing interaction deadline, to avoid treating short synthetic UI delays
+as immediate no-ops. Later effects outside that bounded window remain possible
+and cannot be inferred away. The six-call cap and 60/45/35-second request,
+70-second worker and 260-second interaction budgets remain. Browser profile,
+private Bubblewrap network namespace and synthetic-origin restrictions remain
+unchanged. Chromium's internal sandbox is disabled inside Bubblewrap and there
+is no cgroup memory cap; external sites and production authority remain
+unsupported. The operator experiment remains nonpersistent; Project SQL and
+versioned procedure/replay contracts are unchanged. Validated procedures
+remain pending human approval. `SAFE_FOR_WORKLOADS=False`.
+
 ## V9.5 verified closed-loop synthetic browser planning (2026-10-16)
 
 The operator reported six V9.4 model-selected actions that passed schema and

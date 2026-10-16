@@ -1,3 +1,28 @@
+## 2026-10-16 — V9.6 goal-directed synthetic browser evidence
+
+- Operator-reported V9.5: five valid, acknowledged Ollama actions; three had
+  no observable change and the controller stopped a loop. Exact choices were
+  discarded, so their controls and decision cause remain unknown.
+- The generic controller now suppresses a proved-ineffective choice only for
+  the same rendered state and exact action binding. It never selects a
+  replacement. Ollama receives current task evidence and confirmed history;
+  completion still requires independent rendered acceptance. A bounded
+  post-action observation window accommodates short synthetic UI delays.
+- A SHA-pinned fixture-only trace reports fixed control codes and independently
+  acknowledged effects, never arbitrary page/model text. The operator report
+  marks partial traces. Source digest mismatch or unmapped controls fail closed.
+- Offline lexical baseline in actual confined Chromium completed heldout,
+  catalog and support in 4 actions each, relayout in 6, with no no-op actions;
+  it abstained on the later deferred two-input fixture after 4 actions and
+  1 no-op. A scripted model-response test completed that fixture in 5 actions,
+  or 6 after a decoy. This is protocol/browser proof, not model reasoning.
+  The deferred layout is a same-engineer temporal holdout, not blind.
+- Focused browser/protocol selection: 96 passed with actual confined Chromium.
+  No live Ollama inference, SQL persistence change, external website,
+  production resource or Desktop change. Existing Project-scoped procedure
+  records remain pending approval; the operator lab remains nonpersistent.
+  `SAFE_FOR_WORKLOADS=False`.
+
 ## 2026-10-16 — V9.5 verified closed-loop browser planning candidate
 
 - Operator-reported V9.4 completed six independently validated and observed

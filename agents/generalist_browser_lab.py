@@ -337,6 +337,10 @@ class SyntheticTracePolicy:
         manifest_path = checkout / "tests/fixtures/generalist_browser_trace_manifest.json"
         fixture_path = checkout / "tests/fixtures" / f"generalist_browser_{fixture}.html"
         try:
+            if (manifest_path.is_symlink() or fixture_path.is_symlink() or
+                    manifest_path.stat().st_size > 8192 or
+                    fixture_path.stat().st_size > 12000):
+                raise ValueError
             raw = manifest_path.read_bytes()
             if len(raw) > 8192:
                 raise ValueError

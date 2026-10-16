@@ -85,7 +85,7 @@ async def _evaluate() -> dict[str, object]:
         "VALID_ACTION_COUNT": 0, "STATE_TRANSITION_COUNT": 0,
         "NO_PROGRESS_COUNT": 0, "LOOP_DETECTED": False,
         "SUPPRESSED_CHOICE_COUNT": 0, "TRACE_SOURCE_VERIFIED": False,
-        "SYNTHETIC_ACTION_TRACE": [],
+        "TRACE_COMPLETE": False, "SYNTHETIC_ACTION_TRACE": [],
         "ISOLATED_ACTION_EXECUTED": False, "POST_ACTION_STATE_OBSERVED": False,
         "POST_ACTION_OBSERVATION_COUNT": 0, "EXPECTED_UI_STATE_OBSERVED": False,
         "TASK_ACCEPTANCE_PASSED": False, "PROCEDURE_PERSISTED": False,
@@ -170,6 +170,8 @@ async def _evaluate() -> dict[str, object]:
             report.update(progress.public())
             report["TRACE_SOURCE_VERIFIED"] = progress.trace_source_verified
             report["SYNTHETIC_ACTION_TRACE"] = progress.synthetic_trace[:6]
+            report["TRACE_COMPLETE"] = (progress.trace_source_verified and
+                                         len(progress.synthetic_trace) == progress.action_count)
             report["MODEL_CANDIDATE_COUNT"] = source.candidate_count
             report["ACTION_SCHEMA_VALID_COUNT"] = source.schema_valid_count
             report["ACTION_CHOICE_VALID_COUNT"] = source.choice_valid_count

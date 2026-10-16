@@ -22,5 +22,9 @@
   "switchboard": {
     "sha256": "b5ace8022d0e671b9da6d5d8b8ea6d28f16d277e32ef5d68dc84985058c51219",
     "controls": {"Open records desk": "C01", "Back to menu": "C02", "Stock code": "C03", "Find record": "C04", "Open stock record": "C05"}
+  },
+  "deferred": {
+    "sha256": "a513794d87ba9a37177ae16b804350249d33a19572427aa6631b57e511e1694f",
+    "controls": {"Fast summary": "C01", "Open lookup": "C02", "Warehouse zone": "C03", "Item code": "C04", "Search records": "C05", "View record": "C06"}
   }
 }

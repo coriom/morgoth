@@ -198,3 +198,69 @@ async def test_offline_lexical_baseline_same_budget_and_checker(
     assert progress.no_progress_count == 0 and not progress.loop_detected
     assert len(progress.synthetic_trace) == progress.action_count
     assert progress.trace_source_verified
+
+
+@pytest.mark.asyncio
+@REQUIRES_BROWSER
+@pytest.mark.parametrize("take_decoy", [False, True])
+async def test_post_freeze_delayed_layout_with_two_trusted_values(take_decoy: bool) -> None:
+    """A later fixture requires observing an asynchronous reveal and choosing two bindings."""
+    zone = TaskInput(id="zone", label="Warehouse zone", value="ZONE-2")
+    sequence = [("Open lookup", None), ("Warehouse zone", "zone"),
+                ("Item code", "target"), ("Search records", None),
+                ("View record", None)]
+    if take_decoy:
+        sequence.insert(0, ("Fast summary", None))
+
+    class BoundClient:
+        calls = 0
+        snapshots: list[dict]
+
+        def __init__(self) -> None:
+            self.snapshots = []
+
+        async def chat(self, messages, **kwargs):
+            assert kwargs["tools"] is None and kwargs["stream"] is False
+            data = json.loads(messages[1].content)
+            self.snapshots.append(data)
+            label, input_ref = sequence[self.calls]
+            self.calls += 1
+            choice = next(item for item in data["observation"]["actions"]
+                          if item["name"] == label and item.get("input_ref") == input_ref)
+            return SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "revision": data["observation"]["revision"], "choice_id": choice["id"]}),
+                tool_calls=[]), done=True, done_reason="stop")
+
+    client = BoundClient()
+    progress = BrowserRunProgress()
+    result = await run_isolated_policy(
+        checkout=ROOT, browser_dir=BROWSER, fixture="deferred",
+        objective="Check stock item SKU-44 in zone ZONE-2", target="SKU-44",
+        expected="12 units", source=OllamaBrowserActionSource(
+            client, "fixture", extra_inputs=(zone,)), extra_inputs=(zone,),
+        max_model_calls=6, progress=progress, synthetic_trace=True)
+    assert result["TASK_ACCEPTANCE_PASSED"] and progress.task_acceptance_passed
+    assert progress.action_count == (6 if take_decoy else 5)
+    assert progress.no_progress_count == 0 and not progress.loop_detected
+    assert client.snapshots[(2 if take_decoy else 1)]["current_evidence"]["available_fill_choices"] == 4
+    assert client.snapshots[-2]["current_evidence"]["target_in_visible_input"] is True
+    assert progress.synthetic_trace[-1]["CONTROL"] == "C06"
+    assert "host files" not in json.dumps(progress.synthetic_trace)
+    assert "example.invalid" not in json.dumps(progress.synthetic_trace)
+
+
+@pytest.mark.asyncio
+@REQUIRES_BROWSER
+async def test_lexical_baseline_cannot_complete_post_freeze_two_input_task() -> None:
+    """The same held-out fixture and budget expose a baseline limitation."""
+    zone = TaskInput(id="zone", label="Warehouse zone", value="ZONE-2")
+    progress = BrowserRunProgress()
+    with pytest.raises(BrowserRefusal, match="MODEL_ABSTAINED"):
+        await run_isolated_policy(
+            checkout=ROOT, browser_dir=BROWSER, fixture="deferred",
+            objective="Check stock item SKU-44 in zone ZONE-2", target="SKU-44",
+            expected="12 units", source=LexicalObservationPolicy(),
+            max_model_calls=6, progress=progress, extra_inputs=(zone,),
+            synthetic_trace=True)
+    assert progress.action_count == 4 and progress.no_progress_count == 1
+    assert progress.task_acceptance_passed is False
