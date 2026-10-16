@@ -62,6 +62,17 @@ production browser approval broker, external-origin policy or authority for
 real accounts, credentials, uploads, purchases or mutations. The restricted
 Codex workload gate remains `SAFE_FOR_WORKLOADS=False`.
 
+V9.1 verification: 110 focused generalist/Ollama tests passed; a separate
+actual confined-browser/operator selection passed 41 tests; one disposable
+PostgreSQL browser integration passed with fresh-process recovery. The one
+provenance-aware canonical run requested and tested clean code commit
+`bf00baa1e4c4b39bf83da0e4ba281a4c4749b97b` with equal whole-tree
+manifests: 2,583 passed, 10 skipped, no failures or errors, exit 0. Browser
+cases skipped by the canonical sandbox are counted only in the separate host
+browser run. There was no live Ollama call in development; one operator-native
+consent-gated evaluation remains necessary to determine whether the installed
+model can actually choose the sequence.
+
 ## V9 opt-in synthetic browser procedure lab (2026-10-15)
 
 `agents/generalist_browser_lab.py` is a new **experimental browser modality**,

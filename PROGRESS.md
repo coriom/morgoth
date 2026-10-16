@@ -20,6 +20,39 @@ confinement and final text/event canaries pass. No production state was used.
 
 # PROGRESS.md — Morgoth Development Tracker
 
+## 2026-10-16 — V9.1 browser-model protocol and stage evidence
+
+- Operator-reported V9 first action attempt ended `MODEL_UNAVAILABLE` after
+  consent. The private response was discarded, so its exact cause remains
+  unknown. Source review confirmed that unrelated transport/envelope/schema
+  errors shared that code and that `PAGE_OBSERVED` was incorrectly delayed
+  until whole-procedure success.
+- The opt-in Ollama browser adapter now requests a flat, required-field native
+  JSON Schema, independently converts it to the unchanged strict browser
+  action, and exposes fixed failure classes with bounded HTTP status. It keeps
+  no-tools/no-streaming, no fallback or retry, the same browser sandbox and
+  six-call maximum. Per-stage browser/model/action evidence survives failures.
+  The private worker acknowledges each action only after fresh rendered-state
+  observation. The operator path still requires foreground `BROWSE ONCE`.
+- A scripted mock-model sequence drove four actual actions in confined
+  Chromium. This is protocol proof, not real model reasoning. The existing
+  Project coordinator committed one such confirmed procedure into a disposable
+  `morgoth_test` receipt, and a fresh process recovered pending approval.
+  The operator-only run itself does not persist to a Project database and
+  reports `PROCEDURE_PERSISTED=false`.
+- Focused generalist/Ollama tests: 110 passed. Actual browser/operator focused
+  selection: 41 passed. Disposable PostgreSQL browser integration: 1 passed;
+  temporary Unix-socket cluster stopped and removed. One clean-source canonical
+  run requested/tested `bf00baa1e4c4b39bf83da0e4ba281a4c4749b97b`, with
+  matching whole-tree manifests: 2,583 passed, 10 skipped, zero failures or
+  errors, exit 0, wall 65.9 s. The canonical sandbox did not contain the cached
+  browser binary; actual Chromium evidence comes from the separate focused
+  run. Historical intermittent runner instability is not disproved.
+- No live Ollama inference, external website, production state, START, Desktop,
+  protected governance file or dependency change. `SAFE_FOR_WORKLOADS=False`.
+  Chromium's internal sandbox remains disabled inside Bubblewrap and no cgroup
+  memory cap is set; external-site browser execution remains unsupported.
+
 ## 2026-10-15 — V9 isolated synthetic browser procedure candidate
 
 - Added an opt-in browser modality with a private Bubblewrap user/PID/mount/net
