@@ -23,7 +23,7 @@ from scripts.codex_local_warning_review import ReviewUnavailable, _consent, open
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "morgoth-generalist-grounded-browser-actions-v1"
+BRANCH = "morgoth-generalist-task-bound-actions-v1"
 BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64")
 OBJECTIVE = "Check inventory stock item SKU-44 and report its quantity"
 TARGET = "SKU-44"

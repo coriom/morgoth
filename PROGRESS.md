@@ -1,3 +1,30 @@
+## 2026-10-16 — V9.4 complete synthetic browser choices
+
+- Operator-reported V9.3: one actual local-model choice executed in confined
+  Chromium and produced a fresh observation; the second schema-valid choice
+  failed `MODEL_CHOICE_TEXT_INVALID`. Its discarded contents cannot identify
+  the exact choice. No model inference ran in this development worktree.
+- The model now returns only `revision` and a current controller-issued
+  `choice_id`. Each candidate binds the observed control, operation and any
+  explicit synthetic task-input reference/value. Multiple fields and values
+  yield distinct choices; no trusted value means no fill choice. The confined
+  worker independently verifies the reference/value and fresh DOM before
+  acting. Wrong but permitted choices fail independent rendered acceptance.
+- The generic code commit `5c84657` preceded the new `dualfield` fixture.
+  Scripted mock-model selections completed five confined Chromium actions and
+  a test-only replay. Swapped authorized values did not satisfy acceptance.
+  This is a same-engineer temporal holdout, not live model reasoning.
+- Focused hermetic/actual-Chromium selection: 74 passed. Two real disposable
+  `morgoth_test` SQL tests passed, including Project-scoped receipt recovery
+  in a fresh process with a multi-value procedure. The first disposable
+  cluster used too few connection slots and failed at fresh-process startup;
+  the corrected owned cluster used 50 slots, passed, and was removed.
+- Operator evaluation remains foreground-consent-gated, at most six local
+  model choices against one synthetic app. Procedure approval stays pending;
+  operator evaluation is nonpersistent. No external site, production Project,
+  protected governance file, Desktop, autonomous START or workload activation
+  was touched. `SAFE_FOR_WORKLOADS=False`.
+
 ## 2026-10-16 — V9.3 grounded synthetic browser actions
 
 - Operator-reported V9.2 first local-model response was schema-valid but the

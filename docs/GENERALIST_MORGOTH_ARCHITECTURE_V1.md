@@ -1,5 +1,55 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9.4 task-bound synthetic browser actions (2026-10-16)
+
+The operator reported that one actual V9.3 Ollama choice executed and produced
+a fresh rendered observation. The second response was schema-valid but failed
+`MODEL_CHOICE_TEXT_INVALID`. Its discarded contents do not identify the chosen
+control or text. The source-level protocol still required model-generated text
+for every choice, including empty text for clicks; that avoidable argument has
+now been removed from the model wire contract.
+
+The controller derives complete candidate actions from the current rendered
+observation and explicit synthetic task inputs. A bounded `TaskInput` has an
+identifier, label and value supplied by the trusted test caller. A permitted
+text field yields one candidate per authorized value; buttons and approved
+same-origin links yield click candidates. If there is no trusted value, no
+fill candidate is issued. The model returns only `revision` and `choice_id`
+under a native JSON Schema whose enumerations match the current observation.
+It chooses the field/value pair, but cannot create a new value, element,
+operation or destination. Page labels and instructions are untrusted context.
+
+The confined worker independently revalidates the input reference and exact
+value against the mission payload, then rereads the DOM immediately before
+acting. The fresh check now includes origin and element coordinates as well as
+the prior type, name, href, input type and enabled/read-only checks. A wrong
+but permitted field/value choice can execute and still fail the independent
+rendered acceptance check. Rejected choices cause no retry or fallback.
+The fixture protocol is synthetic-only: caller-provided task inputs are **not**
+a production human authorization mechanism.
+
+The generic action-selection code was committed at `5c84657` before the
+`dualfield` fixture was introduced. That later synthetic UI starts with an
+irrelevant button and external link, then reveals two inputs requiring distinct
+approved values. Scripted mock-model choices completed five actions in actual
+Bubblewrap-confined Chromium; swapped field/value choices failed independent
+acceptance. Test-only replay verified a versioned procedure using the existing
+`text_template` field and source digest. The same test-only procedure was
+persisted to a disposable Project-scoped `morgoth_test` database, then recovered
+in a fresh process. The operator experiment remains nonpersistent and pending
+human approval. This temporal holdout was authored by the same engineer and
+does not prove independent model reasoning or blind generalization.
+
+No live Ollama inference ran during development. The separately consented
+operator run is the next evidence for whether the installed model can select
+successive useful choices. Existing 60/45/35-second model deadlines, 70-second
+worker wait, 260-second interaction, six-model-call cap, memory preflight and
+330-second outer command remain in place. Browser authority remains limited to
+reviewed local synthetic pages in Bubblewrap's private network namespace;
+Chromium's nested sandbox is disabled and there is no cgroup memory cap. No
+external website, real account or production capability is authorized.
+`SAFE_FOR_WORKLOADS=False`.
+
 ## V9.3 grounded browser choices (2026-10-16)
 
 The operator reported that V9.2's first actual local-model action arrived as

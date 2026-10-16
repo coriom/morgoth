@@ -50,4 +50,9 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        # Fixed type only; never export SQL text, connection details or paths.
+        sys.stdout.write(json.dumps({"ERROR_CLASS": type(exc).__name__}))
+        raise SystemExit(1) from None

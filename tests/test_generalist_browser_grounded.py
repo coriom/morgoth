@@ -166,6 +166,20 @@ async def test_model_selects_complete_field_value_pair_without_text_generation()
 
 
 @pytest.mark.asyncio
+async def test_model_and_worker_task_input_inventories_must_match() -> None:
+    """A source cannot receive extra values omitted from the worker policy."""
+    source = OllamaBrowserActionSource(_ResponseClient({"revision": 1,
+                                                         "choice_id": "stop"}), "fixture",
+                                       extra_inputs=(TaskInput(id="zone", label="Zone",
+                                                               value="ZONE-2"),))
+    with pytest.raises(BrowserRefusal, match="TASK_INPUT_MISMATCH"):
+        await run_isolated_policy(checkout=ROOT, browser_dir=BROWSER, fixture="dualfield",
+                                  objective="Find a record", target="SKU-44",
+                                  expected="12 units", source=source)
+    assert source.calls == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("payload,code,valid_schema", [
     ({"revision": 1, "choice_id": "c9"}, "MODEL_CHOICE_NOT_AVAILABLE", True),
     ({"revision": 2, "choice_id": "c0"}, "MODEL_CHOICE_STALE", True),
@@ -455,3 +469,93 @@ async def test_confined_worker_rejects_forged_fill_value_before_execution() -> N
                                   source=ForgedSource(), progress=progress)
     assert progress.action_count == progress.post_action_observation_count == 1
     assert not progress.task_acceptance_passed
+
+
+@pytest.mark.asyncio
+async def test_post_freeze_dual_field_layout_completes_and_replays() -> None:
+    """The frozen generic controller executes five choices on a later-added UI."""
+    if not BROWSER.joinpath("chrome-headless-shell").is_file():
+        pytest.skip("reviewed Chromium unavailable")
+    zone = TaskInput(id="zone", label="Warehouse zone", value="ZONE-2")
+    expected_choices = (("Open dispatch register", None), ("Warehouse zone", "zone"),
+                        ("Stock code", "target"), ("Find record", None),
+                        ("Open SKU-44 dispatch record", None))
+
+    class ScriptedClient:
+        calls = 0
+        observed: list[list[dict]] = []
+
+        async def chat(self, messages, **_kwargs):
+            snapshot = json.loads(messages[1].content)["observation"]
+            self.observed.append(snapshot["actions"])
+            name, input_ref = expected_choices[self.calls]
+            self.calls += 1
+            matches = [item for item in snapshot["actions"]
+                       if item["name"] == name and item.get("input_ref") == input_ref]
+            assert len(matches) == 1
+            return SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "revision": snapshot["revision"], "choice_id": matches[0]["id"]}),
+                tool_calls=[]), done=True, done_reason="stop")
+
+    client = ScriptedClient()
+    source = OllamaBrowserActionSource(client, "fixture", extra_inputs=(zone,))
+    progress = BrowserRunProgress()
+    result = await run_isolated_policy(
+        checkout=ROOT, browser_dir=BROWSER, fixture="dualfield",
+        objective="Find stock code SKU-44 in warehouse zone ZONE-2",
+        target="SKU-44", expected="12 units", source=source,
+        extra_inputs=(zone,), progress=progress)
+    assert result["VERDICT"] == "ISOLATED_PROCEDURE_VALIDATED"
+    assert source.choice_valid_count == progress.action_count == client.calls == 5
+    assert progress.task_acceptance_passed and progress.post_action_observation_count == 5
+    assert all(item["kind"] == "click" for item in client.observed[0] if item["id"] != "stop")
+    assert [item["input_ref"] for item in client.observed[1]
+            if item.get("name") == "Warehouse zone"] == ["target", "zone"]
+    assert all(item["name"] != "External help" for item in client.observed[0])
+    procedure = BrowserProcedure.model_validate(result["PROCEDURE"])
+    assert procedure.approval == "PENDING_HUMAN_APPROVAL"
+    assert procedure.steps[1].text_template == "{input:zone}"
+    replay = await run_isolated_fixture(
+        checkout=ROOT, browser_dir=BROWSER, fixture="dualfield",
+        objective="Find stock code SKU-44 in warehouse zone ZONE-2",
+        target="SKU-44", expected="12 units", procedure=procedure,
+        extra_inputs=(zone,), test_only_authorized=True)
+    assert replay["VERDICT"] == "REPLAY_VALIDATED" and replay["ACTION_COUNT"] == 5
+
+
+@pytest.mark.asyncio
+async def test_wrong_approved_field_value_pair_does_not_pass_acceptance() -> None:
+    """A permitted but semantically wrong selection cannot prove mission success."""
+    if not BROWSER.joinpath("chrome-headless-shell").is_file():
+        pytest.skip("reviewed Chromium unavailable")
+    zone = TaskInput(id="zone", label="Warehouse zone", value="ZONE-2")
+    desired = (("Open dispatch register", None), ("Warehouse zone", "target"),
+               ("Stock code", "zone"), ("Find record", None))
+
+    class WrongClient:
+        calls = 0
+
+        async def chat(self, messages, **_kwargs):
+            snapshot = json.loads(messages[1].content)["observation"]
+            if self.calls < len(desired):
+                name, ref = desired[self.calls]
+                matches = [item for item in snapshot["actions"]
+                           if item["name"] == name and item.get("input_ref") == ref]
+                assert len(matches) == 1
+                choice_id = matches[0]["id"]
+            else:
+                choice_id = "stop"
+            self.calls += 1
+            return SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "revision": snapshot["revision"], "choice_id": choice_id}),
+                tool_calls=[]), done=True, done_reason="stop")
+
+    source = OllamaBrowserActionSource(WrongClient(), "fixture", extra_inputs=(zone,))
+    progress = BrowserRunProgress()
+    with pytest.raises(BrowserRefusal, match="MODEL_ABSTAINED"):
+        await run_isolated_policy(
+            checkout=ROOT, browser_dir=BROWSER, fixture="dualfield",
+            objective="Find stock code SKU-44 in warehouse zone ZONE-2",
+            target="SKU-44", expected="12 units", source=source,
+            extra_inputs=(zone,), progress=progress)
+    assert progress.action_count == 4 and not progress.task_acceptance_passed
