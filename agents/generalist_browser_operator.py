@@ -23,7 +23,7 @@ from scripts.codex_local_warning_review import ReviewUnavailable, _consent, open
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "morgoth-generalist-task-bound-actions-v1"
+BRANCH = "morgoth-generalist-closed-loop-browser-v1"
 BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64")
 OBJECTIVE = "Check inventory stock item SKU-44 and report its quantity"
 TARGET = "SKU-44"
@@ -72,6 +72,8 @@ async def _evaluate() -> dict[str, object]:
         "MODEL_CANDIDATE_COUNT": 0, "ACTION_SCHEMA_VALID_COUNT": 0,
         "ACTION_CHOICE_VALID_COUNT": 0,
         "ACTION_POLICY_VALIDATED": False, "ACTION_COUNT": 0,
+        "VALID_ACTION_COUNT": 0, "STATE_TRANSITION_COUNT": 0,
+        "NO_PROGRESS_COUNT": 0, "LOOP_DETECTED": False,
         "ISOLATED_ACTION_EXECUTED": False, "POST_ACTION_STATE_OBSERVED": False,
         "POST_ACTION_OBSERVATION_COUNT": 0, "EXPECTED_UI_STATE_OBSERVED": False,
         "TASK_ACCEPTANCE_PASSED": False, "PROCEDURE_PERSISTED": False,

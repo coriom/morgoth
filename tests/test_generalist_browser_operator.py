@@ -333,6 +333,8 @@ async def test_actual_interactive_pipe_validates_observation_actions() -> None:
         "ISOLATED_ACTION_EXECUTED": True, "POST_ACTION_STATE_OBSERVED": True,
         "POST_ACTION_OBSERVATION_COUNT": 4, "EXPECTED_UI_STATE_OBSERVED": True,
         "TASK_ACCEPTANCE_PASSED": True, "ACTION_COUNT": 4,
+            "VALID_ACTION_COUNT": 4, "STATE_TRANSITION_COUNT": 4,
+            "NO_PROGRESS_COUNT": 0, "LOOP_DETECTED": False,
     }
 
 

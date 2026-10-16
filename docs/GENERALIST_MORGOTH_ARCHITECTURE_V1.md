@@ -1,5 +1,53 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9.5 verified closed-loop synthetic browser planning (2026-10-16)
+
+The operator reported six V9.4 model-selected actions that passed schema and
+browser policy, executed in isolated Chromium and produced fresh observations.
+The independent task checker did not accept the result before the six-call
+budget ended. The discarded choices do not establish repetition or explain
+why the model failed to finish.
+
+The opt-in parent controller now requests a bounded post-action observation
+inside each worker acknowledgement. It records a transition only after the
+worker confirms execution. A deterministic visible-state comparison excludes
+revision numbers and ephemeral element IDs, and compares title, visible text,
+origin, control labels/types, values and enabled state. An observed change is
+reported as `UI_CHANGE_OBSERVED` and `TASK_PROGRESS_UNCERTAIN`; it is never
+mistaken for independent acceptance. Identical rendered states are reported
+as `NO_OBSERVABLE_CHANGE`. The next Ollama request receives up to five
+confirmed transitions, compact added/removed control names, repeated
+ineffective actions, remaining call/time budgets and the current action menu.
+It receives no model-invented history, previous full page contents or raw
+responses. Page labels in history remain untrusted descriptions.
+
+The controller stops with `BROWSER_LOOP_DETECTED` after two consecutive
+no-change actions, a repeated identical no-change action in the same state,
+or a completed two-state oscillation. A repeated control is allowed when the
+intervening rendered state changed; labels alone do not trigger a block.
+The policy is deliberately conservative and can stop a useful workflow with
+little visible feedback. It does not substitute an alternative action or make
+an extra model request. Only the separate fixture acceptance checker establishes
+task success. The operator report exposes bounded action, transition,
+no-change and loop counts with no page text or model output.
+
+The new switchboard layout was introduced after the generic controller change
+in this milestone; it exercises a reversible menu/desk cycle and a six-step
+completion path. Scripted mock-model decisions on rendered Chromium verify
+transport, state comparison, loop refusal and independent acceptance. They do
+not prove actual model planning. The real six-choice operator evaluation is
+still separately consent-gated. Its procedure remains nonpersistent; existing
+Project-scoped versioned procedure/replay contracts were not changed, and
+validated procedures remain pending human approval. No PostgreSQL schema or
+receipt path changed in V9.5.
+
+The model-call cap stays six, with the existing 60/45/35-second per-call,
+70-second worker and 260-second interaction budgets. The reviewed browser
+remains in Bubblewrap's private network namespace with a disposable profile
+and synthetic origins only. Chromium's internal sandbox is disabled inside
+Bubblewrap and no cgroup memory cap has been established; this is not authority
+for untrusted external sites. `SAFE_FOR_WORKLOADS=False`.
+
 ## V9.4 task-bound synthetic browser actions (2026-10-16)
 
 The operator reported that one actual V9.3 Ollama choice executed and produced

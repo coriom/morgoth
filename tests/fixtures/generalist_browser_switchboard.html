@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Records switchboard</title>
+<body><h1>Records switchboard</h1><p>Use the records desk to inspect a stock code.</p>
+<section id="menu"><button id="open">Open records desk</button></section>
+<section id="desk" hidden><button id="back">Back to menu</button>
+ <label>Stock code <input id="code" aria-label="Stock code"></label>
+ <button id="find">Find record</button><div id="matches"></div></section>
+<section id="result" hidden><p data-acceptance>12 units</p></section>
+<script>
+const menu=document.getElementById('menu'), desk=document.getElementById('desk');
+document.getElementById('open').onclick=()=>{menu.hidden=true;desk.hidden=false};
+document.getElementById('back').onclick=()=>{desk.hidden=true;menu.hidden=false};
+document.getElementById('find').onclick=()=>{
+ if(document.getElementById('code').value!=='SKU-44')return;
+ const b=document.createElement('button');b.textContent='Open stock record';
+ b.onclick=()=>document.getElementById('result').hidden=false;
+ document.getElementById('matches').replaceChildren(b);
+};
+</script></body></html>

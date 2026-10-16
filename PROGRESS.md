@@ -1,3 +1,28 @@
+## 2026-10-16 — V9.5 verified closed-loop browser planning candidate
+
+- Operator-reported V9.4 completed six independently validated and observed
+  actions but exhausted its model-call budget before task acceptance. Exact
+  choices were discarded; repetition is not established by that result.
+- The confined worker now acknowledges an action with its bounded post-action
+  rendered observation. The parent records only worker-confirmed transitions,
+  supplies up to five bounded UI effects to the next Ollama request, and keeps
+  revision/ephemeral IDs out of visible-state comparison. Changed UI is
+  explicitly uncertain progress; only the fixture checker proves completion.
+- Two consecutive no-change actions, a repeated ineffective same-state action,
+  and a two-state oscillation stop with `BROWSER_LOOP_DETECTED`. Repeated
+  controls remain allowed after changed rendered state. No fallback, retry or
+  increase to the six-call/260-second resource limits was introduced.
+- The new switchboard fixture was added after the generic controller change.
+  Scripted mock-model paths cover no-op loops, reversible navigation and a
+  six-action rendered completion; these are not live Ollama reasoning proof.
+  Procedure persistence and Project-scoped SQL paths are unchanged. The
+  operator experiment is still nonpersistent and pending human approval.
+- Focused browser/protocol verification: 82 passed using actual confined
+  Chromium. One provenance-aware canonical run is pending on the final clean
+  code commit. No live model inference, external site, production state,
+  protected file, Desktop or autonomous START was touched.
+  `SAFE_FOR_WORKLOADS=False`.
+
 ## 2026-10-16 — V9.4 complete synthetic browser choices
 
 - Operator-reported V9.3: one actual local-model choice executed in confined
