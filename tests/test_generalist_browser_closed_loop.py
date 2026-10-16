@@ -17,6 +17,9 @@ from agents.generalist_browser_lab import (
 
 ROOT = Path(__file__).resolve().parents[1]
 BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64")
+REQUIRES_BROWSER = pytest.mark.skipif(
+    not BROWSER.joinpath("chrome-headless-shell").is_file(),
+    reason="reviewed Chromium unavailable in this sandbox")
 
 
 def _state(revision: int, text: str, value: str = "") -> BrowserObservation:
@@ -96,6 +99,7 @@ class _ScriptedClient:
 
 
 @pytest.mark.asyncio
+@REQUIRES_BROWSER
 async def test_worker_confirmed_history_and_recovery_after_irrelevant_action() -> None:
     """Five scripted choices complete a rendered task; history has confirmed effects."""
     client = _ScriptedClient(("Quick advice", "Inventory", "SKU", "Search stock",
@@ -117,6 +121,7 @@ async def test_worker_confirmed_history_and_recovery_after_irrelevant_action() -
 
 
 @pytest.mark.asyncio
+@REQUIRES_BROWSER
 async def test_rendered_repeated_no_change_blocks_without_extra_action() -> None:
     """A second identical no-op is acknowledged, then the controller stops."""
     client = _ScriptedClient(("Inventory", "Inventory", "Inventory"))
@@ -133,6 +138,7 @@ async def test_rendered_repeated_no_change_blocks_without_extra_action() -> None
 
 
 @pytest.mark.asyncio
+@REQUIRES_BROWSER
 async def test_post_freeze_switchboard_cycle_and_changed_layout() -> None:
     """A separately supplied layout exercises the frozen generic controller."""
     client = _ScriptedClient(("Open records desk", "Back to menu",
@@ -149,6 +155,7 @@ async def test_post_freeze_switchboard_cycle_and_changed_layout() -> None:
 
 
 @pytest.mark.asyncio
+@REQUIRES_BROWSER
 async def test_repeated_control_after_changed_state_can_complete() -> None:
     """A repeated label after a real state change is permitted, then UI acceptance wins."""
     client = _ScriptedClient(("Open records desk", "Back to menu",
@@ -166,6 +173,7 @@ async def test_repeated_control_after_changed_state_can_complete() -> None:
 
 
 @pytest.mark.asyncio
+@REQUIRES_BROWSER
 async def test_failed_second_model_request_keeps_only_confirmed_history() -> None:
     """An unreturned proposal cannot appear in the controller's verified timeline."""
     class FailingClient(_ScriptedClient):
