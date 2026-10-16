@@ -71,7 +71,7 @@ async def test_stale_snapshot_and_external_link_block_before_click() -> None:
                               "x": 1, "y": 1}}
 
     async def fresh(_expression: str) -> dict:
-        return {"elements": list(browser.targets.values())}
+        return {"url": browser.origin + "/", "elements": list(browser.targets.values())}
 
     browser._evaluate = fresh  # type: ignore[method-assign]
     with pytest.raises(BrowserRefusal, match="NAVIGATION_NOT_ALLOWED"):

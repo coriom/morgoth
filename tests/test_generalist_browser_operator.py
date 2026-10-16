@@ -51,14 +51,14 @@ OBSERVATION = BrowserObservation(revision=1, origin="http://127.0.0.1:4321",
 @pytest.mark.asyncio
 async def test_ollama_action_uses_strict_schema_without_tools() -> None:
     """A synthetic model sees only bounded observation data and cannot grant tools."""
-    client = _Client('{"revision":1,"choice_id":"stop","text":""}')
+    client = _Client('{"revision":1,"choice_id":"stop"}')
     source = OllamaBrowserActionSource(client, "fixture-model")
     action = await source.propose("Find a title", "BK-17", OBSERVATION)
     assert action == BrowserAction(kind="stop", revision=1)
     assert source.calls == 1
     assert source.responses == 1
     assert client.kwargs["tools"] is None and client.kwargs["stream"] is False
-    assert set(client.kwargs["format"]["required"]) == {"revision", "choice_id", "text"}
+    assert set(client.kwargs["format"]["required"]) == {"revision", "choice_id"}
     assert client.kwargs["format"]["properties"]["choice_id"]["enum"] == ["c0", "c1", "stop"]
     assert client.kwargs["format"]["properties"]["revision"]["enum"] == [1]
     assert "null" not in json.dumps(client.kwargs["format"])
@@ -68,8 +68,8 @@ async def test_ollama_action_uses_strict_schema_without_tools() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content,expected", [
-    ('{"choice_id":"stop","choice_id":"c0","revision":1,"text":""}', "MODEL_DUPLICATE_JSON_KEY"),
-    ('{"choice_id":"stop","revision":1,"text":"","script":"fetch(1)"}', "MODEL_ACTION_SCHEMA_INVALID"),
+    ('{"choice_id":"stop","choice_id":"c0","revision":1}', "MODEL_DUPLICATE_JSON_KEY"),
+    ('{"choice_id":"stop","revision":1,"script":"fetch(1)"}', "MODEL_ACTION_SCHEMA_INVALID"),
     ('```json\n{"choice_id":"stop","revision":1}\n```', "MODEL_INVALID_JSON"),
     ("TOP_SECRET_DO_NOT_PERSIST", "MODEL_INVALID_JSON"),
 ])
@@ -89,16 +89,16 @@ async def test_reasoning_only_or_tool_call_cannot_be_an_action() -> None:
         await OllamaBrowserActionSource(_Client(""), "fixture-model").propose(
             "Find a title", "BK-17", OBSERVATION)
     with pytest.raises(BrowserRefusal, match="MODEL_TOOL_ACTIVITY"):
-        await OllamaBrowserActionSource(_Client('{"revision":1,"choice_id":"stop","text":""}',
+        await OllamaBrowserActionSource(_Client('{"revision":1,"choice_id":"stop"}',
                                           tool_calls=[object()]), "fixture-model").propose(
             "Find a title", "BK-17", OBSERVATION)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content,kind,element,text", [
-    ('{"revision":1,"choice_id":"c0","text":""}', "click", "e0", None),
-    ('{"revision":1,"choice_id":"c1","text":"BK-17"}', "fill", "e1", "BK-17"),
-    ('{"revision":1,"choice_id":"stop","text":""}', "stop", None, None),
+    ('{"revision":1,"choice_id":"c0"}', "click", "e0", None),
+    ('{"revision":1,"choice_id":"c1"}', "fill", "e1", "BK-17"),
+    ('{"revision":1,"choice_id":"stop"}', "stop", None, None),
 ])
 async def test_model_wire_actions_convert_to_strict_internal_action(
         content: str, kind: str, element: str | None, text: str | None) -> None:
@@ -156,12 +156,10 @@ async def test_http_status_and_explicit_format_error_are_bounded(
 @pytest.mark.parametrize("client,code", [
     (_Client("{}", done=False), "MODEL_GENERATION_TRUNCATED"),
     (_Client("{}", done_reason="length"), "MODEL_GENERATION_TRUNCATED"),
-    (_Client('{"revision":1,"choice_id":"stop","text":""}', done_reason="error"),
+    (_Client('{"revision":1,"choice_id":"stop"}', done_reason="error"),
      "MODEL_ENVELOPE_INVALID"),
-    (_Client('{"revision":1,"choice_id":"c1","text":""}'),
-     "MODEL_CHOICE_TEXT_INVALID"),
     (_Client('{"revision":1,"choice_id":"c0","text":"bad!"}'),
-     "MODEL_CHOICE_TEXT_INVALID"),
+     "MODEL_ACTION_SCHEMA_INVALID"),
 ])
 async def test_response_lifecycle_and_action_schema_fail_closed(client: _Client, code: str) -> None:
     """A received envelope is not equivalent to a valid executable action."""
@@ -198,7 +196,7 @@ async def test_existing_ollama_transport_sends_flat_native_schema() -> None:
         seen.append(payload)
         return httpx.Response(200, json={
             "model": "fixture-model", "message": {"role": "assistant",
-            "content": '{"revision":1,"choice_id":"stop","text":""}'},
+            "content": '{"revision":1,"choice_id":"stop"}'},
             "done": True, "done_reason": "stop"})
 
     config = SimpleNamespace(ollama_base_url="http://127.0.0.1:11434",
@@ -380,8 +378,7 @@ async def test_mock_model_actions_drive_real_rendered_browser() -> None:
                        if element["name"] == desired]
             assert len(matches) == 1
             content = json.dumps({"revision": observation["revision"],
-                                  "choice_id": matches[0]["id"],
-                                  "text": "SKU-44" if desired == "SKU" else ""})
+                                  "choice_id": matches[0]["id"]})
             return SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]),
                                    done=True, done_reason="stop")
 
