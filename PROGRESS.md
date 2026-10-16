@@ -17,9 +17,15 @@
   reduced while preserving observed control IDs and values.
 - The development environment could not validate its local Ollama config in
   a non-inference preflight; no model request was attempted. Mock-transport
-  and actual confined Chromium verification are recorded in this branch's
-  final report. Operator-only acceptance remains pending. The browser remains
-  synthetic-only; no cgroup memory cap or external-site approval exists.
+  and actual confined Chromium verification passed 52 focused tests.
+  Operator-only acceptance remains pending. The browser remains synthetic-only;
+  no cgroup memory cap or external-site approval exists.
+- The first canonical run on clean committed `d9b01b7` failed one inherited
+  procfs cleanup-test race (2,593 passed; 10 skipped; exit 1). A targeted
+  correction recognizes an already-disappeared `/proc` entry as reaped; its
+  direct test passed. One further canonical run on `376458b` verified equal
+  source/copy manifests and passed 2,594 tests with 10 skips, zero failures,
+  exit 0. Historical intermittent reliability is not thereby proven.
 - No production state, Desktop, protected governance file, external website,
   live model inference or research START was touched. `SAFE_FOR_WORKLOADS=False`.
 

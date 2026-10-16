@@ -54,6 +54,20 @@ does not persist a procedure and reports `PROCEDURE_PERSISTED=false`.
 Chromium's nested sandbox is disabled and there is no cgroup memory cap, so
 untrusted external sites remain unsupported. `SAFE_FOR_WORKLOADS=False`.
 
+V9.2 focused tests passed: 52, including actual rendered Chromium in the
+private namespace and synthetic slow/timeout/cancellation/resource paths.
+The first provenance-aware canonical run on committed SHA `d9b01b7` had
+2,593 passed, 10 skipped and one failure: an inherited cleanup test raced
+between checking `/proc/<pid>/stat` existence and reading the disappearing
+process. This failure is preserved. A narrow test correction accepts only
+`FileNotFoundError` or `ProcessLookupError` as already-reaped outcomes; its
+direct regression passed. One further canonical run on corrected committed
+SHA `376458b` verified equal source/copy tree manifests and reported 2,594
+passed, 10 skipped, zero failures/errors, exit 0. This does not prove repeated
+runner reliability. Canonical browser skips are not counted as actual Chromium
+evidence; the separate focused run supplies that proof. No live Ollama
+inference occurred in development.
+
 ## V9.1 browser model protocol and evidence (2026-10-16)
 
 The operator reported that V9's first consented local Ollama action attempt
