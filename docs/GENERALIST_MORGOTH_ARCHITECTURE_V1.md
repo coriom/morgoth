@@ -50,6 +50,18 @@ Chromium's nested sandbox is disabled and there is no cgroup memory cap. No
 external website, real account or production capability is authorized.
 `SAFE_FOR_WORKLOADS=False`.
 
+V9.4 focused browser and protocol tests passed 74 cases with actual confined
+Chromium. Two actual disposable PostgreSQL tests passed for the existing
+catalog and new two-value procedure, including fresh-process receipt recovery.
+One provenance-aware canonical run on committed code SHA
+`a1649ad01219fc0561f85e0ef1284f2ff5193256` matched requested/tested SHA
+and complete copied-tree manifests: 2,608 passed, 18 skipped, zero
+failures/errors, exit 0, wall 57.4 seconds. The owned scope peaked at
+776,912,896 bytes and 87 PIDs, with zero OOM kills or PID-limit hits.
+The final follow-up commit records evidence only and was not separately
+canonical-tested. Canonical browser skips are separate from the focused
+actual-Chromium proof.
+
 ## V9.3 grounded browser choices (2026-10-16)
 
 The operator reported that V9.2's first actual local-model action arrived as

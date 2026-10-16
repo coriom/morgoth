@@ -19,6 +19,12 @@
   in a fresh process with a multi-value procedure. The first disposable
   cluster used too few connection slots and failed at fresh-process startup;
   the corrected owned cluster used 50 slots, passed, and was removed.
+- One provenance-aware canonical run on clean code SHA `a1649ad` matched
+  requested/tested SHA and complete copied-tree manifests: 2,608 passed,
+  18 skipped, zero failures/errors, exit 0; owned memory peak 776,912,896
+  bytes, 87 PIDs, zero OOM kills or PID-limit hits. Actual Chromium ran in
+  the focused suite; the canonical sandbox skipped browser cases. The final
+  evidence-only follow-up commit was not separately canonical-tested.
 - Operator evaluation remains foreground-consent-gated, at most six local
   model choices against one synthetic app. Procedure approval stays pending;
   operator evaluation is nonpersistent. No external site, production Project,
