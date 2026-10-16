@@ -185,7 +185,13 @@ def test_timeout_reaps_owned_process_group_only(tmp_path: Path, monkeypatch) -> 
         owned_pid = int(marker.read_text())
         for _ in range(20):
             stat_path = Path(f"/proc/{owned_pid}/stat")
-            if not stat_path.exists() or stat_path.read_text().split()[2] == "Z":
+            try:
+                state = stat_path.read_text().split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                # /proc can remove an already-reaped process between lookup
+                # and read. Both outcomes satisfy the cleanup assertion.
+                break
+            if state == "Z":
                 break
             time.sleep(0.05)
         else:
