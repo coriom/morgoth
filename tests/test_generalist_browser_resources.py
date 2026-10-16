@@ -30,7 +30,7 @@ class _DelayedClient:
         self.calls += 1
         await asyncio.sleep(delay)
         return SimpleNamespace(message=SimpleNamespace(
-            content='{"kind":"stop","revision":1,"element_id":"","text":""}',
+            content='{"revision":1,"choice_id":"stop","text":""}',
             tool_calls=[]), done=True, done_reason="stop", total_duration=40_000_000,
             load_duration=20_000_000, prompt_eval_count=42, eval_count=12)
 

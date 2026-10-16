@@ -65,6 +65,7 @@ async def test_stale_snapshot_and_external_link_block_before_click() -> None:
         await browser.act(BrowserAction(kind="click", revision=1, element_id="e0"), "X")
     browser.targets = {"e0": {"id": "e0", "tag": "a", "role": "", "name": "private",
                               "href": "http://169.254.169.254/latest/meta-data", "value": "",
+                              "input_type": "", "disabled": False, "readonly": False,
                               "x": 1, "y": 1}}
 
     async def fresh(_expression: str) -> dict:
@@ -83,7 +84,8 @@ async def test_concurrent_proposals_cannot_share_one_snapshot() -> None:
                                              title="", text="", elements=[])
     browser.revision = 1
     target = {"id": "e0", "tag": "button", "role": "", "name": "Open",
-              "href": "", "value": "", "x": 10, "y": 10}
+              "href": "", "value": "", "input_type": "", "disabled": False,
+              "readonly": False, "x": 10, "y": 10}
     browser.targets = {"e0": target}
 
     async def fresh(_expression: str) -> dict:

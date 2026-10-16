@@ -66,11 +66,10 @@ async def test_browser_claim_receipt_and_fresh_pool_recovery(tmp_path: Path, mon
                 observation = json.loads(messages[1].content)["observation"]
                 name = ("Book catalog", "Work code", "Find work", "Open BK-17")[model_calls]
                 model_calls += 1
-                matches = [item for item in observation["elements"] if item["name"] == name]
+                matches = [item for item in observation["actions"] if item["name"] == name]
                 assert len(matches) == 1
-                content = json.dumps({"kind": "fill" if name == "Work code" else "click",
-                                      "revision": observation["revision"],
-                                      "element_id": matches[0]["id"],
+                content = json.dumps({"revision": observation["revision"],
+                                      "choice_id": matches[0]["id"],
                                       "text": "BK-17" if name == "Work code" else ""})
                 return SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]),
                                        done=True, done_reason="stop")

@@ -23,7 +23,7 @@ from scripts.codex_local_warning_review import ReviewUnavailable, _consent, open
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "morgoth-generalist-browser-inference-v1"
+BRANCH = "morgoth-generalist-grounded-browser-actions-v1"
 BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64")
 OBJECTIVE = "Check inventory stock item SKU-44 and report its quantity"
 TARGET = "SKU-44"
@@ -68,6 +68,9 @@ async def _evaluate() -> dict[str, object]:
         "HTTP_STATUS": None,
         "BROWSER_ISOLATED": False, "PAGE_OBSERVED": False,
         "ACTION_PROPOSED": False, "ACTION_SCHEMA_VALID": False,
+        "ACTION_CHOICE_VALIDATED": False,
+        "MODEL_CANDIDATE_COUNT": 0, "ACTION_SCHEMA_VALID_COUNT": 0,
+        "ACTION_CHOICE_VALID_COUNT": 0,
         "ACTION_POLICY_VALIDATED": False, "ACTION_COUNT": 0,
         "ISOLATED_ACTION_EXECUTED": False, "EXPECTED_UI_STATE_OBSERVED": False,
         "TASK_ACCEPTANCE_PASSED": False, "PROCEDURE_PERSISTED": False,
@@ -147,6 +150,12 @@ async def _evaluate() -> dict[str, object]:
             report["FAILURE_CLASS"] = "EVALUATION_ERROR"
         finally:
             report.update(progress.public())
+            report["MODEL_CANDIDATE_COUNT"] = source.candidate_count
+            report["ACTION_SCHEMA_VALID_COUNT"] = source.schema_valid_count
+            report["ACTION_CHOICE_VALID_COUNT"] = source.choice_valid_count
+            report["ACTION_PROPOSED"] = source.candidate_count > 0
+            report["ACTION_SCHEMA_VALID"] = source.schema_valid_count > 0
+            report["ACTION_CHOICE_VALIDATED"] = source.choice_valid_count > 0
             report["MODEL_CALL_COUNT"] = source.calls
             report["MODEL_RESPONSE_COUNT"] = source.responses
             report["MODEL_REQUEST_ATTEMPTED"] = source.calls > 0
