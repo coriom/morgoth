@@ -48,6 +48,17 @@ and synthetic origins only. Chromium's internal sandbox is disabled inside
 Bubblewrap and no cgroup memory cap has been established; this is not authority
 for untrusted external sites. `SAFE_FOR_WORKLOADS=False`.
 
+Verification: 82 focused browser/protocol tests passed with actual confined
+Chromium. The initial canonical run on clean code `8988845` failed five new
+browser tests because the canonical sandbox omits the reviewed binary; 2,611
+other tests passed. After adding only the same browser-availability guard used
+by existing integration tests, the five passed separately against actual
+Chromium and the corrected provenance-aware canonical run on `58c0e00`
+passed 2,611 with 23 skips, zero failures/errors and exit 0. Requested/tested
+SHA and complete copied-tree manifest matched. The canonical skips are not
+browser execution evidence. This milestone changes no SQL persistence path,
+so no new PostgreSQL claim is made.
+
 ## V9.4 task-bound synthetic browser actions (2026-10-16)
 
 The operator reported that one actual V9.3 Ollama choice executed and produced

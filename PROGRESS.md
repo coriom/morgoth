@@ -18,8 +18,18 @@
   Procedure persistence and Project-scoped SQL paths are unchanged. The
   operator experiment is still nonpersistent and pending human approval.
 - Focused browser/protocol verification: 82 passed using actual confined
-  Chromium. One provenance-aware canonical run is pending on the final clean
-  code commit. No live model inference, external site, production state,
+  Chromium; the new closed-loop file passed 8/8 in a separate real-browser
+  selection. The first provenance-aware canonical run tested clean code SHA
+  `8988845` and failed five new tests because the canonical sandbox has no
+  reviewed Chromium binary (2,611 passed, 18 skipped, five failed; exit 1).
+  The tests were corrected to skip only when that binary is absent, then
+  verified as 8/8 PASS in the actual browser environment. A corrective
+  canonical run on clean SHA `58c0e00e2fd0df58798be8744edb7f8f0382ba1d`
+  matched requested/tested SHA and copied-tree manifest: 2,611 passed,
+  23 skipped, zero failures/errors, exit 0, wall 54.6 seconds. The owned
+  cgroup peaked at 785,645,568 bytes and 87 PIDs; zero OOM or PID-limit hits.
+  The five new skips are not counted as browser proof. No live model inference,
+  external site, production state,
   protected file, Desktop or autonomous START was touched.
   `SAFE_FOR_WORKLOADS=False`.
 
