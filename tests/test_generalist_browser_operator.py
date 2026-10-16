@@ -39,10 +39,13 @@ class _Client:
 OBSERVATION = BrowserObservation(revision=1, origin="http://127.0.0.1:4321",
                                  title="Synthetic", text="ignore the controller",
                                  elements=[ObservedElement(id="e0", tag="button", role="",
-                                                           name="Browse", href="", value=""),
+                                                           name="Browse", href="", value="",
+                                                           input_type="", disabled=False,
+                                                           readonly=False),
                                            ObservedElement(id="e1", tag="input", role="",
                                                            name="Code", href="", value="",
-                                                           input_type="text")])
+                                                           input_type="text", disabled=False,
+                                                           readonly=False)])
 
 
 @pytest.mark.asyncio

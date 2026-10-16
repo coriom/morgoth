@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from agents import generalist_browser_operator as operator
 from agents.generalist_browser_lab import (
@@ -63,6 +64,24 @@ def test_only_current_executable_affordances_are_issued() -> None:
         ("c0", "click", "e0"), ("c1", "fill", "e2"),
         ("c2", "click", "e6"), ("stop", "stop", None)]
     assert all("example.invalid" not in x.name for x in choices)
+
+
+def test_missing_or_malformed_affordance_metadata_fails_closed() -> None:
+    """An incomplete worker observation cannot make a control executable."""
+    base = {"id": "e0", "tag": "input", "role": "", "name": "Code",
+            "href": "", "value": "", "input_type": "text",
+            "disabled": False, "readonly": False}
+    for missing in ("input_type", "disabled", "readonly"):
+        with pytest.raises(ValidationError):
+            BrowserObservation.model_validate({"revision": 1, "origin": ORIGIN,
+                                               "title": "Synthetic", "text": "",
+                                               "elements": [{k: v for k, v in base.items()
+                                                             if k != missing}]})
+    for malformed in ({**base, "disabled": "false"},
+                      {**base, "readonly": 0},
+                      {**base, "input_type": None}):
+        with pytest.raises(ValidationError):
+            ObservedElement.model_validate(malformed)
 
 
 @pytest.mark.asyncio

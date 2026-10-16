@@ -147,16 +147,16 @@ class BrowserRunProgress:
 class ObservedElement(BaseModel):
     """Visible action target with a locally issued, per-observation ID."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     id: str
     tag: str
     role: str
     name: str
     href: str
     value: str
-    input_type: str = ""
-    disabled: bool = False
-    readonly: bool = False
+    input_type: str
+    disabled: bool
+    readonly: bool
 
 
 class BrowserObservation(BaseModel):
