@@ -1,3 +1,28 @@
+## 2026-10-16 — V9.2 resource-aware browser inference candidate
+
+- Operator-reported V9.1 first action timed out with one attempted model call,
+  zero normalized responses and a rendered page already observed. No cause is
+  inferred from that discarded request.
+- The opt-in browser action source now uses a coherent 60-second cold/unknown,
+  45-second loaded and 35-second subsequent model deadline; the worker waits
+  70 seconds, the whole interaction 260 seconds, and a five-second margin
+  blocks model calls that cannot complete. The operator command has a separate
+  330-second hard limit. No retry or provider switch was introduced.
+- A bounded non-generative loopback `/api/ps` preflight reports loaded-state
+  and reported VRAM metadata, plus host/cgroup memory headroom. Known low
+  memory blocks before consent. Bounded request elapsed, load/total duration
+  and token counts are separated from actual browser-action stages. The
+  shared Ollama response model omits prompt-evaluation/generation durations;
+  public fields remain null. The page text and labels sent to the model were
+  reduced while preserving observed control IDs and values.
+- The development environment could not validate its local Ollama config in
+  a non-inference preflight; no model request was attempted. Mock-transport
+  and actual confined Chromium verification are recorded in this branch's
+  final report. Operator-only acceptance remains pending. The browser remains
+  synthetic-only; no cgroup memory cap or external-site approval exists.
+- No production state, Desktop, protected governance file, external website,
+  live model inference or research START was touched. `SAFE_FOR_WORKLOADS=False`.
+
 ## 2026-10-09 - Integrated Codex confinement, qualification blocked
 
 The Codex subprocess path now enters a mandatory Bubblewrap Linux namespace

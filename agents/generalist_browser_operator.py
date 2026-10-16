@@ -16,23 +16,27 @@ from agents.generalist_browser_lab import (
     BrowserRefusal, BrowserRunProgress, OllamaBrowserActionSource, _sandbox_command,
     run_isolated_fixture, run_isolated_policy,
 )
+from agents.generalist_ollama_resources import _memory_evidence, loaded_model_evidence
 from agents.generalist_ollama_plan_probe import _local_model_config
 from core.llm_client import OllamaLLMClient
 from scripts.codex_local_warning_review import ReviewUnavailable, _consent, open_operator_terminal
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANCH = "morgoth-generalist-browser-model-v1"
+BRANCH = "morgoth-generalist-browser-inference-v1"
 BROWSER = Path("/home/corio/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64")
 OBJECTIVE = "Check inventory stock item SKU-44 and report its quantity"
 TARGET = "SKU-44"
 EXPECTED = "12 units"
+MIN_HOST_MEMORY_MIB = 2048
+MIN_CGROUP_HEADROOM_MIB = 1024
 
 
 def _git(*args: str) -> str:
     """Read bounded checkout metadata without exporting Git diagnostic text."""
     result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
-                            text=True, timeout=5, check=False)
+                            text=True, timeout=8, check=False,
+                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     if result.returncode != 0 or len(result.stdout) > 4096:
         raise BrowserRefusal("PREFLIGHT_CHECKOUT")
     return result.stdout.strip()
@@ -41,11 +45,15 @@ def _git(*args: str) -> str:
 def _checkout_verified() -> None:
     """Require exactly the clean reviewed, origin-synchronized feature branch."""
     try:
+        if _git("remote", "get-url", "origin") not in {
+                "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"}:
+            raise BrowserRefusal("PREFLIGHT_CHECKOUT")
+        local = _git("rev-parse", "HEAD")
+        remote = _git("ls-remote", "--heads", "origin", BRANCH).split()
         if (_git("branch", "--show-current") != BRANCH or
-            _git("rev-parse", "HEAD") != _git("rev-parse", f"origin/{BRANCH}") or
-            _git("status", "--porcelain=v1", "--untracked-files=all") or
-            _git("remote", "get-url", "origin") not in {
-                "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"}):
+            local != _git("rev-parse", f"origin/{BRANCH}") or
+            remote != [local, f"refs/heads/{BRANCH}"] or
+            _git("status", "--porcelain=v1", "--untracked-files=all")):
             raise BrowserRefusal("PREFLIGHT_CHECKOUT")
     except (OSError, subprocess.SubprocessError):
         raise BrowserRefusal("PREFLIGHT_CHECKOUT") from None
@@ -65,6 +73,13 @@ async def _evaluate() -> dict[str, object]:
         "TASK_ACCEPTANCE_PASSED": False, "PROCEDURE_PERSISTED": False,
         "REPLAY_VALIDATED": False, "APPROVAL_PENDING": False,
         "PRODUCTION_QUALIFIED": False,
+        "MODEL_RESIDENCY": "UNKNOWN", "MODEL_REPORTED_VRAM_MIB": None,
+        "HOST_MEMORY_AVAILABLE_MIB": None, "CGROUP_MEMORY_HEADROOM_MIB": None,
+        "MODEL_REQUEST_ELAPSED_MS_LAST": None, "MODEL_REQUEST_ELAPSED_MS_TOTAL": 0,
+        "MODEL_REQUEST_ELAPSED_MS_MAX": 0, "MODEL_TOTAL_DURATION_MS_LAST": None,
+        "MODEL_LOAD_DURATION_MS_LAST": None, "MODEL_PROMPT_TOKENS_LAST": None,
+        "MODEL_OUTPUT_TOKENS_LAST": None,
+        "PROMPT_EVAL_DURATION_MS_LAST": None, "GENERATION_DURATION_MS_LAST": None,
     }
     try:
         _checkout_verified()
@@ -89,6 +104,14 @@ async def _evaluate() -> dict[str, object]:
         except BrowserRefusal as exc:
             report["FAILURE_CLASS"] = exc.code
             return report
+        report.update(_memory_evidence())
+        report.update(await loaded_model_evidence(getattr(config, "ollama_base_url", ""), model))
+        if ((report["HOST_MEMORY_AVAILABLE_MIB"] is not None and
+             report["HOST_MEMORY_AVAILABLE_MIB"] < MIN_HOST_MEMORY_MIB) or
+            (report["CGROUP_MEMORY_HEADROOM_MIB"] is not None and
+             report["CGROUP_MEMORY_HEADROOM_MIB"] < MIN_CGROUP_HEADROOM_MIB)):
+            report["FAILURE_CLASS"] = "RESOURCE_PREFLIGHT_LOW_MEMORY"
+            return report
         try:
             preflight = await run_isolated_fixture(
                 checkout=ROOT, browser_dir=BROWSER, fixture="heldout",
@@ -107,7 +130,9 @@ async def _evaluate() -> dict[str, object]:
         except ReviewUnavailable:
             report["FAILURE_CLASS"] = "LOCAL_CONSENT_REQUIRED"
             return report
-        source = OllamaBrowserActionSource(client, model)
+        source = OllamaBrowserActionSource(
+            client, model, loaded=report["MODEL_RESIDENCY"] == "LOADED"
+            if report["MODEL_RESIDENCY"] != "UNKNOWN" else None)
         progress = BrowserRunProgress()
         try:
             await run_isolated_policy(
@@ -128,6 +153,13 @@ async def _evaluate() -> dict[str, object]:
             report["MODEL_RESPONSE_RECEIVED"] = source.responses > 0
             report["HTTP_RESPONSE_RECEIVED"] = source.http_response_received
             report["HTTP_STATUS"] = source.http_status
+            report["MODEL_REQUEST_ELAPSED_MS_LAST"] = source.last_elapsed_ms
+            report["MODEL_REQUEST_ELAPSED_MS_TOTAL"] = source.total_elapsed_ms
+            report["MODEL_REQUEST_ELAPSED_MS_MAX"] = source.max_elapsed_ms
+            report["MODEL_TOTAL_DURATION_MS_LAST"] = source.last_total_ms
+            report["MODEL_LOAD_DURATION_MS_LAST"] = source.last_load_ms
+            report["MODEL_PROMPT_TOKENS_LAST"] = source.last_prompt_tokens
+            report["MODEL_OUTPUT_TOKENS_LAST"] = source.last_output_tokens
         return report
     finally:
         await client.close()

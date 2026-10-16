@@ -1,5 +1,59 @@
 # Generalist Morgoth architecture V1 — reviewable target, not runtime authority
 
+## V9.2 resource-aware browser inference (2026-10-16)
+
+The operator-reported first V9.1 model action timed out before a normalized
+response. A rendered page had already been observed; no action was executed.
+The discarded private response and later resource snapshots cannot establish
+whether loading, queueing, prompt evaluation, generation or another local
+condition caused that historical timeout.
+
+The opt-in operator preflight now checks the configured loopback Ollama model
+list and [loaded-model API](https://docs.ollama.com/api/ps) without generating
+text. It exports only `LOADED`, `NOT_LOADED` or `UNKNOWN`, bounded reported VRAM
+size, host available-memory and cgroup headroom. Reported VRAM size does not
+prove CPU/GPU placement. Known host memory below 2 GiB or cgroup headroom below
+1 GiB blocks before consent. Unknown measurements stay explicit and do not
+prove sufficient resources. The development agent's non-inference preflight
+could not validate its local Ollama configuration; it made zero model calls.
+
+The [chat API](https://docs.ollama.com/api/chat) exposes total/load duration
+and token counts. The existing shared client normalizes those fields, so the
+browser report publishes bounded last-request elapsed time, cumulative/max
+request time, total/load duration and prompt/output token counts. It publishes
+null for separate prompt-evaluation and generation durations because the
+current normalized response omits them. A timeout has elapsed-time evidence
+but no completed-response durations; prior response metrics are cleared when
+the next request starts. Request time can include shared-client queueing and
+does not identify a bottleneck by itself.
+
+The model-facing page body was reduced from 600 to 360 characters and labels
+from 100 to 80, while retaining every observed actionable ID, name and value.
+The strict four-field native JSON Schema, 384-token generation cap, default
+model reasoning behavior, no-tools/no-streaming policy and independent action
+validation remain unchanged. No alternate provider or automatic retry is used.
+
+The first model request is capped at 60 seconds if `/api/ps` reports it
+unloaded or cannot establish residency, 45 seconds if already loaded, and
+subsequent requests at 35 seconds. The confined worker waits 70 seconds for
+each action, so no permitted request outlives its worker input window. The
+parent interactive budget is 260 seconds for at most six calls; it refuses a
+new model call unless enough time remains for that call plus five seconds of
+confirmation. A reviewed outer 330-second command limit covers preflight,
+consent and cleanup. These are finite resource limits, not a claim that the
+installed model can complete four actions within them. If it cannot, the next
+operator run should report a capacity constraint rather than trigger an
+unbounded timeout increase.
+
+The browser remains restricted to one reviewed synthetic app inside its
+private Bubblewrap network namespace. A model action is checked against the
+fresh rendered observation; the worker acknowledges execution only after an
+actual interaction and new observation. Independent UI acceptance, procedure
+construction and pending approval remain distinct. The operator-only run
+does not persist a procedure and reports `PROCEDURE_PERSISTED=false`.
+Chromium's nested sandbox is disabled and there is no cgroup memory cap, so
+untrusted external sites remain unsupported. `SAFE_FOR_WORKLOADS=False`.
+
 ## V9.1 browser model protocol and evidence (2026-10-16)
 
 The operator reported that V9's first consented local Ollama action attempt

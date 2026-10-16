@@ -18,6 +18,7 @@ import signal
 import socket
 import sys
 import tempfile
+import time
 from typing import Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -30,6 +31,14 @@ MAX_ACTIONS = 8
 MAX_SECONDS = 25
 MAX_PAGE_TEXT = 1200
 MAX_ELEMENTS = 24
+# The worker must outlive the longest permitted model request. The parent
+# retains a separate cleanup margin and never starts a doomed request.
+FIRST_COLD_MODEL_SECONDS = 60
+FIRST_LOADED_MODEL_SECONDS = 45
+FOLLOWUP_MODEL_SECONDS = 35
+WORKER_ACTION_WAIT_SECONDS = 70
+INTERACTIVE_SECONDS = 260
+MIN_REQUEST_MARGIN_SECONDS = 5
 REVIEWED_BROWSER_SHA256 = "ded93a9c9a53a1ae040f08124badcca95c938e9d5015ff340c3b5538c41bf39e"
 _ELEMENTS_JS = """(() => {
   const nodes = [...document.querySelectorAll('a,button,input,textarea,select,[role="button"]')]
@@ -219,12 +228,26 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
 class OllamaBrowserActionSource:
     """One strict local-model action proposal; never browser authority."""
 
-    def __init__(self, client: object, model: str) -> None:
+    def __init__(self, client: object, model: str, *, loaded: bool | None = None) -> None:
         self.client, self.model = client, model
+        self.loaded = loaded
         self.calls = 0
         self.responses = 0
         self.http_response_received = False
         self.http_status: int | None = None
+        self.last_elapsed_ms: int | None = None
+        self.total_elapsed_ms = 0
+        self.max_elapsed_ms = 0
+        self.last_total_ms: int | None = None
+        self.last_load_ms: int | None = None
+        self.last_prompt_tokens: int | None = None
+        self.last_output_tokens: int | None = None
+
+    def next_timeout_seconds(self) -> int:
+        """Return the fixed deadline for the next authorized model attempt."""
+        if self.calls == 0:
+            return FIRST_LOADED_MODEL_SECONDS if self.loaded is True else FIRST_COLD_MODEL_SECONDS
+        return FOLLOWUP_MODEL_SECONDS
 
     async def propose(self, objective: str, target: str,
                       observation: BrowserObservation) -> BrowserAction:
@@ -238,16 +261,22 @@ class OllamaBrowserActionSource:
                   "kind, revision, element_id and text. Use empty strings for fields unused "
                   "by the action. Do not use null. For click use a visible element_id and "
                   "empty text; for fill use both; for stop use two empty strings.")
-        supplied = {"objective": objective[:200], "target": target[:40],
+        supplied = {"objective": objective[:160], "target": target[:40],
                     "observation": {
                         "revision": observation.revision,
-                        "title": observation.title[:100],
-                        "text": observation.text[:600],
+                        "title": observation.title[:80],
+                        "text": observation.text[:360],
                         "elements": [{"id": item.id, "tag": item.tag,
-                                      "name": item.name, "value": item.value,
+                                      "name": item.name[:80], "value": item.value[:40],
                                       **({"href": item.href} if item.href else {})}
                                      for item in observation.elements[:MAX_ELEMENTS]],
                     }}
+        request_seconds = self.next_timeout_seconds()
+        started = time.monotonic()
+        self.last_total_ms = None
+        self.last_load_ms = None
+        self.last_prompt_tokens = None
+        self.last_output_tokens = None
         try:
             self.calls += 1
             response = await asyncio.wait_for(self.client.chat(
@@ -255,7 +284,7 @@ class OllamaBrowserActionSource:
                  ChatMessage(role="user", content=json.dumps(supplied))],
                 model=self.model, tools=None, stream=False,
                 options={"temperature": 0, "num_predict": 384},
-                format=BrowserActionProposal.model_json_schema()), timeout=45)
+                format=BrowserActionProposal.model_json_schema()), timeout=request_seconds)
         except (TimeoutError, httpx.TimeoutException):
             raise BrowserRefusal("MODEL_TIMEOUT") from None
         except httpx.HTTPStatusError as exc:
@@ -289,8 +318,16 @@ class OllamaBrowserActionSource:
             raise BrowserRefusal("MODEL_ENVELOPE_INVALID") from None
         except Exception:
             raise BrowserRefusal("MODEL_UNEXPECTED_FAILURE") from None
+        finally:
+            self.last_elapsed_ms = min(1_000_000, max(0, round((time.monotonic() - started) * 1000)))
+            self.total_elapsed_ms = min(1_000_000, self.total_elapsed_ms + self.last_elapsed_ms)
+            self.max_elapsed_ms = max(self.max_elapsed_ms, self.last_elapsed_ms)
         self.responses += 1
         self.http_response_received = True
+        self.last_total_ms = _bounded_ns_ms(getattr(response, "total_duration", None))
+        self.last_load_ms = _bounded_ns_ms(getattr(response, "load_duration", None))
+        self.last_prompt_tokens = _bounded_count(getattr(response, "prompt_eval_count", None))
+        self.last_output_tokens = _bounded_count(getattr(response, "eval_count", None))
         try:
             content = response.message.content
             if response.message.tool_calls:
@@ -316,6 +353,16 @@ class OllamaBrowserActionSource:
             raise BrowserRefusal("MODEL_ACTION_SCHEMA_INVALID") from None
         except (AttributeError, KeyError, TypeError, UnicodeError):
             raise BrowserRefusal("MODEL_ENVELOPE_INVALID") from None
+
+
+def _bounded_count(value: object) -> int | None:
+    """Return a safe nonnegative Ollama count, or absent if unverified."""
+    return value if type(value) is int and 0 <= value <= 1_000_000 else None
+
+
+def _bounded_ns_ms(value: object) -> int | None:
+    """Convert bounded Ollama nanoseconds to milliseconds without inference."""
+    return value // 1_000_000 if type(value) is int and 0 <= value <= 10**15 else None
 
 
 class _Cdp:
@@ -635,10 +682,7 @@ async def _interactive_worker(payload: dict) -> None:
                 event = {"type": "observation", "value": browser.observation.model_dump(mode="json")}
                 sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
                 sys.stdout.flush()
-                line = await asyncio.wait_for(asyncio.to_thread(sys.stdin.buffer.readline, 4096),
-                                              timeout=60)
-                if not line or len(line) > 4096:
-                    raise BrowserRefusal("ACTION_RESPONSE_MISSING")
+                line = await _worker_action_line()
                 try:
                     action = BrowserAction.model_validate_json(line)
                 except ValueError:
@@ -665,6 +709,18 @@ async def _interactive_worker(payload: dict) -> None:
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def _worker_action_line() -> bytes:
+    """Read one bounded action before the worker's independent deadline."""
+    try:
+        line = await asyncio.wait_for(asyncio.to_thread(sys.stdin.buffer.readline, 4096),
+                                      timeout=WORKER_ACTION_WAIT_SECONDS)
+    except TimeoutError:
+        raise BrowserRefusal("ACTION_RESPONSE_MISSING") from None
+    if not line or len(line) > 4096:
+        raise BrowserRefusal("ACTION_RESPONSE_MISSING")
+    return line
 
 
 def _sandbox_command(checkout: Path, browser_dir: Path, fixture: str,
@@ -759,7 +815,7 @@ async def run_isolated_policy(*, checkout: Path, browser_dir: Path, fixture: str
         stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
     calls = 0
     try:
-        async with asyncio.timeout(180):
+        async with asyncio.timeout(INTERACTIVE_SECONDS) as budget:
             assert process.stdin is not None and process.stdout is not None
             process.stdin.write((json.dumps({"fixture": fixture, "objective": objective,
                                              "target": target, "expected": expected,
@@ -818,6 +874,13 @@ async def run_isolated_policy(*, checkout: Path, browser_dir: Path, fixture: str
                 progress.page_observed = True
                 if calls >= max_model_calls:
                     raise BrowserRefusal("MODEL_CALL_BUDGET_EXCEEDED")
+                # Reserve enough time to receive the worker confirmation and
+                # clean up. Do not initiate a request that cannot finish.
+                if isinstance(source, OllamaBrowserActionSource):
+                    if (budget.when() is None or
+                            budget.when() - asyncio.get_running_loop().time() <
+                            source.next_timeout_seconds() + MIN_REQUEST_MARGIN_SECONDS):
+                        raise BrowserRefusal("MODEL_BUDGET_EXHAUSTED")
                 calls += 1
                 action = await source.propose(objective, target, observation)
                 if type(action) is not BrowserAction:
