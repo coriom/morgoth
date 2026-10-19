@@ -17,7 +17,10 @@ from agents.generalist_browser_lab import (
     _sandbox_command,
     run_isolated_fixture, run_isolated_policy,
 )
-from agents.generalist_ollama_resources import _memory_evidence, loaded_model_evidence
+from agents.generalist_ollama_resources import (
+    _memory_evidence, loaded_model_evidence, local_ollama_metadata,
+    local_resource_evidence,
+)
 from agents.generalist_ollama_plan_probe import _local_model_config
 from core.llm_client import OllamaLLMClient
 from scripts.codex_local_warning_review import ReviewUnavailable, _consent, open_operator_terminal
@@ -31,6 +34,34 @@ TARGET = "SKU-44"
 EXPECTED = "12 units"
 MIN_HOST_MEMORY_MIB = 2048
 MIN_CGROUP_HEADROOM_MIB = 1024
+MIN_OVERRIDE_RESERVE_MIB = 1024
+
+
+def _override_resource_ready(metadata: dict[str, object],
+                             resources: dict[str, object]) -> bool:
+    """Refuse an unloaded alternative unless its measured size fits known headroom."""
+    if (metadata.get("MODEL_INSTALLED") is not True or
+            metadata.get("OLLAMA_PS_RESPONSIVE") is not True or
+            metadata.get("MODEL_RESIDENCY") not in {"LOADED", "NOT_LOADED"} or
+            metadata.get("OTHER_LOADED_MODEL_COUNT") != 0):
+        return False
+    host = resources.get("HOST_MEMORY_AVAILABLE_MIB")
+    if type(host) is not int or host < MIN_HOST_MEMORY_MIB:
+        return False
+    headroom = resources.get("CGROUP_MEMORY_HEADROOM_MIB")
+    kind = resources.get("CGROUP_MEMORY_LIMIT_KIND")
+    if kind == "FINITE" and (type(headroom) is not int or
+                              headroom < MIN_CGROUP_HEADROOM_MIB):
+        return False
+    if kind not in {"FINITE", "UNLIMITED"}:
+        return False
+    if metadata["MODEL_RESIDENCY"] == "LOADED":
+        return True
+    size = metadata.get("MODEL_SIZE_MIB")
+    if type(size) is not int or size <= 0 or host < size + MIN_OVERRIDE_RESERVE_MIB:
+        return False
+    return kind == "UNLIMITED" or (type(headroom) is int and
+                                   headroom >= size + MIN_OVERRIDE_RESERVE_MIB)
 
 
 def _decision_verdict(failure: str, progress: BrowserRunProgress) -> str:
@@ -52,24 +83,26 @@ def _git(*args: str) -> str:
     return result.stdout.strip()
 
 
-def _checkout_verified() -> None:
+def _checkout_verified(branch: str = BRANCH) -> None:
     """Require exactly the clean reviewed, origin-synchronized feature branch."""
     try:
         if _git("remote", "get-url", "origin") not in {
                 "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"}:
             raise BrowserRefusal("PREFLIGHT_CHECKOUT")
         local = _git("rev-parse", "HEAD")
-        remote = _git("ls-remote", "--heads", "origin", BRANCH).split()
-        if (_git("branch", "--show-current") != BRANCH or
-            local != _git("rev-parse", f"origin/{BRANCH}") or
-            remote != [local, f"refs/heads/{BRANCH}"] or
+        remote = _git("ls-remote", "--heads", "origin", branch).split()
+        if (_git("branch", "--show-current") != branch or
+            local != _git("rev-parse", f"origin/{branch}") or
+            remote != [local, f"refs/heads/{branch}"] or
             _git("status", "--porcelain=v1", "--untracked-files=all")):
             raise BrowserRefusal("PREFLIGHT_CHECKOUT")
     except (OSError, subprocess.SubprocessError):
         raise BrowserRefusal("PREFLIGHT_CHECKOUT") from None
 
 
-async def _evaluate() -> dict[str, object]:
+async def _evaluate(*, branch: str = BRANCH, fixture: str = "heldout",
+                    objective: str = OBJECTIVE, target: str = TARGET,
+                    expected: str = EXPECTED, model_override: str | None = None) -> dict[str, object]:
     """Preflight and obtain foreground consent before any local inference."""
     report: dict[str, object] = {
         "VERDICT": "MODEL_BROWSER_PROTOCOL_OR_RESOURCE_BLOCKED", "MODEL_CALL_COUNT": 0,
@@ -100,9 +133,12 @@ async def _evaluate() -> dict[str, object]:
         "PROMPT_EVAL_DURATION_MS_LAST": None, "GENERATION_DURATION_MS_LAST": None,
     }
     try:
-        _checkout_verified()
-        _sandbox_command(ROOT, BROWSER, "heldout", "--interactive-worker")
-        SyntheticTracePolicy.from_checkout(ROOT, "heldout")
+        if branch == BRANCH:
+            _checkout_verified()
+        else:
+            _checkout_verified(branch)
+        _sandbox_command(ROOT, BROWSER, fixture, "--interactive-worker")
+        SyntheticTracePolicy.from_checkout(ROOT, fixture)
         config = _local_model_config()
     except (BrowserRefusal, OSError, ValueError) as exc:
         report["FAILURE_CLASS"] = exc.code if isinstance(exc, BrowserRefusal) else "PREFLIGHT_REJECTED"
@@ -114,7 +150,13 @@ async def _evaluate() -> dict[str, object]:
     try:
         try:
             models = await asyncio.wait_for(client.list_models(), timeout=5)
-            model = config.ollama_primary_model
+            model = model_override or config.ollama_primary_model
+            report["MODEL_ROLE"] = "OVERRIDE" if model_override else "CONFIGURED"
+            report["INSTALLED_MODEL_COUNT"] = min(64, len(models))
+            report["ALTERNATIVE_MODEL_COUNT"] = min(64, sum(
+                item.name not in {config.ollama_primary_model,
+                                  config.ollama_primary_model + ":latest"}
+                for item in models))
             if model not in {item.name for item in models} and model + ":latest" not in {item.name for item in models}:
                 raise BrowserRefusal("MODEL_NOT_INSTALLED")
         except (TimeoutError, httpx.HTTPError, OSError, ValueError):
@@ -125,6 +167,16 @@ async def _evaluate() -> dict[str, object]:
             return report
         report.update(_memory_evidence())
         report.update(await loaded_model_evidence(getattr(config, "ollama_base_url", ""), model))
+        if model_override is not None:
+            metadata = await local_ollama_metadata(config.ollama_base_url, model)
+            resources = local_resource_evidence()
+            report["ALTERNATIVE_MODEL_RESOURCE_READY"] = _override_resource_ready(
+                metadata, resources)
+            report["ALTERNATIVE_MODEL_SIZE_MIB"] = metadata.get("MODEL_SIZE_MIB")
+            report["OTHER_LOADED_MODEL_COUNT"] = metadata.get("OTHER_LOADED_MODEL_COUNT")
+            if not report["ALTERNATIVE_MODEL_RESOURCE_READY"]:
+                report["FAILURE_CLASS"] = "ALTERNATIVE_MODEL_RESOURCE_UNVERIFIED"
+                return report
         if ((report["HOST_MEMORY_AVAILABLE_MIB"] is not None and
              report["HOST_MEMORY_AVAILABLE_MIB"] < MIN_HOST_MEMORY_MIB) or
             (report["CGROUP_MEMORY_HEADROOM_MIB"] is not None and
@@ -133,8 +185,8 @@ async def _evaluate() -> dict[str, object]:
             return report
         try:
             preflight = await run_isolated_fixture(
-                checkout=ROOT, browser_dir=BROWSER, fixture="heldout",
-                objective=OBJECTIVE, target=TARGET, expected=EXPECTED)
+                checkout=ROOT, browser_dir=BROWSER, fixture=fixture,
+                objective=objective, target=target, expected=expected)
             if preflight.get("BROWSER_ISOLATED") is not True:
                 raise BrowserRefusal("BROWSER_PREFLIGHT_FAILED")
             report["BROWSER_ISOLATED"] = True
@@ -155,8 +207,8 @@ async def _evaluate() -> dict[str, object]:
         progress = BrowserRunProgress()
         try:
             await run_isolated_policy(
-                checkout=ROOT, browser_dir=BROWSER, fixture="heldout",
-                objective=OBJECTIVE, target=TARGET, expected=EXPECTED,
+                checkout=ROOT, browser_dir=BROWSER, fixture=fixture,
+                objective=objective, target=target, expected=expected,
                 source=source, max_model_calls=6, progress=progress,
                 synthetic_trace=True)
             report.update({"VERDICT": "MODEL_BROWSER_QUALIFIED",
