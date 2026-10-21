@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--test-pg-socket", type=Path)
     args = parser.parse_args(argv)
     try:
         if not args.home.is_absolute():
@@ -51,6 +52,14 @@ def main(argv: list[str] | None = None) -> int:
         security = ManagementSecurity(token=token, port=args.port)
         home = RuntimeHome(args.home, args.home / "projects")
         app = create_management_app(ProjectManager(home), security)
+        if args.test_pg_socket is not None:
+            from agents.desktop_read_models import DesktopReadStore, ReadUnavailable
+            from agents.desktop_read_routes import install_desktop_read_routes
+            try:
+                reader = DesktopReadStore(args.test_pg_socket)
+            except ReadUnavailable:
+                raise ValueError("disposable read source unavailable") from None
+            install_desktop_read_routes(app, ProjectManager(home), reader)
     except (ValueError, ProjectManagerError):
         print("management API configuration is invalid", file=sys.stderr)
         return 2

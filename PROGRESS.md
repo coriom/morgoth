@@ -1,3 +1,13 @@
+## 2026-10-21 — Desktop D2 disposable Project reads (candidate)
+
+Added an opt-in, Management-token-protected read projection for managed Project
+generalist missions and capabilities. It is mounted only when an owner-private
+Unix socket for a disposable `morgoth_test` cluster is explicitly supplied.
+Normal Management V1 and autonomous runtime startup remain unchanged. The
+adapter does not initialize tables or read production. Historical checkpoints,
+validation and fixture approval are separate; grants and receipt bodies stay
+unexposed. See `docs/DESKTOP_READ_V1.md`. No dependency or governance change.
+
 ## 2026-10-16 — V9.6 goal-directed synthetic browser evidence
 
 - Operator-reported V9.5: five valid, acknowledged Ollama actions; three had
