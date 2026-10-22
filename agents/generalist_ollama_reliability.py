@@ -8,6 +8,7 @@ browser or executes a capability.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -47,17 +48,18 @@ def _git(*args: str) -> str:
     return result.stdout.strip()
 
 
-def _checkout_verified() -> None:
+def _checkout_verified(expected_branch: str | None = None) -> None:
     """Require the exact clean pushed feature branch before operator use."""
+    branch = expected_branch or BRANCH
     try:
         if _git("remote", "get-url", "origin") not in {
                 "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"}:
             raise BrowserRefusal("PREFLIGHT_CHECKOUT")
         local = _git("rev-parse", "HEAD")
-        remote = _git("ls-remote", "--heads", "origin", BRANCH).split()
-        if (_git("branch", "--show-current") != BRANCH or
-                local != _git("rev-parse", f"origin/{BRANCH}") or
-                remote != [local, f"refs/heads/{BRANCH}"] or
+        remote = _git("ls-remote", "--heads", "origin", branch).split()
+        if (_git("branch", "--show-current") != branch or
+                local != _git("rev-parse", f"origin/{branch}") or
+                remote != [local, f"refs/heads/{branch}"] or
                 _git("status", "--porcelain=v1", "--untracked-files=all")):
             raise BrowserRefusal("PREFLIGHT_CHECKOUT")
     except (OSError, subprocess.SubprocessError):
@@ -101,7 +103,7 @@ def _tcp_probe(base_url: str) -> bool:
         return False
 
 
-async def _preflight() -> tuple[dict[str, object], object | None]:
+async def _preflight(expected_branch: str | None = None) -> tuple[dict[str, object], object | None]:
     """Gather safe local facts without a generative request or model warming."""
     report: dict[str, object] = {
         "VERDICT": "NON_GENERATIVE_PREFLIGHT_INCOMPLETE",
@@ -116,7 +118,10 @@ async def _preflight() -> tuple[dict[str, object], object | None]:
     }
     report.update(_timeout_evidence())
     try:
-        _checkout_verified()
+        if expected_branch is None:
+            _checkout_verified()
+        else:
+            _checkout_verified(expected_branch)
         config = _local_model_config()
     except (BrowserRefusal, OSError, ValueError) as exc:
         report["FAILURE_CLASS"] = (exc.code if isinstance(exc, BrowserRefusal)
@@ -191,6 +196,8 @@ async def _probe(report: dict[str, object], config: object) -> dict[str, object]
     report["MODEL_RESIDENCY_BEFORE"] = report["MODEL_RESIDENCY"]
     try:
         try:
+            report["MODEL_REQUEST_STARTED_AT_UTC"] = datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds")
             await source.propose("Check inventory stock item SKU-44", "SKU-44",
                                  _synthetic_observation())
             report["VERDICT"] = "STRUCTURED_RESPONSE_CONFIRMED"
@@ -202,6 +209,8 @@ async def _probe(report: dict[str, object], config: object) -> dict[str, object]
             report["VERDICT"] = "LOCAL_INFERENCE_BLOCKED"
             report["FAILURE_CLASS"] = "PROBE_UNEXPECTED_FAILURE"
         finally:
+            report["MODEL_REQUEST_ENDED_AT_UTC"] = datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds")
             report.update({
                 "INFERENCE_ATTEMPTED": source.calls == 1,
                 "RESPONSE_RECEIVED": source.responses == 1,

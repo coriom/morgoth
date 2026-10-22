@@ -237,6 +237,7 @@ async def test_one_consented_call_reports_only_bounded_metrics_and_cleans_up(
     assert set(calls[0][1]["format"]["required"]) == {"revision", "choice_id"}
     assert report["MODEL_RESIDENCY_BEFORE"] == "NOT_LOADED"
     assert report["MODEL_RESIDENCY_AFTER"] == "LOADED"
+    assert report["MODEL_REQUEST_STARTED_AT_UTC"] <= report["MODEL_REQUEST_ENDED_AT_UTC"]
     assert "PRIVATE_SECRET" not in json.dumps(report)
     if failure is None:
         assert report["RESPONSE_RECEIVED"] is True
