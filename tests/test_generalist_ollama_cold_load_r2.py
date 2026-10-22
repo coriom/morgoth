@@ -396,6 +396,11 @@ def test_classifications_distinguish_completion_failure_ready_and_pressure() -> 
     assert "RUNNER_FAILURE_BEFORE_CLIENT_CANCELLATION" in r2.classify_probe(
         _timed_report(120000, failure="MODEL_TIMEOUT", complete=False,
                       journal=[prior, after]))
+    load_failure = {"UTC": (start + timedelta(seconds=4)).isoformat(),
+                    "CLASSES": ["MODEL_LOAD_FAILURE_REPORTED"]}
+    assert "RUNNER_FAILURE_BEFORE_CLIENT_CANCELLATION" in r2.classify_probe(
+        _timed_report(120000, failure="MODEL_TIMEOUT", complete=False,
+                      journal=[load_failure]))
     ready_event = {"UTC": (start + timedelta(seconds=5)).isoformat(),
                    "CLASSES": ["RUNNER_READY_REPORTED"]}
     assert "MODEL_READY_BUT_INFERENCE_STALLED" in r2.classify_probe(

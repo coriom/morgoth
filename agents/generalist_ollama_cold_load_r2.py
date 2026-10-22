@@ -315,7 +315,8 @@ def classify_probe(report: dict[str, object]) -> list[str]:
                     if not (start_dt <= event_dt < end_dt):
                         continue
                     event_classes = item["CLASSES"]
-                    if ("RUNNER_FAILURE_REPORTED" in event_classes and
+                    if ({"RUNNER_FAILURE_REPORTED", "MODEL_LOAD_FAILURE_REPORTED"}
+                            .intersection(event_classes) and
                             "CANCELLATION_REPORTED" not in event_classes):
                         prior.append(event_dt)
                     if "RUNNER_READY_REPORTED" in event_classes:
