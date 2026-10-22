@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 from urllib.parse import urlsplit
+from typing import Callable
 
 from loguru import logger
 
@@ -103,7 +104,9 @@ def _tcp_probe(base_url: str) -> bool:
         return False
 
 
-async def _preflight(expected_branch: str | None = None) -> tuple[dict[str, object], object | None]:
+async def _preflight(expected_branch: str | None = None,
+                     checkout_verifier: Callable[[], None] | None = None
+                     ) -> tuple[dict[str, object], object | None]:
     """Gather safe local facts without a generative request or model warming."""
     report: dict[str, object] = {
         "VERDICT": "NON_GENERATIVE_PREFLIGHT_INCOMPLETE",
@@ -118,7 +121,9 @@ async def _preflight(expected_branch: str | None = None) -> tuple[dict[str, obje
     }
     report.update(_timeout_evidence())
     try:
-        if expected_branch is None:
+        if checkout_verifier is not None:
+            checkout_verifier()
+        elif expected_branch is None:
             _checkout_verified()
         else:
             _checkout_verified(expected_branch)

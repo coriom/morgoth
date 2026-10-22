@@ -54,7 +54,9 @@ def classify_message(message: object) -> list[str]:
         classes.append("RUNNER_START_PHASE_REPORTED")
     if "runner" in lower and "load" in lower and not ("error" in lower or "fail" in lower):
         classes.append("RUNNER_LOAD_PHASE_REPORTED")
-    if "runner" in lower and "ready" in lower:
+    if ("runner" in lower and re.search(r"\bready\b", lower) and
+            not any(marker in lower for marker in
+                    ("not ready", "waiting", "error", "fail", "timeout", "cancel"))):
         classes.append("RUNNER_READY_REPORTED")
     if ("out of memory" in lower or "oom.kill" in lower or
             "cuda_error_out_of_memory" in lower):
