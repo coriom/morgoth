@@ -198,6 +198,8 @@ def test_visible_marker_is_not_mission_acceptance() -> None:
      ("Book catalog", "Work code", "Find work", "Open BK-17")),
     ("support", "Find request SR-9", "SR-9", "Resolved",
      ("Support requests", "Request number", "Look up request", "View SR-9")),
+    ("relayout", "Check stock item SKU-44", "SKU-44", "12 units",
+     ("Open records panel", "Stock code", "Look up stock", "Open SKU-44 record")),
 ])
 async def test_confined_chromium_accepts_scripted_hierarchy(
         fixture: str, objective: str, target: str, expected: str,
@@ -215,6 +217,27 @@ async def test_confined_chromium_accepts_scripted_hierarchy(
     assert source.high_level_calls == 1 and source.low_level_calls == 4
     assert len(progress.synthetic_trace) == 4
     assert client.last_low_planning[-1]["verified_history"]
+
+
+@pytest.mark.asyncio
+@REQUIRES_BROWSER
+async def test_unsupported_task_abstains_without_browser_action() -> None:
+    """One high-level abstention spends one call and executes nothing."""
+    class AbstainingClient(ScriptedClient):
+        async def chat(self, messages: list, **kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "decision": "abstain", "subgoal": "", "visible_marker": "",
+                "uncertainty": "No supported interaction"}), tool_calls=[]),
+                done=True, done_reason="stop")
+
+    source = HierarchicalBrowserActionSource(AbstainingClient(), "fixture")
+    progress = BrowserRunProgress()
+    with pytest.raises(BrowserRefusal, match="MODEL_ABSTAINED"):
+        await run_isolated_policy(checkout=ROOT, browser_dir=BROWSER,
+                                  fixture="heldout", objective="Unsupported task",
+                                  target="ID-1", expected="Never true", source=source,
+                                  progress=progress, max_model_calls=6)
+    assert source.calls == 1 and progress.action_count == 0 and progress.page_observed
 
 
 @pytest.mark.asyncio
