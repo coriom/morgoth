@@ -102,7 +102,8 @@ def _checkout_verified(branch: str = BRANCH) -> None:
 
 async def _evaluate(*, branch: str = BRANCH, fixture: str = "heldout",
                     objective: str = OBJECTIVE, target: str = TARGET,
-                    expected: str = EXPECTED, model_override: str | None = None) -> dict[str, object]:
+                    expected: str = EXPECTED, model_override: str | None = None,
+                    hierarchical: bool = False) -> dict[str, object]:
     """Preflight and obtain foreground consent before any local inference."""
     report: dict[str, object] = {
         "VERDICT": "MODEL_BROWSER_PROTOCOL_OR_RESOURCE_BLOCKED", "MODEL_CALL_COUNT": 0,
@@ -201,9 +202,12 @@ async def _evaluate(*, branch: str = BRANCH, fixture: str = "heldout",
         except ReviewUnavailable:
             report["FAILURE_CLASS"] = "LOCAL_CONSENT_REQUIRED"
             return report
-        source = OllamaBrowserActionSource(
-            client, model, loaded=report["MODEL_RESIDENCY"] == "LOADED"
-            if report["MODEL_RESIDENCY"] != "UNKNOWN" else None)
+        source_type = OllamaBrowserActionSource
+        if hierarchical:
+            from agents.generalist_browser_hierarchy import HierarchicalBrowserActionSource
+            source_type = HierarchicalBrowserActionSource
+        source = source_type(client, model, loaded=report["MODEL_RESIDENCY"] == "LOADED"
+                             if report["MODEL_RESIDENCY"] != "UNKNOWN" else None)
         progress = BrowserRunProgress()
         try:
             await run_isolated_policy(
@@ -245,6 +249,8 @@ async def _evaluate(*, branch: str = BRANCH, fixture: str = "heldout",
             report["MODEL_OUTPUT_TOKENS_LAST"] = source.last_output_tokens
             report["PROMPT_EVAL_DURATION_MS_LAST"] = source.last_prompt_eval_ms
             report["GENERATION_DURATION_MS_LAST"] = source.last_generation_ms
+            if hierarchical:
+                report.update(source.public_hierarchy())
         return report
     finally:
         await client.close()
