@@ -65,12 +65,14 @@ def verify_pinned_checkout(expected_sha: str) -> None:
 class DiagnosticChatClient:
     """One bounded loopback POST with the existing browser proposal contract."""
 
-    def __init__(self, config: object, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, config: object, *, selected_model: str = EXPECTED_MODEL,
+                 transport: httpx.AsyncBaseTransport | None = None) -> None:
         if (not _loopback_base(config.ollama_base_url) or
-                config.ollama_primary_model != EXPECTED_MODEL or
+                re.fullmatch(r"[A-Za-z0-9_.:/-]{1,80}", selected_model) is None or
                 config.ollama_num_ctx != EXPECTED_CONTEXT):
             raise BrowserRefusal("PROBE_CONFIG_REJECTED")
         self.config = config
+        self.selected_model = selected_model
         self.calls = 0
         self.http_response_received = False
         self.http_status: int | None = None
@@ -89,7 +91,7 @@ class DiagnosticChatClient:
         """Send the source's exact schema-constrained request once, with a byte cap."""
         if self.calls != 0:
             raise BrowserRefusal("PROBE_REQUEST_LIMIT")
-        if (model != EXPECTED_MODEL or tools is not None or stream is not False or
+        if (model != self.selected_model or tools is not None or stream is not False or
                 options != {"temperature": 0, "num_predict": 384} or
                 type(format) is not dict or
                 set(format.get("required", [])) != {"revision", "choice_id"} or
@@ -119,6 +121,9 @@ class DiagnosticChatClient:
         parsed = json.loads(body, object_pairs_hook=_unique_pairs)
         if type(parsed) is not dict:
             raise ValueError("invalid response envelope")
+        response_model = parsed.get("model")
+        if response_model not in {self.selected_model, self.selected_model + ":latest"}:
+            raise ValueError("unexpected response model")
         return ChatResponse.model_validate(parsed)
 
 
@@ -375,17 +380,21 @@ def _preflight_sufficient(report: dict[str, object], config: object | None,
 
 
 async def run_one_request(report: dict[str, object], config: object,
-                          *, client: DiagnosticChatClient | None = None) -> dict[str, object]:
+                          *, client: DiagnosticChatClient | None = None,
+                          selected_model: str | None = None,
+                          source_type: type[OllamaBrowserActionSource] = ExtendedActionSource
+                          ) -> dict[str, object]:
     """Perform exactly one bounded request and collect only acknowledged facts."""
-    owned = client or DiagnosticChatClient(config)
-    source = ExtendedActionSource(owned, config.ollama_primary_model, loaded=False)
+    model = selected_model or config.ollama_primary_model
+    owned = client or DiagnosticChatClient(config, selected_model=model)
+    source = source_type(owned, model, loaded=report.get("MODEL_RESIDENCY") == "LOADED")
     started_mono = time.monotonic()
     started_utc = datetime.now(timezone.utc)
     report["CLIENT_STARTED_UTC"] = started_utc.isoformat(timespec="milliseconds")
     report["MODEL_RESIDENCY_BEFORE"] = report.get("MODEL_RESIDENCY")
     stop = asyncio.Event()
     sampler = asyncio.create_task(sample_during_request(
-        started_mono, config.ollama_base_url, config.ollama_primary_model, stop))
+        started_mono, config.ollama_base_url, model, stop))
     failure = "NONE"
     try:
         try:
@@ -448,8 +457,7 @@ async def run_one_request(report: dict[str, object], config: object,
             last.astimezone().strftime("%Y-%m-%d %H:%M:%S"))
     else:
         report["PROBE_JOURNAL"] = {"STATUS": "UNAVAILABLE", "EVENTS": []}
-    after = await reliability.local_ollama_metadata(
-        config.ollama_base_url, config.ollama_primary_model)
+    after = await reliability.local_ollama_metadata(config.ollama_base_url, model)
     report["MODEL_RESIDENCY_AFTER"] = after.get("MODEL_RESIDENCY", "UNKNOWN")
     report["CLASSIFICATIONS"] = classify_probe(report)
     report["VERDICT"] = report["CLASSIFICATIONS"][0]
