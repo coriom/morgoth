@@ -12,7 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from agents.generalist_browser_lab import (
     BrowserAction, BrowserObservation, BrowserRefusal, OllamaBrowserActionSource,
-    VerifiedTransition, FOLLOWUP_MODEL_SECONDS, _bounded_count, _bounded_ns_ms,
+    VerifiedTransition, FOLLOWUP_MODEL_SECONDS,
+    HIERARCHICAL_WORKER_ACTION_WAIT_SECONDS, _bounded_count, _bounded_ns_ms,
     _unique_pairs, TaskInput, available_actions, task_inputs_for,
 )
 from core.llm_client import ChatMessage
@@ -57,6 +58,10 @@ class HierarchicalBrowserActionSource(OllamaBrowserActionSource):
         """Reserve both request deadlines when a new subgoal is required."""
         low = super().next_timeout_seconds()
         return low + FOLLOWUP_MODEL_SECONDS if self.subgoal is None else low
+
+    def worker_action_wait_seconds(self) -> int:
+        """Permit one cold plan and action before the synthetic worker expires."""
+        return HIERARCHICAL_WORKER_ACTION_WAIT_SECONDS
 
     def on_verified_transition(self, before: BrowserObservation,
                                after: BrowserObservation,

@@ -15,7 +15,8 @@ from agents.generalist_browser_hierarchy import (
 from agents.generalist_browser_hierarchical_benchmark import classify
 from agents.generalist_browser_lab import (
     BrowserAction, BrowserObservation, BrowserPlanningContext, BrowserRefusal,
-    BrowserRunProgress, ObservedElement, TaskInput, VerifiedTransition, run_isolated_policy,
+    BrowserRunProgress, ObservedElement, OllamaBrowserActionSource, TaskInput,
+    VerifiedTransition, run_isolated_policy,
 )
 
 
@@ -31,6 +32,14 @@ def observation(revision: int, text: str = "", *, name: str = "Browse") -> Brows
                               title="Synthetic", text=text, elements=[ObservedElement(
                                   id="e0", tag="button", role="", name=name, href="",
                                   value="", input_type="", disabled=False, readonly=False)])
+
+
+def test_hierarchical_wait_is_opt_in_and_direct_deadline_unchanged() -> None:
+    """Two sequential requests need 105 s; the direct worker remains 70 s."""
+    assert OllamaBrowserActionSource(object(), "fixture").worker_action_wait_seconds() == 70
+    source = HierarchicalBrowserActionSource(object(), "fixture", loaded=False)
+    assert source.worker_action_wait_seconds() == 105
+    assert source.next_timeout_seconds() == 95
 
 
 class ScriptedClient:

@@ -36,9 +36,10 @@ MAX_ELEMENTS = 24
 FIRST_COLD_MODEL_SECONDS = 60
 FIRST_LOADED_MODEL_SECONDS = 45
 FOLLOWUP_MODEL_SECONDS = 35
+WORKER_ACTION_WAIT_SECONDS = 70
 # A hierarchical turn may make a cold 60 s proposal followed by a 35 s
-# action request. The outer 260 s deadline still bounds the whole session.
-WORKER_ACTION_WAIT_SECONDS = 105
+# action request. Only that opt-in worker receives the longer input wait.
+HIERARCHICAL_WORKER_ACTION_WAIT_SECONDS = 105
 INTERACTIVE_SECONDS = 260
 MIN_REQUEST_MARGIN_SECONDS = 5
 POST_ACTION_POLL_COUNT = 5
@@ -569,6 +570,10 @@ class OllamaBrowserActionSource:
             return FIRST_LOADED_MODEL_SECONDS if self.loaded is True else FIRST_COLD_MODEL_SECONDS
         return FOLLOWUP_MODEL_SECONDS
 
+    def worker_action_wait_seconds(self) -> int:
+        """Keep the established direct-action worker deadline unchanged."""
+        return WORKER_ACTION_WAIT_SECONDS
+
     def on_verified_transition(self, before: BrowserObservation,
                                after: BrowserObservation,
                                transition: VerifiedTransition) -> None:
@@ -1079,6 +1084,10 @@ async def _interactive_worker(payload: dict) -> None:
     html, objective, target, expected = _worker_inputs(payload)
     inputs = _task_inputs_from_payload(payload, target)
     input_map = {item.id: item.value for item in inputs}
+    action_wait = payload.get("action_wait_seconds", WORKER_ACTION_WAIT_SECONDS)
+    if type(action_wait) is not int or action_wait not in {
+            WORKER_ACTION_WAIT_SECONDS, HIERARCHICAL_WORKER_ACTION_WAIT_SECONDS}:
+        raise BrowserRefusal("ACTION_WAIT_INVALID")
     server = await asyncio.start_server(lambda r, w: _serve_fixture(r, w, html), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     steps: list[ProcedureStep] = []
@@ -1092,7 +1101,7 @@ async def _interactive_worker(payload: dict) -> None:
                 event = {"type": "observation", "value": browser.observation.model_dump(mode="json")}
                 sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
                 sys.stdout.flush()
-                line = await _worker_action_line()
+                line = await _worker_action_line(action_wait)
                 try:
                     action = BrowserAction.model_validate_json(line)
                 except ValueError:
@@ -1127,11 +1136,11 @@ async def _interactive_worker(payload: dict) -> None:
         await server.wait_closed()
 
 
-async def _worker_action_line() -> bytes:
+async def _worker_action_line(timeout_seconds: int = WORKER_ACTION_WAIT_SECONDS) -> bytes:
     """Read one bounded action before the worker's independent deadline."""
     try:
         line = await asyncio.wait_for(asyncio.to_thread(sys.stdin.buffer.readline, 4096),
-                                      timeout=WORKER_ACTION_WAIT_SECONDS)
+                                      timeout=timeout_seconds)
     except TimeoutError:
         raise BrowserRefusal("ACTION_RESPONSE_MISSING") from None
     if not line or len(line) > 4096:
@@ -1232,6 +1241,12 @@ async def run_isolated_policy(*, checkout: Path, browser_dir: Path, fixture: str
     task_inputs_for(target, extra_inputs)
     if isinstance(source, OllamaBrowserActionSource) and source.extra_inputs != extra_inputs:
         raise BrowserRefusal("TASK_INPUT_MISMATCH")
+    action_wait = (source.worker_action_wait_seconds()
+                   if isinstance(source, OllamaBrowserActionSource)
+                   else WORKER_ACTION_WAIT_SECONDS)
+    if action_wait not in {WORKER_ACTION_WAIT_SECONDS,
+                           HIERARCHICAL_WORKER_ACTION_WAIT_SECONDS}:
+        raise BrowserRefusal("ACTION_WAIT_INVALID")
     progress = progress if progress is not None else BrowserRunProgress()
     command = _sandbox_command(checkout, browser_dir, fixture, "--interactive-worker")
     trace_policy = SyntheticTracePolicy.from_checkout(checkout, fixture) if synthetic_trace else None
@@ -1248,6 +1263,7 @@ async def run_isolated_policy(*, checkout: Path, browser_dir: Path, fixture: str
             assert process.stdin is not None and process.stdout is not None
             process.stdin.write((json.dumps({"fixture": fixture, "objective": objective,
                                              "target": target, "expected": expected,
+                                             "action_wait_seconds": action_wait,
                                              "extra_inputs": [item.model_dump() for item in extra_inputs],
                                              **({"trace_source_digest": trace_policy.digest}
                                                 if trace_policy is not None else {}),
