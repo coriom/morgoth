@@ -171,11 +171,25 @@ async def local_ollama_metadata(base_url: str, model: str) -> dict[str, object]:
         }
 
 
+def _psi_avg10(raw: str, label: str) -> float | None:
+    """Parse only a bounded PSI average; missing or malformed means unknown."""
+    if label not in {"some", "full"}:
+        return None
+    match = re.search(rf"^{label} avg10=(\d+(?:\.\d+)?)", raw[:256], re.M)
+    if match is None:
+        return None
+    value = float(match.group(1))
+    return round(value, 2) if 0 <= value <= 100 else None
+
+
 def local_resource_evidence() -> dict[str, object]:
     """Read only bounded Linux memory and fixed-name process metadata."""
     result: dict[str, object] = {
         "HOST_MEMORY_AVAILABLE_MIB": None, "HOST_SWAP_TOTAL_MIB": None,
         "HOST_SWAP_FREE_MIB": None, "MEMORY_PRESSURE_AVG10_PCT": None,
+        "MEMORY_PRESSURE_FULL_AVG10_PCT": None,
+        "CGROUP_MEMORY_PRESSURE_SOME_AVG10_PCT": None,
+        "CGROUP_MEMORY_PRESSURE_FULL_AVG10_PCT": None,
         "CGROUP_MEMORY_LIMIT_MIB": None, "CGROUP_MEMORY_CURRENT_MIB": None,
         "CGROUP_MEMORY_HEADROOM_MIB": None, "CGROUP_MEMORY_LIMIT_KIND": "UNKNOWN",
         "CGROUP_SWAP_LIMIT_MIB": None, "CGROUP_SWAP_CURRENT_MIB": None,
@@ -196,11 +210,9 @@ def local_resource_evidence() -> dict[str, object]:
         pass
     try:
         pressure = Path("/proc/pressure/memory").read_text()[:256]
-        match = re.search(r"^some avg10=(\d+(?:\.\d+)?)", pressure, re.M)
-        if match is not None:
-            value = float(match.group(1))
-            if 0 <= value <= 100:
-                result["MEMORY_PRESSURE_AVG10_PCT"] = round(value, 2)
+        for label, field in (("some", "MEMORY_PRESSURE_AVG10_PCT"),
+                             ("full", "MEMORY_PRESSURE_FULL_AVG10_PCT")):
+            result[field] = _psi_avg10(pressure, label)
     except (OSError, ValueError):
         pass
     try:
@@ -210,6 +222,13 @@ def local_resource_evidence() -> dict[str, object]:
         if not cgroup.startswith("/") or ".." in Path(cgroup).parts:
             raise ValueError("invalid cgroup")
         scope = Path("/sys/fs/cgroup").joinpath(*Path(cgroup).parts[1:])
+        try:
+            local_pressure = (scope / "memory.pressure").read_text()[:256]
+            for label, field in (("some", "CGROUP_MEMORY_PRESSURE_SOME_AVG10_PCT"),
+                                 ("full", "CGROUP_MEMORY_PRESSURE_FULL_AVG10_PCT")):
+                result[field] = _psi_avg10(local_pressure, label)
+        except (OSError, ValueError):
+            pass
         limit = (scope / "memory.max").read_text()[:32].strip()
         current = int((scope / "memory.current").read_text()[:32].strip())
         result["CGROUP_MEMORY_CURRENT_MIB"] = _mib(current)

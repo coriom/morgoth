@@ -10,6 +10,7 @@ import pytest
 
 from agents import generalist_compact_model_qualification as compact
 from agents import generalist_ollama_cold_load_r2 as r2
+from agents import generalist_ollama_resources as resources
 from agents.generalist_browser_lab import BrowserRefusal
 
 
@@ -21,6 +22,7 @@ def config() -> SimpleNamespace:
 def ready() -> dict[str, object]:
     return {"VERDICT": "NON_GENERATIVE_PREFLIGHT_COMPLETE", "FAILURE_CLASS": "NONE",
             "MODEL_RESIDENCY": "NOT_LOADED", "PRODUCTION_QUALIFIED": False,
+            "HOST_SWAP_FREE_MIB": 1700,
             "INFERENCE_ATTEMPTED": False, "STAGE_A_QUALIFIED": False,
             "STAGE_B_ATTEMPTED": False}
 
@@ -33,17 +35,26 @@ def passed_action(elapsed: int = 12000) -> dict[str, object]:
                 "COLD_LOAD_COMPLETED_WITHIN_NORMAL_DEADLINE"],
             "MODEL_RESIDENCY_BEFORE": "NOT_LOADED",
             "MODEL_LOAD_DURATION_MS": 7000, "RESOURCE_SUMMARY": {
-                "GPU_USED_MIB_MAX_OBSERVED": 2800}}
+                "GPU_USED_MIB_MAX_OBSERVED": 2800,
+                "GPU_FREE_MIB_MIN_OBSERVED": 2000,
+                "HOST_AVAILABLE_MIB_MIN_OBSERVED": 6000,
+                "SWAP_FREE_MIB_MIN_OBSERVED": 1700,
+                "SERVICE_CGROUP_OOM_COUNT_START": 0,
+                "SERVICE_CGROUP_OOM_COUNT_END": 0,
+                "SERVICE_CGROUP_OOM_KILL_COUNT_START": 0,
+                "SERVICE_CGROUP_OOM_KILL_COUNT_END": 0}}
 
 
-def test_checkout_is_exact_local_only_and_clean(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_checkout_is_exact_live_remote_and_clean(monkeypatch: pytest.MonkeyPatch) -> None:
     sha = "a" * 40
     calls: list[tuple[str, ...]] = []
     values = {("remote", "get-url", "origin"): "git@github.com:coriom/morgoth.git",
               ("branch", "--show-current"): compact.BRANCH,
               ("rev-parse", "HEAD"): sha,
               ("rev-parse", f"origin/{compact.BRANCH}"): sha,
-              ("status", "--porcelain=v1", "--untracked-files=all"): ""}
+              ("status", "--porcelain=v1", "--untracked-files=all"): "",
+              ("ls-remote", "--heads", "origin", compact.BRANCH):
+                  f"{sha}\trefs/heads/{compact.BRANCH}"}
 
     def git(*args: str) -> str:
         calls.append(args)
@@ -51,7 +62,12 @@ def test_checkout_is_exact_local_only_and_clean(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(compact.operator, "_git", git)
     compact.verify_checkout(sha)
-    assert all("ls-remote" not in call for call in calls)
+    assert any("ls-remote" in call for call in calls)
+    values[("ls-remote", "--heads", "origin", compact.BRANCH)] = ""
+    with pytest.raises(BrowserRefusal, match="PREFLIGHT_CHECKOUT"):
+        compact.verify_checkout(sha)
+    values[("ls-remote", "--heads", "origin", compact.BRANCH)] = (
+        f"{sha}\trefs/heads/{compact.BRANCH}")
     values[("status", "--porcelain=v1", "--untracked-files=all")] = "?? unknown"
     with pytest.raises(BrowserRefusal, match="PREFLIGHT_CHECKOUT"):
         compact.verify_checkout(sha)
@@ -148,7 +164,10 @@ async def test_stage_a_invalid_slow_or_pressured_never_starts_browser(
         _ for _ in ()).throw(AssertionError("browser stage forbidden")))
     for trial in (passed_action(65000), {**passed_action(),
                  "STRUCTURED_ACTION_VALID": False, "FAILURE_CLASS": "MODEL_INVALID_JSON"},
-                  {**passed_action(), "CLASSIFICATIONS": ["RESOURCE_PRESSURE_OBSERVED"]}):
+                  {**passed_action(), "RESOURCE_SUMMARY": {
+                      **passed_action()["RESOURCE_SUMMARY"],
+                      "GPU_FREE_MIB_MIN_OBSERVED": 300},
+                      "CLASSIFICATIONS": ["RESOURCE_PRESSURE_OBSERVED"]}):
         async def stage_a(*_args, **_kwargs):
             return trial
         monkeypatch.setattr(compact.r2, "run_one_request", stage_a)
@@ -185,6 +204,7 @@ async def test_valid_stage_a_hands_off_selected_model_to_separately_consenting_p
         return {**ready(), "MODEL_DIGEST_SHA256": "a" * 64}, config()
     monkeypatch.setattr(compact, "_preflight", preflight_with_digest)
     monkeypatch.setattr(compact.operator, "_evaluate", browser)
+    monkeypatch.setattr(compact.r2, "_service_sample", lambda: (None, 0, 0))
     result = await compact.evaluate("qwen3:4b-instruct", "a" * 40, "Q4_K_M")
     assert result["STAGE_A_QUALIFIED"] is True
     assert result["STAGE_B_ATTEMPTED"] is True
@@ -262,3 +282,128 @@ def test_stage_a_qualification_distinguishes_format_and_latency() -> None:
                "MODEL_RESPONSE_COUNT": 0})
     assert compact.STAGE_B_MAX_CALLS == 6
     assert compact.STAGE_A_DEADLINE_SECONDS == 120
+
+
+def test_operator_stage_a_pressure_is_warning_not_hard_failure() -> None:
+    evidence = {**passed_action(49537),
+                "CLASSIFICATIONS": ["COLD_LOAD_COMPLETED_WITHIN_NORMAL_DEADLINE",
+                                    "RESOURCE_PRESSURE_OBSERVED"],
+                "RESOURCE_SUMMARY": compact.REVIEWED_STAGE_A_SUMMARY}
+    assert compact._stage_a_assessment(evidence) == (
+        True, True, "RESOURCE_PRESSURE_WARNING")
+    assert compact._resource_assessment({**compact.REVIEWED_STAGE_A_SUMMARY,
+           "SERVICE_CGROUP_OOM_COUNT_END": 1}) == ("RESOURCE_HARD_BLOCKED", False)
+    assert compact._resource_assessment({**compact.REVIEWED_STAGE_A_SUMMARY,
+           "SWAP_FREE_MIB_MIN_OBSERVED": None}) == (
+               "RESOURCE_EVIDENCE_INSUFFICIENT", False)
+    assert compact._resource_assessment({**compact.REVIEWED_STAGE_A_SUMMARY,
+           "GPU_FREE_MIB_MIN_OBSERVED": 100}) == ("RESOURCE_HARD_BLOCKED", False)
+    assert compact._resource_assessment({**compact.REVIEWED_STAGE_A_SUMMARY,
+           "SERVICE_CGROUP_OOM_KILL_COUNT_END": 1}) == (
+               "RESOURCE_HARD_BLOCKED", False)
+    assert compact._resource_assessment({**compact.REVIEWED_STAGE_A_SUMMARY,
+           "SERVICE_CGROUP_OOM_KILL_COUNT_START": 0,
+           "SERVICE_CGROUP_OOM_KILL_COUNT_END": 1}) == (
+               "RESOURCE_HARD_BLOCKED", False)
+    assert compact._resource_assessment({**compact.REVIEWED_STAGE_A_SUMMARY,
+           "MEMORY_PRESSURE_FULL_AVG10_PCT_MAX_OBSERVED": 0.5}) == (
+               "RESOURCE_PRESSURE_WARNING", True)
+    assert compact._stage_a_assessment({**passed_action(),
+           "CLASSIFICATIONS": ["RESOURCE_PRESSURE_OBSERVED"]}) == (
+               False, False, "RESOURCE_EVIDENCE_INSUFFICIENT")
+
+
+def test_psi_some_and_full_parse_independently_with_unknowns() -> None:
+    raw = "some avg10=17.68 avg60=2.00 total=1\nfull avg10=0.25 avg60=0.00 total=1\n"
+    assert resources._psi_avg10(raw, "some") == 17.68
+    assert resources._psi_avg10(raw, "full") == 0.25
+    assert resources._psi_avg10("some avg10=17.68\n", "full") is None
+    assert resources._psi_avg10("full avg10=101.00", "full") is None
+    assert resources._psi_avg10("full avg10=0.00", "other") is None
+
+
+@pytest.mark.asyncio
+async def test_warning_acknowledgement_precedes_fresh_checks_and_browser(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    async def preflight(*_args):
+        calls.append("fresh")
+        return {**ready(), "MODEL_DIGEST_SHA256": compact.REVIEWED_STAGE_A_DIGEST}, config()
+    async def browser(**_kwargs):
+        calls.append("browser")
+        return {"FAILURE_CLASS": "NONE", "MODEL_CALL_COUNT": 0,
+                "TASK_ACCEPTANCE_PASSED": False}
+    monkeypatch.setattr(compact, "_preflight", preflight)
+    monkeypatch.setattr(compact, "_consented", lambda phrase: calls.append(phrase) or True)
+    monkeypatch.setattr(compact.r2, "_service_sample", lambda: (None, 0, 0))
+    monkeypatch.setattr(compact, "_inventory", lambda *_args: asyncio.sleep(
+        0, result=(1, "Q4_K_M", compact.REVIEWED_STAGE_A_DIGEST)))
+    monkeypatch.setattr(compact.operator, "_evaluate", browser)
+    result = await compact.reviewed_stage_b("a" * 40)
+    assert calls == ["fresh", "MEMORY PRESSURE REVIEWED", "fresh", "browser"]
+    assert result["STAGE_A_QUALIFIED"] is True
+    assert result["STAGE_A_PRESSURE_WARNING"] is True
+    assert result["STAGE_A_CALL_REPEATED"] is False
+    assert result["PRODUCTION_QUALIFIED"] is False
+
+
+@pytest.mark.asyncio
+async def test_declined_warning_never_rechecks_or_opens_browser(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    async def preflight(*_args):
+        nonlocal calls
+        calls += 1
+        return {**ready(), "MODEL_DIGEST_SHA256": compact.REVIEWED_STAGE_A_DIGEST}, config()
+    monkeypatch.setattr(compact, "_preflight", preflight)
+    monkeypatch.setattr(compact, "_consented", lambda _phrase: False)
+    monkeypatch.setattr(compact.operator, "_evaluate", lambda **_kwargs: (
+        _ for _ in ()).throw(AssertionError("browser forbidden")))
+    result = await compact.reviewed_stage_b("a" * 40)
+    assert calls == 1
+    assert result["FAILURE_CLASS"] == "PRESSURE_ACKNOWLEDGEMENT_REQUIRED"
+    assert result["STAGE_B_ATTEMPTED"] is False
+
+
+@pytest.mark.asyncio
+async def test_fresh_hard_refusal_prevents_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    async def preflight(*_args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return {"FAILURE_CLASS": "RESOURCE_PREFLIGHT_REJECTED"}, None
+        return {**ready(), "MODEL_DIGEST_SHA256": compact.REVIEWED_STAGE_A_DIGEST}, config()
+    monkeypatch.setattr(compact, "_preflight", preflight)
+    monkeypatch.setattr(compact, "_consented", lambda _phrase: True)
+    monkeypatch.setattr(compact.operator, "_evaluate", lambda **_kwargs: (
+        _ for _ in ()).throw(AssertionError("browser forbidden")))
+    result = await compact.reviewed_stage_b("a" * 40)
+    assert result["FAILURE_CLASS"] == "FRESH_RESOURCE_OR_MODEL_IDENTITY_BLOCKED"
+    assert result["STAGE_B_ATTEMPTED"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fresh,oom,code", [
+    ({"MEMORY_PRESSURE_FULL_AVG10_PCT": 12.0}, (None, 0, 0),
+     "FRESH_FULL_STALL_PRESSURE_BLOCKED"),
+    ({"CGROUP_MEMORY_PRESSURE_FULL_AVG10_PCT": 12.0}, (None, 0, 0),
+     "FRESH_FULL_STALL_PRESSURE_BLOCKED"),
+    ({}, (None, 1, 0), "FRESH_OOM_EVIDENCE_UNAVAILABLE_OR_CHANGED"),
+    ({}, (None, None, None), "FRESH_OOM_EVIDENCE_UNAVAILABLE_OR_CHANGED"),
+    ({"HOST_SWAP_FREE_MIB": 80}, (None, 0, 0), "FRESH_SWAP_HEADROOM_BLOCKED"),
+])
+async def test_fresh_pressure_or_oom_never_enters_browser(
+        monkeypatch: pytest.MonkeyPatch, fresh: dict[str, object],
+        oom: tuple[None, int | None, int | None], code: str) -> None:
+    async def preflight(*_args):
+        return {**ready(), "MODEL_DIGEST_SHA256": compact.REVIEWED_STAGE_A_DIGEST,
+                **fresh}, config()
+    monkeypatch.setattr(compact, "_preflight", preflight)
+    monkeypatch.setattr(compact, "_consented", lambda _phrase: True)
+    monkeypatch.setattr(compact.r2, "_service_sample", lambda: oom)
+    monkeypatch.setattr(compact.operator, "_evaluate", lambda **_kwargs: (
+        _ for _ in ()).throw(AssertionError("browser forbidden")))
+    result = await compact.reviewed_stage_b("a" * 40)
+    assert result["FAILURE_CLASS"] == code
+    assert result["STAGE_B_ATTEMPTED"] is False

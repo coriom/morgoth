@@ -229,6 +229,11 @@ async def _sample_once(started_mono: float, model: str,
         "HOST_AVAILABLE_MIB": resources.get("HOST_MEMORY_AVAILABLE_MIB"),
         "SWAP_FREE_MIB": resources.get("HOST_SWAP_FREE_MIB"),
         "MEMORY_PRESSURE_AVG10_PCT": resources.get("MEMORY_PRESSURE_AVG10_PCT"),
+        "MEMORY_PRESSURE_FULL_AVG10_PCT": resources.get("MEMORY_PRESSURE_FULL_AVG10_PCT"),
+        "CGROUP_MEMORY_PRESSURE_SOME_AVG10_PCT": resources.get(
+            "CGROUP_MEMORY_PRESSURE_SOME_AVG10_PCT"),
+        "CGROUP_MEMORY_PRESSURE_FULL_AVG10_PCT": resources.get(
+            "CGROUP_MEMORY_PRESSURE_FULL_AVG10_PCT"),
         "SERVICE_MEMORY_MIB": service_memory,
         "SERVICE_CGROUP_OOM_COUNT": oom,
         "SERVICE_CGROUP_OOM_KILL_COUNT": oom_kill,
@@ -277,6 +282,12 @@ def _summary(samples: list[dict[str, object]]) -> dict[str, object]:
         "SWAP_FREE_MIB_MIN_OBSERVED": minimum("SWAP_FREE_MIB"),
         "MEMORY_PRESSURE_AVG10_PCT_MAX_OBSERVED": maximum(
             "MEMORY_PRESSURE_AVG10_PCT"),
+        "MEMORY_PRESSURE_FULL_AVG10_PCT_MAX_OBSERVED": maximum(
+            "MEMORY_PRESSURE_FULL_AVG10_PCT"),
+        "CGROUP_MEMORY_PRESSURE_SOME_AVG10_PCT_MAX_OBSERVED": maximum(
+            "CGROUP_MEMORY_PRESSURE_SOME_AVG10_PCT"),
+        "CGROUP_MEMORY_PRESSURE_FULL_AVG10_PCT_MAX_OBSERVED": maximum(
+            "CGROUP_MEMORY_PRESSURE_FULL_AVG10_PCT"),
         "SERVICE_MEMORY_MIB_MAX_OBSERVED": maximum("SERVICE_MEMORY_MIB"),
         "SERVICE_CGROUP_OOM_COUNT_START": next((r["SERVICE_CGROUP_OOM_COUNT"]
             for r in samples if type(r.get("SERVICE_CGROUP_OOM_COUNT")) is int), None),

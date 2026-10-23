@@ -1,5 +1,10 @@
 # Compact local-model qualification
 
+**CMQ.1 update:** The original Stage A pressure flag grouped partial PSI
+stalls with measured resource exhaustion. The isolated CMQ.1 branch separates
+these outcomes and provides a reviewed Stage B-only continuation; see
+[GENERALIST-COMPACT-MODEL-CMQ1.md](GENERALIST-COMPACT-MODEL-CMQ1.md).
+
 This is an opt-in experiment on branch
 `morgoth-generalist-compact-model-qualification-v1`, based on R2 commit
 `cad7dbed7bd99331be9858a990dfa2e58806a0a7`, which contains P1 commit
