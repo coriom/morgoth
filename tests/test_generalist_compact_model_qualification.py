@@ -113,7 +113,7 @@ async def test_inventory_requires_exact_installed_digest_and_quantization(
 @pytest.mark.asyncio
 async def test_missing_model_and_unavailable_inventory_block_before_consent(
         monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(compact, "verify_checkout", lambda _sha: None)
+    monkeypatch.setattr(compact, "verify_checkout", lambda _sha, _branch: None)
     monkeypatch.setattr(compact, "_local_model_config", config)
     monkeypatch.setattr(compact, "_inventory", lambda _base, _model: asyncio.sleep(
         0, result=(1, None, None)))

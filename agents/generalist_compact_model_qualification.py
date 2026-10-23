@@ -20,6 +20,7 @@ from agents import generalist_browser_operator as operator
 from agents import generalist_ollama_cold_load_r2 as r2
 from agents import generalist_ollama_runner_diagnostic as runner
 from agents.generalist_browser_hierarchical_benchmark import classify as classify_browser
+from agents.generalist_browser_model_benchmark import classify_trial as classify_direct
 from agents.generalist_browser_lab import BrowserRefusal
 from agents.generalist_ollama_plan_probe import _local_model_config
 from agents.generalist_ollama_resources import (
@@ -68,21 +69,23 @@ SAFE_STAGE_B_FIELDS = (
     "MODEL_LOAD_DURATION_MS_LAST", "HOST_MEMORY_AVAILABLE_MIB",
     "CGROUP_MEMORY_HEADROOM_MIB", "TRACE_SOURCE_VERIFIED", "TRACE_COMPLETE",
     "SYNTHETIC_ACTION_TRACE", "TASK_ACCEPTANCE_PASSED", "FAILURE_CLASS",
+    "HIGH_LEVEL_CALL_COUNT", "LOW_LEVEL_CALL_COUNT",
+    "SUBGOAL_REVISION_COUNT", "SUBGOAL_STATUS",
 )
 
 
-def verify_checkout(expected_sha: str) -> None:
+def verify_checkout(expected_sha: str, branch: str = BRANCH) -> None:
     """Require exact clean branch, tracking ref and live origin head."""
     if re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None:
         raise BrowserRefusal("PREFLIGHT_CHECKOUT")
     if (operator._git("remote", "get-url", "origin") not in {
             "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"} or
-            operator._git("branch", "--show-current") != BRANCH or
+            operator._git("branch", "--show-current") != branch or
             operator._git("rev-parse", "HEAD") != expected_sha or
-            operator._git("rev-parse", f"origin/{BRANCH}") != expected_sha or
+            operator._git("rev-parse", f"origin/{branch}") != expected_sha or
             operator._git("status", "--porcelain=v1", "--untracked-files=all") or
-            operator._git("ls-remote", "--heads", "origin", BRANCH) !=
-            f"{expected_sha}\trefs/heads/{BRANCH}"):
+            operator._git("ls-remote", "--heads", "origin", branch) !=
+            f"{expected_sha}\trefs/heads/{branch}"):
         raise BrowserRefusal("PREFLIGHT_CHECKOUT")
 
 
@@ -132,7 +135,8 @@ async def _inventory(base_url: str, model: str) -> tuple[int, str | None, str | 
 
 
 async def _preflight(model: str, expected_sha: str,
-                     expected_quantization: str) -> tuple[dict[str, object], object | None]:
+                     expected_quantization: str, branch: str = BRANCH
+                     ) -> tuple[dict[str, object], object | None]:
     """Read only installed-model and resource metadata, with no generation."""
     report: dict[str, object] = {
         "VERDICT": "MODEL_RESOURCE_OR_PROTOCOL_BLOCKED", "FAILURE_CLASS": "PREFLIGHT_REJECTED",
@@ -142,7 +146,7 @@ async def _preflight(model: str, expected_sha: str,
         "MODEL_INSTALLED": None, "MODEL_RESIDENCY": "UNKNOWN",
     }
     try:
-        verify_checkout(expected_sha)
+        verify_checkout(expected_sha, branch)
         if MODEL_NAME.fullmatch(model) is None:
             raise BrowserRefusal("MODEL_SELECTION_INVALID")
         if re.fullmatch(r"[A-Za-z0-9_]{1,24}", expected_quantization) is None:
@@ -295,13 +299,14 @@ async def evaluate(model: str, expected_sha: str, expected_quantization: str,
             report["FAILURE_CLASS"] = assessment
         return report
 
-    return await _stage_b_after_a(report, config, model, expected_sha,
+    return await _stage_b_after_a(report, model, expected_sha,
                                   expected_quantization, warning)
 
 
-async def _stage_b_after_a(report: dict[str, object], config: object, model: str,
+async def _stage_b_after_a(report: dict[str, object], model: str,
                            expected_sha: str, expected_quantization: str,
-                           warning: bool) -> dict[str, object]:
+                           warning: bool, *, branch: str = BRANCH,
+                           hierarchical: bool = True) -> dict[str, object]:
     """Acknowledge pressure, remeasure resources, then invoke existing BROWSE ONCE gate."""
     if warning:
         if not _consented("MEMORY PRESSURE REVIEWED"):
@@ -309,7 +314,8 @@ async def _stage_b_after_a(report: dict[str, object], config: object, model: str
             report["FAILURE_CLASS"] = "PRESSURE_ACKNOWLEDGEMENT_REQUIRED"
             return report
         report["PRESSURE_ACKNOWLEDGED"] = True
-    fresh, fresh_config = await _preflight(model, expected_sha, expected_quantization)
+    fresh, fresh_config = await _preflight(model, expected_sha,
+                                           expected_quantization, branch)
     report["FRESH_RESOURCE_PREFLIGHT_READY"] = fresh_config is not None
     report["FRESH_MEMORY_PRESSURE_SOME_AVG10_PCT"] = fresh.get("MEMORY_PRESSURE_AVG10_PCT")
     report["FRESH_MEMORY_PRESSURE_FULL_AVG10_PCT"] = fresh.get("MEMORY_PRESSURE_FULL_AVG10_PCT")
@@ -345,7 +351,7 @@ async def _stage_b_after_a(report: dict[str, object], config: object, model: str
         return report
 
     try:
-        _, quantization, digest = await _inventory(config.ollama_base_url, model)
+        _, quantization, digest = await _inventory(fresh_config.ollama_base_url, model)
         if (quantization != expected_quantization or digest is None or
                 digest != report["MODEL_DIGEST_SHA256"]):
             raise BrowserRefusal("MODEL_IDENTITY_CHANGED")
@@ -357,11 +363,12 @@ async def _stage_b_after_a(report: dict[str, object], config: object, model: str
     # The existing operator path rechecks the exact branch, model headroom,
     # confined fixture, then obtains its independent BROWSE ONCE consent.
     try:
-        browser = await operator._evaluate(branch=BRANCH, fixture="heldout",
+        browser = await operator._evaluate(branch=branch, fixture="heldout",
                                            objective=operator.OBJECTIVE,
                                            target=operator.TARGET,
                                            expected=operator.EXPECTED,
-                                           model_override=model, hierarchical=True)
+                                           model_override=model,
+                                           hierarchical=hierarchical)
     except Exception:
         report["VERDICT"] = "HIERARCHICAL_PROTOCOL_OR_RESOURCE_BLOCKED"
         report["FAILURE_CLASS"] = "BROWSER_EVALUATION_FAILED"
@@ -372,16 +379,19 @@ async def _stage_b_after_a(report: dict[str, object], config: object, model: str
         report["STAGE_B"]["SYNTHETIC_ACTION_TRACE"] = []
         report["STAGE_B"]["TRACE_COMPLETE"] = False
     report["TASK_ACCEPTANCE_PASSED"] = browser.get("TASK_ACCEPTANCE_PASSED") is True
-    report["VERDICT"] = classify_browser(browser)
+    report["VERDICT"] = (classify_browser(browser) if hierarchical else
+                         classify_direct(browser))
     report["FAILURE_CLASS"] = _failure_code(browser.get("FAILURE_CLASS"))
     report["PRODUCTION_QUALIFIED"] = False
     return report
 
 
-async def reviewed_stage_b(expected_sha: str) -> dict[str, object]:
+async def reviewed_stage_b(expected_sha: str, *, branch: str = BRANCH,
+                           hierarchical: bool = True) -> dict[str, object]:
     """Use operator-reported Stage A evidence without repeating its inference."""
     logger.remove()
-    report, config = await _preflight(REVIEWED_STAGE_A_MODEL, expected_sha, "Q4_K_M")
+    report, config = await _preflight(REVIEWED_STAGE_A_MODEL, expected_sha,
+                                       "Q4_K_M", branch)
     report["STAGE_A_EVIDENCE_SOURCE"] = "OPERATOR_REPORTED"
     report["STAGE_A_RESOURCE_SUMMARY"] = REVIEWED_STAGE_A_SUMMARY.copy()
     report["STAGE_A_CALL_REPEATED"] = False
@@ -407,8 +417,9 @@ async def reviewed_stage_b(expected_sha: str) -> dict[str, object]:
         report["VERDICT"] = "MODEL_RESOURCE_OR_PROTOCOL_BLOCKED"
         report["FAILURE_CLASS"] = assessment
         return report
-    return await _stage_b_after_a(report, config, REVIEWED_STAGE_A_MODEL,
-                                  expected_sha, "Q4_K_M", warning)
+    return await _stage_b_after_a(report, REVIEWED_STAGE_A_MODEL,
+                                  expected_sha, "Q4_K_M", warning,
+                                  branch=branch, hierarchical=hierarchical)
 
 
 def main() -> None:
