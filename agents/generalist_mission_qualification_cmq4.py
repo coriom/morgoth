@@ -1,7 +1,7 @@
 """Opt-in CMQ.4 paired decision and complete synthetic mission campaign.
 
-Preparation is non-generative. The run path requires exact checkout, model,
-resource, browser and foreground-consent gates. No production authority exists.
+Preparation and checkout diagnosis are non-generative. The consumed CMQ.4
+campaign cannot run from this correction branch. No production authority exists.
 """
 
 from __future__ import annotations
@@ -38,7 +38,9 @@ from agents.generalist_ollama_resources import _bounded_metadata_get, _loopback_
 from core.llm_client import OllamaLLMClient
 
 
-BRANCH = "morgoth-generalist-mission-qualification-cmq4-consent-recovery-v1"
+BRANCH = "morgoth-generalist-cmq4-checkout-accounting-fix-v1"
+# The real CMQ.4 attempt was consumed. This correction branch is diagnostic only.
+EXECUTION_DISABLED = True
 RECOVERY_SOURCE_SHA = "6317968a2a7fe3baf69461d74b730a18d9833631"
 RECOVERY_LEDGER_SHA256 = "91f42ba231f1393e33169e19af085e0350ee75be61bd026918bdf0e2a0aba973"
 QWEN = "qwen3:4b-instruct"
@@ -265,19 +267,31 @@ def _write_ledger(path: Path, report: dict[str, object], *, first: bool = False)
     if first:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
-            os.write(descriptor, data)
+            if os.write(descriptor, data) != len(data):
+                raise OSError
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
         return
     temp = path.with_name(path.name + ".tmp")
     descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(descriptor, data)
+        if os.write(descriptor, data) != len(data):
+            raise OSError
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
     os.replace(temp, path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 async def _installed_candidates(base_url: str) -> tuple[Candidate, Candidate | None, int]:
@@ -551,6 +565,7 @@ async def evaluate(expected_sha: str, *, run: bool = False,
     """Prepare a frozen matrix, then optionally recover one consent-only refusal."""
     logger.remove()
     claim_owned = False
+    ledger_owned = False
     report: dict[str, object] = {
         "VERDICT": "PREPARATION_BLOCKED", "REAL_EXPERIMENT_EXECUTED": False,
         "REQUESTS_DISPATCHED": 0, "REQUESTS_RESERVED_MAX": 0,
@@ -560,6 +575,8 @@ async def evaluate(expected_sha: str, *, run: bool = False,
         "PRODUCTION_QUALIFIED": False,
     }
     try:
+        if run and EXECUTION_DISABLED:
+            raise BrowserRefusal("CAMPAIGN_ALREADY_CONSUMED")
         compact.verify_checkout(expected_sha, BRANCH)
         if run and not recover:
             raise BrowserRefusal("RECOVERY_REQUIRED")
@@ -628,6 +645,8 @@ async def evaluate(expected_sha: str, *, run: bool = False,
                                     "RESERVED_MAX": 1}
             report["REQUESTS_RESERVED_MAX"] += 1
             _write_ledger(path, report, first=role == "QWEN")
+            if role == "QWEN":
+                ledger_owned = True
             probe = await _choice_probe(candidate, frozen, preflight, ready_config)
             report["REQUESTS_RESERVED_MAX"] -= 1
             report["REQUESTS_DISPATCHED"] += 1
@@ -683,6 +702,10 @@ async def evaluate(expected_sha: str, *, run: bool = False,
                     "EVIDENCE": stage if type(stage) is dict else None,
                     "OUTCOME": _mission_outcome(browser),
                     "PLANNER_MODE": "DIRECT", "PRODUCTION_QUALIFIED": False}
+                if (browser.get("CHECKOUT_OPERATION") in operator.CHECKOUT_OPERATIONS and
+                        browser.get("CHECKOUT_FAILURE") in operator.CHECKOUT_FAILURES):
+                    report["CELLS"][mission_key]["CHECKOUT_OPERATION"] = browser["CHECKOUT_OPERATION"]
+                    report["CELLS"][mission_key]["CHECKOUT_FAILURE"] = browser["CHECKOUT_FAILURE"]
                 _write_ledger(path, report)
                 if actual == 0:
                     break
@@ -701,9 +724,15 @@ async def evaluate(expected_sha: str, *, run: bool = False,
             report["RECOVERY_RETRYABLE"] = True
         return report
     except FileExistsError:
-        report["FAILURE_CLASS"] = "RECOVERY_ALREADY_CLAIMED"
+        report["FAILURE_CLASS"] = ("CAMPAIGN_LEDGER_WRITE_FAILED" if claim_owned else
+                                   "RECOVERY_ALREADY_CLAIMED")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        report["FAILURE_CLASS"] = "CAMPAIGN_INTERRUPTED"
     except BrowserRefusal as exc:
         report["FAILURE_CLASS"] = exc.code
+        if isinstance(exc, operator.GitCheckoutRefusal):
+            report["CHECKOUT_OPERATION"] = exc.operation
+            report["CHECKOUT_FAILURE"] = exc.failure
     except (OSError, ValueError, TypeError, httpx.HTTPError, TimeoutError):
         report["FAILURE_CLASS"] = "PREPARATION_OR_TRANSPORT_FAILED"
     except Exception:
@@ -717,11 +746,21 @@ async def evaluate(expected_sha: str, *, run: bool = False,
     for cell in report["CELLS"].values():
         if cell["STATUS"] == "NOT_RUN":
             cell.update(STATUS="BLOCKED", REASON="PREPARATION_OR_PRIOR_CELL_BLOCKED")
+    if ledger_owned:
+        report["TERMINAL_REPORT_PERSISTED"] = True
+        try:
+            _write_ledger(path, report)
+        except (OSError, ValueError, TypeError, BrowserRefusal):
+            # The exclusive claim and prior reservation remain; never replay.
+            report["TERMINAL_REPORT_PERSISTED"] = False
     return report
 
 
 def inspect_recovery(expected_sha: str) -> dict[str, object]:
     """Read only the exact original ledger and current exclusive ownership state."""
+    if EXECUTION_DISABLED:
+        return {"VERDICT": "RECOVERY_BLOCKED", "FAILURE_CLASS": "CAMPAIGN_ALREADY_CONSUMED",
+                "PRODUCTION_QUALIFIED": False}
     try:
         compact.verify_checkout(expected_sha, BRANCH)
         evidence = _recovery_available(expected_sha)
@@ -737,6 +776,34 @@ def inspect_recovery(expected_sha: str) -> dict[str, object]:
                 "PRODUCTION_QUALIFIED": False}
 
 
+def diagnose_checkout(expected_sha: str) -> dict[str, object]:
+    """Exercise both real read-only checkout gates without model or ledger access."""
+    gates: dict[str, dict[str, object]] = {}
+    checks = (("BROWSER", lambda: operator._checkout_verified(BRANCH)),
+              ("COMPACT", lambda: compact.verify_checkout(expected_sha, BRANCH)))
+    for name, check in checks:
+        started = time.monotonic()
+        outcome: dict[str, object] = {"STATUS": "PASS", "OPERATION": "ALL", "FAILURE": "NONE"}
+        try:
+            check()
+        except operator.GitCheckoutRefusal as exc:
+            outcome.update(STATUS="REFUSED", OPERATION=exc.operation, FAILURE=exc.failure)
+        except BrowserRefusal:
+            outcome.update(STATUS="REFUSED", OPERATION="UNKNOWN", FAILURE="OTHER_REFUSAL")
+        except Exception:
+            outcome.update(STATUS="FAILED", OPERATION="UNKNOWN", FAILURE="UNEXPECTED")
+        outcome["ELAPSED_MS"] = min(120000, max(0, round((time.monotonic() - started) * 1000)))
+        gates[name] = outcome
+    module_root = Path(__file__).resolve().parents[1]
+    return {"VERDICT": "CHECKOUT_GATES_PASSED" if all(
+                item["STATUS"] == "PASS" for item in gates.values()) else "CHECKOUT_GATES_BLOCKED",
+            "MODULE_ROOT_CONSISTENT": (operator.ROOT == module_root ==
+                                       Path(compact.__file__).resolve().parents[1]),
+            "CURRENT_WORKTREE_MATCH": Path.cwd().resolve() == module_root,
+            "GATES": gates, "INFERENCE_ATTEMPTED": False,
+            "PRODUCTION_QUALIFIED": False}
+
+
 def main() -> None:
     """Print only bounded metadata; default/help never open a model transport."""
     parser = argparse.ArgumentParser(description="CMQ.4 synthetic local-model campaign")
@@ -746,9 +813,11 @@ def main() -> None:
     mode.add_argument("--run", action="store_true")
     mode.add_argument("--inspect-recovery", action="store_true")
     mode.add_argument("--recover-consent-only", action="store_true")
+    mode.add_argument("--diagnose-checkout", action="store_true")
     arguments = parser.parse_args()
     try:
-        report = (inspect_recovery(arguments.expected_sha) if arguments.inspect_recovery else
+        report = (diagnose_checkout(arguments.expected_sha) if arguments.diagnose_checkout else
+                  inspect_recovery(arguments.expected_sha) if arguments.inspect_recovery else
                   asyncio.run(evaluate(arguments.expected_sha,
                                        run=arguments.run or arguments.recover_consent_only,
                                        recover=arguments.recover_consent_only)))

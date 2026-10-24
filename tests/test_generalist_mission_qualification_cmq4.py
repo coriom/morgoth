@@ -174,6 +174,7 @@ async def test_preparation_path_never_calls_inference(monkeypatch) -> None:
 
 
 def _mock_setup(monkeypatch, tmp_path: Path) -> tuple[campaign.Candidate, campaign.Candidate]:
+    monkeypatch.setattr(campaign, "EXECUTION_DISABLED", False)
     monkeypatch.setattr(campaign, "LEDGER_DIR", tmp_path)
     monkeypatch.setattr(campaign.compact, "verify_checkout", lambda *_: None)
     monkeypatch.setattr(campaign, "_local_model_config", lambda: SimpleNamespace(
@@ -571,3 +572,158 @@ async def test_concurrent_recovery_claim_dispatches_only_once(monkeypatch,
     assert sorted([first["REQUESTS_DISPATCHED"], second["REQUESTS_DISPATCHED"]]) == [0, 1]
     assert "RECOVERY_ALREADY_CLAIMED" in {first.get("FAILURE_CLASS"), second.get("FAILURE_CLASS")}
     assert campaign._recovery_claim_path().exists()
+
+@pytest.mark.asyncio
+async def test_owned_partial_attempt_persists_terminal_checkout_failure(monkeypatch,
+                                                                        tmp_path: Path) -> None:
+    """One recorded choice survives browser refusal and later Git timeout."""
+    import subprocess
+    from agents import generalist_browser_operator as operator
+
+    real_verify = campaign.compact.verify_checkout
+    qwen, competitor = _mock_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(campaign.compact, "verify_checkout", real_verify)
+    expected_sha = "f" * 40
+    remote_calls = 0
+
+    def git_run(command, **_kwargs):
+        nonlocal remote_calls
+        args = tuple(command[3:])
+        operation = operator._git_operation(args)
+        values = {
+            "REMOTE_URL": "git@github.com:coriom/morgoth.git\n",
+            "BRANCH": campaign.BRANCH + "\n", "LOCAL_HEAD": expected_sha + "\n",
+            "TRACKING_HEAD": expected_sha + "\n", "WORKTREE_STATUS": "",
+            "REMOTE_HEAD": expected_sha + f"\trefs/heads/{campaign.BRANCH}\n",
+        }
+        if operation == "REMOTE_HEAD":
+            remote_calls += 1
+            if remote_calls == 4:
+                values[operation] = "e" * 40 + f"\trefs/heads/{campaign.BRANCH}\n"
+            if remote_calls == 5:
+                raise subprocess.TimeoutExpired(command, 8, output="PRIVATE_DATA")
+        return SimpleNamespace(returncode=0, stdout=values[operation], stderr="")
+
+    monkeypatch.setattr(operator.subprocess, "run", git_run)
+    async def preflight(model, sha, quantization, branch):
+        assert quantization == "Q4_K_M"
+        real_verify(sha, branch)
+        digest = qwen.digest if model == qwen.name else competitor.digest
+        return {"MODEL_DIGEST_SHA256": digest}, SimpleNamespace()
+    async def probe(*_args):
+        return {"FAILURE_CLASS": "NONE", "TECHNICALLY_QUALIFIED": True,
+                "RESOURCE_PRESSURE_WARNING": False,
+                "CHOICE_USEFUL_AT_FROZEN_STATE": False,
+                "SYNTHETIC_CHOICE_CODE": "C03"}
+    async def blocked_browser(*_args, **_kwargs):
+        try:
+            operator._checkout_verified(campaign.BRANCH)
+        except operator.GitCheckoutRefusal as exc:
+            return {"FAILURE_CLASS": exc.code, "CHECKOUT_OPERATION": exc.operation,
+                    "CHECKOUT_FAILURE": exc.failure, "STAGE_B_CALL_COUNT_UNKNOWN": False,
+                    "STAGE_B": {"MODEL_CALL_COUNT": 0, "ACTION_COUNT": 0},
+                    "TASK_ACCEPTANCE_PASSED": False}
+        raise AssertionError("browser checkout unexpectedly passed")
+    monkeypatch.setattr(campaign.compact, "_preflight", preflight)
+    monkeypatch.setattr(campaign.compact, "_consented", lambda _: True)
+    monkeypatch.setattr(campaign, "_choice_probe", probe)
+    monkeypatch.setattr(campaign.compact, "_stage_b_after_a", blocked_browser)
+    original = campaign._ledger_path(campaign.RECOVERY_SOURCE_SHA)
+    original_bytes = original.read_bytes()
+
+    result = await campaign.evaluate(expected_sha, run=True, recover=True)
+    assert remote_calls == 5
+    assert result["FAILURE_CLASS"] == "PREFLIGHT_CHECKOUT"
+    assert (result["CHECKOUT_OPERATION"], result["CHECKOUT_FAILURE"]) == (
+        "REMOTE_HEAD", "TIMEOUT")
+    assert result["REQUESTS_DISPATCHED"] == 1
+    assert result["REQUESTS_RESERVED_MAX"] == 0
+    assert result["MODEL_REQUESTS"] == {"QWEN": 1, "COMPETITOR": 0}
+    assert result["REAL_EXPERIMENT_EXECUTED"] is True
+    assert result["TERMINAL_REPORT_PERSISTED"] is True
+    assert result["CELLS"]["QWEN:choice"]["STATUS"] == "RECORDED"
+    assert result["CELLS"]["QWEN:heldout"]["REQUESTS"] == 0
+    assert result["CELLS"]["QWEN:heldout"]["CHECKOUT_FAILURE"] == "MISMATCH"
+    assert result["CELLS"]["COMPETITOR:choice"]["REQUESTS"] == 0
+    successor = json.loads(campaign._ledger_path(expected_sha).read_text())
+    assert successor == result
+    assert original.read_bytes() == original_bytes
+    assert campaign._recovery_claim_path().exists()
+    expected_sha = "e" * 40
+    rerun = await campaign.evaluate("e" * 40, run=True, recover=True)
+    assert rerun["FAILURE_CLASS"] == "RECOVERY_ALREADY_CLAIMED"
+
+
+@pytest.mark.asyncio
+async def test_terminal_failure_keeps_uncertain_reservation_and_claim(monkeypatch,
+                                                                    tmp_path: Path) -> None:
+    _mock_setup(monkeypatch, tmp_path)
+    async def preflight(*_args):
+        return {"MODEL_DIGEST_SHA256": campaign.QWEN_DIGEST}, SimpleNamespace()
+    async def uncertain(*_args):
+        raise BrowserRefusal("MODEL_RESULT_UNKNOWN")
+    monkeypatch.setattr(campaign.compact, "_preflight", preflight)
+    monkeypatch.setattr(campaign.compact, "_consented", lambda _: True)
+    monkeypatch.setattr(campaign, "_choice_probe", uncertain)
+    result = await campaign.evaluate("f" * 40, run=True, recover=True)
+    assert result["FAILURE_CLASS"] == "MODEL_RESULT_UNKNOWN"
+    assert result["REQUESTS_RESERVED_MAX"] == 1
+    assert result["REAL_EXPERIMENT_EXECUTED"] is None
+    assert result["TERMINAL_REPORT_PERSISTED"] is True
+    ledger = json.loads(campaign._ledger_path("f" * 40).read_text())
+    assert ledger == result
+    assert ledger["CELLS"]["QWEN:choice"]["STATUS"] == "ATTEMPTED_RESULT_UNKNOWN"
+    assert campaign._recovery_claim_path().exists()
+    assert (await campaign.evaluate("e" * 40, run=True, recover=True))[
+        "FAILURE_CLASS"] == "RECOVERY_ALREADY_CLAIMED"
+
+@pytest.mark.asyncio
+async def test_terminal_write_failure_preserves_reservation_and_blocks_replay(monkeypatch,
+                                                                              tmp_path: Path) -> None:
+    _mock_setup(monkeypatch, tmp_path)
+    async def preflight(*_args):
+        return {"MODEL_DIGEST_SHA256": campaign.QWEN_DIGEST}, SimpleNamespace()
+    async def uncertain(*_args):
+        raise BrowserRefusal("MODEL_RESULT_UNKNOWN")
+    real_write = campaign._write_ledger
+    def fail_terminal(path, report, *, first=False):
+        if report.get("TERMINAL_REPORT_PERSISTED") is True:
+            raise OSError("PRIVATE_DATA")
+        real_write(path, report, first=first)
+    monkeypatch.setattr(campaign.compact, "_preflight", preflight)
+    monkeypatch.setattr(campaign.compact, "_consented", lambda _: True)
+    monkeypatch.setattr(campaign, "_choice_probe", uncertain)
+    monkeypatch.setattr(campaign, "_write_ledger", fail_terminal)
+    result = await campaign.evaluate("f" * 40, run=True, recover=True)
+    assert result["FAILURE_CLASS"] == "MODEL_RESULT_UNKNOWN"
+    assert result["TERMINAL_REPORT_PERSISTED"] is False
+    assert result["REQUESTS_RESERVED_MAX"] == 1
+    assert result["REAL_EXPERIMENT_EXECUTED"] is None
+    on_disk = json.loads(campaign._ledger_path("f" * 40).read_text())
+    assert on_disk["REQUESTS_RESERVED_MAX"] == 1
+    assert on_disk["CELLS"]["QWEN:choice"]["STATUS"] == "ATTEMPTED_RESULT_UNKNOWN"
+    assert campaign._recovery_claim_path().exists()
+    rerun = await campaign.evaluate("e" * 40, run=True, recover=True)
+    assert rerun["FAILURE_CLASS"] == "RECOVERY_ALREADY_CLAIMED"
+    assert "PRIVATE_DATA" not in str(result)
+
+@pytest.mark.asyncio
+async def test_cancelled_probe_persists_unknown_attempt_and_blocks_replay(monkeypatch,
+                                                                         tmp_path: Path) -> None:
+    _mock_setup(monkeypatch, tmp_path)
+    async def preflight(*_args):
+        return {"MODEL_DIGEST_SHA256": campaign.QWEN_DIGEST}, SimpleNamespace()
+    async def cancelled(*_args):
+        raise asyncio.CancelledError
+    monkeypatch.setattr(campaign.compact, "_preflight", preflight)
+    monkeypatch.setattr(campaign.compact, "_consented", lambda _: True)
+    monkeypatch.setattr(campaign, "_choice_probe", cancelled)
+    result = await campaign.evaluate("f" * 40, run=True, recover=True)
+    assert result["FAILURE_CLASS"] == "CAMPAIGN_INTERRUPTED"
+    assert result["REAL_EXPERIMENT_EXECUTED"] is None
+    assert result["REQUESTS_RESERVED_MAX"] == 1
+    assert result["TERMINAL_REPORT_PERSISTED"] is True
+    assert json.loads(campaign._ledger_path("f" * 40).read_text()) == result
+    assert campaign._recovery_claim_path().exists()
+    assert (await campaign.evaluate("e" * 40, run=True, recover=True))[
+        "FAILURE_CLASS"] == "RECOVERY_ALREADY_CLAIMED"

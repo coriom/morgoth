@@ -77,16 +77,21 @@ SAFE_STAGE_B_FIELDS = (
 def verify_checkout(expected_sha: str, branch: str = BRANCH) -> None:
     """Require exact clean branch, tracking ref and live origin head."""
     if re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None:
-        raise BrowserRefusal("PREFLIGHT_CHECKOUT")
-    if (operator._git("remote", "get-url", "origin") not in {
-            "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"} or
-            operator._git("branch", "--show-current") != branch or
-            operator._git("rev-parse", "HEAD") != expected_sha or
-            operator._git("rev-parse", f"origin/{branch}") != expected_sha or
-            operator._git("status", "--porcelain=v1", "--untracked-files=all") or
-            operator._git("ls-remote", "--heads", "origin", branch) !=
+        raise operator.GitCheckoutRefusal("EXPECTED_SHA", "INVALID")
+    if operator._git("remote", "get-url", "origin") not in {
+            "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"}:
+        raise operator.GitCheckoutRefusal("REMOTE_URL", "MISMATCH")
+    if operator._git("branch", "--show-current") != branch:
+        raise operator.GitCheckoutRefusal("BRANCH", "MISMATCH")
+    if operator._git("rev-parse", "HEAD") != expected_sha:
+        raise operator.GitCheckoutRefusal("LOCAL_HEAD", "MISMATCH")
+    if operator._git("rev-parse", f"origin/{branch}") != expected_sha:
+        raise operator.GitCheckoutRefusal("TRACKING_HEAD", "MISMATCH")
+    if operator._git("status", "--porcelain=v1", "--untracked-files=all"):
+        raise operator.GitCheckoutRefusal("WORKTREE_STATUS", "DIRTY")
+    if operator._git("ls-remote", "--heads", "origin", branch) != (
             f"{expected_sha}\trefs/heads/{branch}"):
-        raise BrowserRefusal("PREFLIGHT_CHECKOUT")
+        raise operator.GitCheckoutRefusal("REMOTE_HEAD", "MISMATCH")
 
 
 def _resource_ready(metadata: dict[str, object], resources: dict[str, object],
@@ -186,6 +191,9 @@ async def _preflight(model: str, expected_sha: str,
         return report, config
     except BrowserRefusal as exc:
         report["FAILURE_CLASS"] = exc.code
+        if isinstance(exc, operator.GitCheckoutRefusal):
+            report["CHECKOUT_OPERATION"] = exc.operation
+            report["CHECKOUT_FAILURE"] = exc.failure
     except (httpx.HTTPError, OSError, ValueError, TypeError, TimeoutError):
         report["FAILURE_CLASS"] = "LOCAL_METADATA_UNAVAILABLE"
     return report, None

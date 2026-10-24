@@ -75,12 +75,53 @@ def _decision_verdict(failure: str, progress: BrowserRunProgress) -> str:
 
 def _git(*args: str) -> str:
     """Read bounded checkout metadata without exporting Git diagnostic text."""
-    result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
-                            text=True, timeout=8, check=False,
-                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-    if result.returncode != 0 or len(result.stdout) > 4096:
-        raise BrowserRefusal("PREFLIGHT_CHECKOUT")
+    operation = _git_operation(args)
+    try:
+        result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
+                                text=True, timeout=8, check=False,
+                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        raise GitCheckoutRefusal(operation, "TIMEOUT") from None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise GitCheckoutRefusal(operation, "SUBPROCESS_FAILURE") from None
+    if result.returncode != 0:
+        raise GitCheckoutRefusal(operation, "EXIT_NONZERO")
+    if len(result.stdout) > 4096:
+        raise GitCheckoutRefusal(operation, "OUTPUT_OVERSIZE")
     return result.stdout.strip()
+
+
+class GitCheckoutRefusal(BrowserRefusal):
+    """Fixed checkout refusal with bounded operation and failure categories."""
+
+    def __init__(self, operation: str, failure: str) -> None:
+        super().__init__("PREFLIGHT_CHECKOUT")
+        self.operation = operation if operation in CHECKOUT_OPERATIONS else "OTHER_GIT_READ"
+        self.failure = failure if failure in CHECKOUT_FAILURES else "SUBPROCESS_FAILURE"
+
+
+CHECKOUT_OPERATIONS = frozenset({"REMOTE_URL", "BRANCH", "LOCAL_HEAD", "TRACKING_HEAD",
+                                "WORKTREE_STATUS", "REMOTE_HEAD", "EXPECTED_SHA",
+                                "OTHER_GIT_READ", "UNKNOWN"})
+CHECKOUT_FAILURES = frozenset({"NONE", "TIMEOUT", "EXIT_NONZERO", "OUTPUT_OVERSIZE",
+                               "SUBPROCESS_FAILURE", "MISMATCH", "DIRTY", "INVALID"})
+
+
+def _git_operation(args: tuple[str, ...]) -> str:
+    """Map reviewed Git reads to fixed identifiers; never expose raw arguments."""
+    if args == ("remote", "get-url", "origin"):
+        return "REMOTE_URL"
+    if args == ("branch", "--show-current"):
+        return "BRANCH"
+    if args == ("rev-parse", "HEAD"):
+        return "LOCAL_HEAD"
+    if len(args) == 2 and args[0] == "rev-parse" and args[1].startswith("origin/"):
+        return "TRACKING_HEAD"
+    if args == ("status", "--porcelain=v1", "--untracked-files=all"):
+        return "WORKTREE_STATUS"
+    if len(args) == 4 and args[:3] == ("ls-remote", "--heads", "origin"):
+        return "REMOTE_HEAD"
+    return "OTHER_GIT_READ"
 
 
 def _checkout_verified(branch: str = BRANCH) -> None:
@@ -88,14 +129,17 @@ def _checkout_verified(branch: str = BRANCH) -> None:
     try:
         if _git("remote", "get-url", "origin") not in {
                 "git@github.com:coriom/morgoth.git", "https://github.com/coriom/morgoth.git"}:
-            raise BrowserRefusal("PREFLIGHT_CHECKOUT")
+            raise GitCheckoutRefusal("REMOTE_URL", "MISMATCH")
         local = _git("rev-parse", "HEAD")
         remote = _git("ls-remote", "--heads", "origin", branch).split()
-        if (_git("branch", "--show-current") != branch or
-            local != _git("rev-parse", f"origin/{branch}") or
-            remote != [local, f"refs/heads/{branch}"] or
-            _git("status", "--porcelain=v1", "--untracked-files=all")):
-            raise BrowserRefusal("PREFLIGHT_CHECKOUT")
+        if _git("branch", "--show-current") != branch:
+            raise GitCheckoutRefusal("BRANCH", "MISMATCH")
+        if local != _git("rev-parse", f"origin/{branch}"):
+            raise GitCheckoutRefusal("TRACKING_HEAD", "MISMATCH")
+        if remote != [local, f"refs/heads/{branch}"]:
+            raise GitCheckoutRefusal("REMOTE_HEAD", "MISMATCH")
+        if _git("status", "--porcelain=v1", "--untracked-files=all"):
+            raise GitCheckoutRefusal("WORKTREE_STATUS", "DIRTY")
     except (OSError, subprocess.SubprocessError):
         raise BrowserRefusal("PREFLIGHT_CHECKOUT") from None
 
@@ -143,6 +187,9 @@ async def _evaluate(*, branch: str = BRANCH, fixture: str = "heldout",
         config = _local_model_config()
     except (BrowserRefusal, OSError, ValueError) as exc:
         report["FAILURE_CLASS"] = exc.code if isinstance(exc, BrowserRefusal) else "PREFLIGHT_REJECTED"
+        if isinstance(exc, GitCheckoutRefusal):
+            report["CHECKOUT_OPERATION"] = exc.operation
+            report["CHECKOUT_FAILURE"] = exc.failure
         return report
     logger.remove()
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
