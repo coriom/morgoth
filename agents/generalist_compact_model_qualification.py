@@ -306,7 +306,10 @@ async def evaluate(model: str, expected_sha: str, expected_quantization: str,
 async def _stage_b_after_a(report: dict[str, object], model: str,
                            expected_sha: str, expected_quantization: str,
                            warning: bool, *, branch: str = BRANCH,
-                           hierarchical: bool = True) -> dict[str, object]:
+                           hierarchical: bool = True, fixture: str = "heldout",
+                           objective: str = operator.OBJECTIVE,
+                           target: str = operator.TARGET,
+                           expected: str = operator.EXPECTED) -> dict[str, object]:
     """Acknowledge pressure, remeasure resources, then invoke existing BROWSE ONCE gate."""
     if warning:
         if not _consented("MEMORY PRESSURE REVIEWED"):
@@ -363,10 +366,10 @@ async def _stage_b_after_a(report: dict[str, object], model: str,
     # The existing operator path rechecks the exact branch, model headroom,
     # confined fixture, then obtains its independent BROWSE ONCE consent.
     try:
-        browser = await operator._evaluate(branch=branch, fixture="heldout",
-                                           objective=operator.OBJECTIVE,
-                                           target=operator.TARGET,
-                                           expected=operator.EXPECTED,
+        browser = await operator._evaluate(branch=branch, fixture=fixture,
+                                           objective=objective,
+                                           target=target,
+                                           expected=expected,
                                            model_override=model,
                                            hierarchical=hierarchical)
     except Exception:
