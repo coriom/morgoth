@@ -14,6 +14,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import stat
 import sys
 import time
 from types import SimpleNamespace
@@ -36,7 +38,9 @@ from agents.generalist_ollama_resources import _bounded_metadata_get, _loopback_
 from core.llm_client import OllamaLLMClient
 
 
-BRANCH = "morgoth-generalist-mission-qualification-cmq4-v1"
+BRANCH = "morgoth-generalist-mission-qualification-cmq4-consent-recovery-v1"
+RECOVERY_SOURCE_SHA = "6317968a2a7fe3baf69461d74b730a18d9833631"
+RECOVERY_LEDGER_SHA256 = "91f42ba231f1393e33169e19af085e0350ee75be61bd026918bdf0e2a0aba973"
 QWEN = "qwen3:4b-instruct"
 QWEN_DIGEST = "0edcdef34593eac1aa2be9c7d06c432dcf81945adca5eca2f27662c18f168ba0"
 MAX_REQUESTS = 38
@@ -103,6 +107,154 @@ def _ledger_path(expected_sha: str) -> Path:
     if re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None:
         raise BrowserRefusal("PREFLIGHT_CHECKOUT")
     return LEDGER_DIR / f"morgoth-cmq4-{expected_sha}.json"
+
+
+def _recovery_claim_path() -> Path:
+    """One durable ownership name for this original attempt across successor SHAs."""
+    return LEDGER_DIR / f"morgoth-cmq4-recovery-{RECOVERY_SOURCE_SHA}-{RECOVERY_LEDGER_SHA256}.claim"
+
+
+def _inspect_original_ledger() -> dict[str, object]:
+    """Accept only the exact complete original pre-inference consent refusal."""
+    path = _ledger_path(RECOVERY_SOURCE_SHA)
+    try:
+        before = os.lstat(path)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+                stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1 or
+                not 0 < before.st_size <= 16000):
+            raise ValueError
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise ValueError
+            raw = os.read(descriptor, 16001)
+            if len(raw) != before.st_size:
+                raise ValueError
+        finally:
+            os.close(descriptor)
+        digest = sha256(raw).hexdigest()
+        if digest != RECOVERY_LEDGER_SHA256:
+            raise ValueError
+        original = json.loads(raw, object_pairs_hook=_unique_pairs)
+        required = {"CANDIDATES", "CELLS", "FROZEN_BUDGET_CALLS",
+                    "FROZEN_BUDGET_SECONDS", "INSTALLED_ALTERNATIVE_COUNT",
+                    "MAX_REQUESTS", "MAX_REQUESTS_PER_MODEL", "MODEL_REQUESTS",
+                    "PAIRED_INPUT_SHA256", "PRODUCTION_QUALIFIED",
+                    "REAL_EXPERIMENT_EXECUTED", "RENDERED_POST_FILL_VERIFIED",
+                    "REQUESTS_DISPATCHED", "REQUESTS_RESERVED_MAX",
+                    "REVIEWED_FIXTURE_SHA256", "VERDICT"}
+        if type(original) is not dict or set(original) != required:
+            raise ValueError
+        if (original["VERDICT"] != "CAMPAIGN_RECORDED_WITH_BLOCKED_CELLS" or
+                original["REAL_EXPERIMENT_EXECUTED"] is not False or
+                original["PRODUCTION_QUALIFIED"] is not False or
+                original["RENDERED_POST_FILL_VERIFIED"] is not True or
+                type(original["REQUESTS_DISPATCHED"]) is not int or
+                original["REQUESTS_DISPATCHED"] != 0 or
+                type(original["REQUESTS_RESERVED_MAX"]) is not int or
+                original["REQUESTS_RESERVED_MAX"] != 0 or
+                original["MODEL_REQUESTS"] != {"QWEN": 0, "COMPETITOR": 0} or
+                any(type(value) is not int or value != 0
+                    for value in original["MODEL_REQUESTS"].values()) or
+                type(original["MAX_REQUESTS"]) is not int or
+                original["MAX_REQUESTS"] != MAX_REQUESTS or
+                type(original["MAX_REQUESTS_PER_MODEL"]) is not int or
+                original["MAX_REQUESTS_PER_MODEL"] != MAX_PER_MODEL or
+                type(original["FROZEN_BUDGET_CALLS"]) is not int or
+                original["FROZEN_BUDGET_CALLS"] != 4 or
+                type(original["FROZEN_BUDGET_SECONDS"]) is not int or
+                not 0 <= original["FROZEN_BUDGET_SECONDS"] <= 260 or
+                type(original["INSTALLED_ALTERNATIVE_COUNT"]) is not int or
+                original["INSTALLED_ALTERNATIVE_COUNT"] < 1):
+            raise ValueError
+        for field in ("PAIRED_INPUT_SHA256", "REVIEWED_FIXTURE_SHA256"):
+            if (type(original[field]) is not str or
+                    re.fullmatch(r"[0-9a-f]{64}", original[field]) is None):
+                raise ValueError
+        candidates = original["CANDIDATES"]
+        if (type(candidates) is not list or len(candidates) != 2 or
+                any(type(item) is not dict or
+                    set(item) != {"name", "digest", "quantization", "size_mib"} or
+                    type(item["name"]) is not str or
+                    compact.MODEL_NAME.fullmatch(item["name"]) is None or
+                    type(item["digest"]) is not str or
+                    re.fullmatch(r"[0-9a-f]{64}", item["digest"]) is None or
+                    type(item["quantization"]) is not str or
+                    type(item["size_mib"]) is not int or item["size_mib"] <= 0
+                    for item in candidates) or
+                candidates[0]["name"] != QWEN or candidates[0]["digest"] != QWEN_DIGEST or
+                candidates[1]["name"] == QWEN):
+            raise ValueError
+        cells = original["CELLS"]
+        if type(cells) is not dict or set(cells) != set(_cells()):
+            raise ValueError
+        for key, cell in cells.items():
+            if (type(cell) is not dict or set(cell) != {"STATUS", "REASON", "REQUESTS"} or
+                    cell["STATUS"] != "BLOCKED" or
+                    cell["REASON"] != ("MODEL_CONSENT_REQUIRED" if key == "QWEN:choice"
+                                       else "PREREQUISITE_OR_PRIOR_CELL_BLOCKED") or
+                    type(cell["REQUESTS"]) is not int or cell["REQUESTS"] != 0):
+                raise ValueError
+        return {"RECOVERY_SOURCE_SHA": RECOVERY_SOURCE_SHA,
+                "RECOVERY_ORIGINAL_LEDGER_SHA256": digest,
+                "RECOVERY_ORIGINAL_INPUT_SHA256": original["PAIRED_INPUT_SHA256"],
+                "RECOVERY_CANDIDATES": candidates}
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError, BrowserRefusal):
+        raise BrowserRefusal("RECOVERY_ORIGINAL_EVIDENCE_INVALID") from None
+
+
+def _recovery_available(expected_sha: str) -> dict[str, object]:
+    """Refuse an existing claim or successor ledger even after a new commit."""
+    evidence = _inspect_original_ledger()
+    if (os.path.lexists(_recovery_claim_path()) or
+            os.path.lexists(_ledger_path(expected_sha))):
+        raise BrowserRefusal("RECOVERY_ALREADY_CLAIMED")
+    return evidence
+
+
+def _claim_recovery(evidence: dict[str, object], expected_sha: str) -> None:
+    """Durably claim the original attempt after consent and before dispatch."""
+    claim = _recovery_claim_path()
+    payload = json.dumps({"SOURCE_SHA": evidence["RECOVERY_SOURCE_SHA"],
+                          "SOURCE_LEDGER_SHA256": evidence["RECOVERY_ORIGINAL_LEDGER_SHA256"],
+                          "SUCCESSOR_SHA": expected_sha}, sort_keys=True).encode()
+    descriptor = os.open(claim, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        if os.write(descriptor, payload) != len(payload):
+            raise OSError
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    directory = os.open(LEDGER_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _record_preconsent_refusal(evidence: dict[str, object], expected_sha: str) -> None:
+    """Keep bounded cancellation evidence without reserving a model request."""
+    path = LEDGER_DIR / (f"morgoth-cmq4-consent-refusal-{RECOVERY_SOURCE_SHA}-"
+                         f"{expected_sha}-{secrets.token_hex(12)}.json")
+    data = json.dumps({"REASON": "MODEL_CONSENT_REQUIRED",
+                       "SOURCE_SHA": evidence["RECOVERY_SOURCE_SHA"],
+                       "SOURCE_LEDGER_SHA256": evidence["RECOVERY_ORIGINAL_LEDGER_SHA256"],
+                       "SUCCESSOR_SHA": expected_sha,
+                       "REQUESTS_DISPATCHED": 0, "REQUESTS_RESERVED_MAX": 0},
+                      sort_keys=True, separators=(",", ":")).encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        if os.write(descriptor, data) != len(data):
+            raise OSError
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    directory = os.open(LEDGER_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _write_ledger(path: Path, report: dict[str, object], *, first: bool = False) -> None:
@@ -394,9 +546,11 @@ def _mission_outcome(browser: dict[str, object]) -> str:
     return "TECHNICAL_OR_PREFLIGHT_FAILURE"
 
 
-async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]:
-    """Prepare a frozen matrix, then optionally perform a separately consented run."""
+async def evaluate(expected_sha: str, *, run: bool = False,
+                   recover: bool = False) -> dict[str, object]:
+    """Prepare a frozen matrix, then optionally recover one consent-only refusal."""
     logger.remove()
+    claim_owned = False
     report: dict[str, object] = {
         "VERDICT": "PREPARATION_BLOCKED", "REAL_EXPERIMENT_EXECUTED": False,
         "REQUESTS_DISPATCHED": 0, "REQUESTS_RESERVED_MAX": 0,
@@ -407,12 +561,21 @@ async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]
     }
     try:
         compact.verify_checkout(expected_sha, BRANCH)
+        if run and not recover:
+            raise BrowserRefusal("RECOVERY_REQUIRED")
+        recovery_evidence = _recovery_available(expected_sha) if run else None
+        if recovery_evidence is not None:
+            report.update({key: recovery_evidence[key] for key in (
+                "RECOVERY_SOURCE_SHA", "RECOVERY_ORIGINAL_LEDGER_SHA256",
+                "RECOVERY_ORIGINAL_INPUT_SHA256")})
         config = _local_model_config()
         qwen, competitor, alternative_count = await _installed_candidates(config.ollama_base_url)
         report["INSTALLED_ALTERNATIVE_COUNT"] = alternative_count
         if competitor is None:
             raise BrowserRefusal("COMPETITOR_NOT_INSTALLED")
         report["CANDIDATES"] = [candidate.__dict__ for candidate in (qwen, competitor)]
+        if recovery_evidence is not None and report["CANDIDATES"] != recovery_evidence["RECOVERY_CANDIDATES"]:
+            raise BrowserRefusal("RECOVERY_CANDIDATE_IDENTITY_CHANGED")
         await _browser_preflight()
         frozen = await _frozen_post_fill()
         report["PAIRED_INPUT_SHA256"] = frozen.digest
@@ -427,7 +590,6 @@ async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]
                     "http_proxy", "https_proxy", "all_proxy"):
             os.environ.pop(key, None)
         path = _ledger_path(expected_sha)
-        _write_ledger(path, report, first=True)
         for role, candidate in (("QWEN", qwen), ("COMPETITOR", competitor)):
             if role == "COMPETITOR":
                 sys.stderr.write("CMQ.4 model transition: review residency in another terminal; "
@@ -436,7 +598,8 @@ async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]
                 report["CELLS"]["COMPETITOR:choice"] = {
                     "STATUS": "BLOCKED", "REASON": "MODEL_TRANSITION_CONSENT_REQUIRED",
                     "REQUESTS": 0}
-                _write_ledger(path, report)
+                if claim_owned:
+                    _write_ledger(path, report)
                 break
             key = f"{role}:choice"
             preflight, ready_config = await compact._preflight(
@@ -444,19 +607,27 @@ async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]
             if ready_config is None or preflight.get("MODEL_DIGEST_SHA256") != candidate.digest:
                 report["CELLS"][key] = {"STATUS": "BLOCKED", "REASON":
                     "MODEL_OR_RESOURCE_PREFLIGHT_BLOCKED", "REQUESTS": 0}
-                _write_ledger(path, report)
+                if claim_owned:
+                    _write_ledger(path, report)
                 break
             if not compact._consented("MODEL ONCE COMPACT"):
                 report["CELLS"][key] = {"STATUS": "BLOCKED", "REASON":
                     "MODEL_CONSENT_REQUIRED", "REQUESTS": 0}
-                _write_ledger(path, report)
+                if claim_owned:
+                    _write_ledger(path, report)
                 break
+            if role == "QWEN":
+                compact.verify_checkout(expected_sha, BRANCH)
+                if _recovery_available(expected_sha) != recovery_evidence:
+                    raise BrowserRefusal("RECOVERY_ORIGINAL_EVIDENCE_CHANGED")
+                _claim_recovery(recovery_evidence, expected_sha)
+                claim_owned = True
             # Reserve one attempt before dispatch. A crash cannot erase it.
             report["CELLS"][key] = {"STATUS": "ATTEMPTED_RESULT_UNKNOWN",
                                     "REASON": "REQUEST_RESERVED", "REQUESTS": None,
                                     "RESERVED_MAX": 1}
             report["REQUESTS_RESERVED_MAX"] += 1
-            _write_ledger(path, report)
+            _write_ledger(path, report, first=role == "QWEN")
             probe = await _choice_probe(candidate, frozen, preflight, ready_config)
             report["REQUESTS_RESERVED_MAX"] -= 1
             report["REQUESTS_DISPATCHED"] += 1
@@ -522,10 +693,15 @@ async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]
         report["VERDICT"] = "CAMPAIGN_RECORDED_WITH_BLOCKED_CELLS" if any(
             item["STATUS"] != "RECORDED" for item in report["CELLS"].values()
             ) else "CAMPAIGN_RECORDED"
-        _write_ledger(path, report)
+        if claim_owned:
+            _write_ledger(path, report)
+        elif report["CELLS"]["QWEN:choice"]["REASON"] == "MODEL_CONSENT_REQUIRED":
+            _record_preconsent_refusal(recovery_evidence, expected_sha)
+            report["VERDICT"] = "CONSENT_REFUSED_BEFORE_INFERENCE"
+            report["RECOVERY_RETRYABLE"] = True
         return report
     except FileExistsError:
-        report["FAILURE_CLASS"] = "CAMPAIGN_ALREADY_ATTEMPTED"
+        report["FAILURE_CLASS"] = "RECOVERY_ALREADY_CLAIMED"
     except BrowserRefusal as exc:
         report["FAILURE_CLASS"] = exc.code
     except (OSError, ValueError, TypeError, httpx.HTTPError, TimeoutError):
@@ -534,12 +710,31 @@ async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]
         report["FAILURE_CLASS"] = "CAMPAIGN_UNEXPECTED_FAILURE"
     if run:
         report["VERDICT"] = "CAMPAIGN_BLOCKED"
+    if claim_owned:
+        report["RECOVERY_CLAIMED"] = True
     report["REAL_EXPERIMENT_EXECUTED"] = (
         None if report["REQUESTS_RESERVED_MAX"] else report["REQUESTS_DISPATCHED"] > 0)
     for cell in report["CELLS"].values():
         if cell["STATUS"] == "NOT_RUN":
             cell.update(STATUS="BLOCKED", REASON="PREPARATION_OR_PRIOR_CELL_BLOCKED")
     return report
+
+
+def inspect_recovery(expected_sha: str) -> dict[str, object]:
+    """Read only the exact original ledger and current exclusive ownership state."""
+    try:
+        compact.verify_checkout(expected_sha, BRANCH)
+        evidence = _recovery_available(expected_sha)
+        return {"VERDICT": "RECOVERY_ELIGIBLE", "RECOVERY_SOURCE_SHA": evidence["RECOVERY_SOURCE_SHA"],
+                "RECOVERY_ORIGINAL_LEDGER_SHA256": evidence["RECOVERY_ORIGINAL_LEDGER_SHA256"],
+                "RECOVERY_ORIGINAL_INPUT_SHA256": evidence["RECOVERY_ORIGINAL_INPUT_SHA256"],
+                "REAL_EXPERIMENT_EXECUTED": False, "PRODUCTION_QUALIFIED": False}
+    except BrowserRefusal as exc:
+        return {"VERDICT": "RECOVERY_BLOCKED", "FAILURE_CLASS": exc.code,
+                "PRODUCTION_QUALIFIED": False}
+    except (OSError, ValueError, TypeError):
+        return {"VERDICT": "RECOVERY_BLOCKED", "FAILURE_CLASS": "RECOVERY_INSPECTION_FAILED",
+                "PRODUCTION_QUALIFIED": False}
 
 
 def main() -> None:
@@ -549,9 +744,14 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--prepare", action="store_true")
     mode.add_argument("--run", action="store_true")
+    mode.add_argument("--inspect-recovery", action="store_true")
+    mode.add_argument("--recover-consent-only", action="store_true")
     arguments = parser.parse_args()
     try:
-        report = asyncio.run(evaluate(arguments.expected_sha, run=arguments.run))
+        report = (inspect_recovery(arguments.expected_sha) if arguments.inspect_recovery else
+                  asyncio.run(evaluate(arguments.expected_sha,
+                                       run=arguments.run or arguments.recover_consent_only,
+                                       recover=arguments.recover_consent_only)))
     except (KeyboardInterrupt, Exception):
         report = {"VERDICT": "CAMPAIGN_INTERRUPTED_OR_FAILED",
                   "PRODUCTION_QUALIFIED": False}
