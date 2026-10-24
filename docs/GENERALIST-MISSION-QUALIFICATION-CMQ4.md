@@ -100,6 +100,8 @@ one request before each choice-only call and up to six before each mission;
 after a normal return it replaces the reservation with the actual dispatched
 count. A crash leaves an explicit unknown reservation and prevents an
 accidental replay. It never claims reserved requests were actually sent.
+An unexpected browser-wrapper failure explicitly marks the call count
+unknown and retains the six-call reservation; it cannot be recorded as zero.
 Two probes plus six missions at six calls each form a 38-request ceiling,
 19 per model. Timeouts, malformed replies and other dispatched requests
 count. There is no warm-up, retry, JSON repair, fallback or extra planning
@@ -174,7 +176,7 @@ Bubblewrap-confined Chromium verifies three fixture preflights, the rendered
 post-fill request and independently accepted scripted missions. Scripted
 decisions prove the controller and harness only. The test count and exit
 status are recorded here and in the final engineering handoff: the following
-selection returned **153 passed, 0 failed, 0 skipped, exit 0** in 78.75 s
+selection returned **154 passed, 0 failed, 0 skipped, exit 0** in 76.30 s
 on the CMQ.4 source worktree before commit. It was run with permitted local
 user namespaces so Bubblewrap confinement remained intact:
 

@@ -369,3 +369,30 @@ async def test_structured_format_http_refusal_uses_machine_code_only(monkeypatch
     assert result["HTTP_STATUS"] == 400
     assert result["TECHNICALLY_QUALIFIED"] is False
     assert "PRIVATE_BODY_MARKER" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_unknown_browser_call_count_keeps_reservation_and_blocks_rerun(
+        monkeypatch, tmp_path: Path) -> None:
+    _mock_setup(monkeypatch, tmp_path)
+    async def preflight(*_args):
+        return {"MODEL_DIGEST_SHA256": campaign.QWEN_DIGEST}, SimpleNamespace()
+    async def probe(*_args):
+        return {"FAILURE_CLASS": "NONE", "TECHNICALLY_QUALIFIED": True,
+                "RESOURCE_PRESSURE_WARNING": False}
+    async def browser(*_args, **_kwargs):
+        return {"FAILURE_CLASS": "BROWSER_EVALUATION_FAILED",
+                "STAGE_B_CALL_COUNT_UNKNOWN": True}
+    monkeypatch.setattr(campaign.compact, "_preflight", preflight)
+    monkeypatch.setattr(campaign.compact, "_consented", lambda _: True)
+    monkeypatch.setattr(campaign, "_choice_probe", probe)
+    monkeypatch.setattr(campaign.compact, "_stage_b_after_a", browser)
+    result = await campaign.evaluate("f" * 40, run=True)
+    assert result["FAILURE_CLASS"] == "CAMPAIGN_ATTEMPT_COUNT_UNKNOWN"
+    assert result["REQUESTS_DISPATCHED"] == 1
+    assert result["REQUESTS_RESERVED_MAX"] == 6
+    assert result["REAL_EXPERIMENT_EXECUTED"] is None
+    ledger = json.loads((tmp_path / f"morgoth-cmq4-{'f' * 40}.json").read_text())
+    assert ledger["CELLS"]["QWEN:heldout"]["STATUS"] == "ATTEMPTED_RESULT_UNKNOWN"
+    rerun = await campaign.evaluate("f" * 40, run=True)
+    assert rerun["FAILURE_CLASS"] == "CAMPAIGN_ALREADY_ATTEMPTED"

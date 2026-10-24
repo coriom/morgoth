@@ -375,6 +375,7 @@ async def _stage_b_after_a(report: dict[str, object], model: str,
     except Exception:
         report["VERDICT"] = "HIERARCHICAL_PROTOCOL_OR_RESOURCE_BLOCKED"
         report["FAILURE_CLASS"] = "BROWSER_EVALUATION_FAILED"
+        report["STAGE_B_CALL_COUNT_UNKNOWN"] = True
         return report
     report["STAGE_B_ATTEMPTED"] = browser.get("MODEL_CALL_COUNT", 0) > 0
     report["STAGE_B"] = {key: browser.get(key) for key in SAFE_STAGE_B_FIELDS}

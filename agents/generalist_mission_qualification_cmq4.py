@@ -494,7 +494,9 @@ async def evaluate(expected_sha: str, *, run: bool = False) -> dict[str, object]
                     hierarchical=False, fixture=task.fixture,
                     objective=task.objective, target=task.target, expected=task.expected)
                 stage = browser.get("STAGE_B")
-                actual = stage.get("MODEL_CALL_COUNT", 0) if type(stage) is dict else 0
+                if browser.get("STAGE_B_CALL_COUNT_UNKNOWN") is True:
+                    raise BrowserRefusal("CAMPAIGN_ATTEMPT_COUNT_UNKNOWN")
+                actual = stage.get("MODEL_CALL_COUNT") if type(stage) is dict else 0
                 if type(actual) is not int or not 0 <= actual <= 6:
                     raise BrowserRefusal("CAMPAIGN_ACCOUNTING_INVALID")
                 report["REQUESTS_RESERVED_MAX"] -= 6
