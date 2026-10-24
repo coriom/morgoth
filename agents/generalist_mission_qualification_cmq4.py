@@ -333,14 +333,15 @@ async def _installed_candidates(base_url: str) -> tuple[Candidate, Candidate | N
 class _PreparationClient:
     """Script two setup actions, then capture the actual source-built request."""
 
-    def __init__(self) -> None:
+    def __init__(self, setup_controls: tuple[str, str] = ("Inventory", "SKU")) -> None:
         self.calls = 0
+        self.setup_controls = setup_controls
         self.snapshot: tuple[tuple[object, object], dict[str, object]] | None = None
 
     async def chat(self, messages: list[object], **kwargs: object) -> SimpleNamespace:
         """Respond synthetically; this method never accesses Ollama."""
         payload = json.loads(messages[1].content)
-        wanted = ("Inventory", "SKU", "Stop or abstain")[self.calls]
+        wanted = (*self.setup_controls, "Stop or abstain")[self.calls]
         if self.calls == 2:
             self.snapshot = ((messages[0], messages[1]), kwargs.copy())
         self.calls += 1
@@ -351,17 +352,20 @@ class _PreparationClient:
             tool_calls=[]), done=True, done_reason="stop")
 
 
-async def _frozen_post_fill() -> FrozenRequest:
+async def _frozen_post_fill(*, scenario: Scenario = SCENARIOS[0],
+                            setup_controls: tuple[str, str] = ("Inventory", "SKU"),
+                            setup_codes: tuple[str, str] = ("C02", "C03"),
+                            useful_code: str = "C04") -> FrozenRequest:
     """Capture one actual model request after rendered, worker-acknowledged setup."""
-    policy = SyntheticTracePolicy.from_checkout(operator.ROOT, "heldout")
-    client = _PreparationClient()
+    policy = SyntheticTracePolicy.from_checkout(operator.ROOT, scenario.fixture)
+    client = _PreparationClient(setup_controls)
     source = OllamaBrowserActionSource(client, "scripted-preparation", loaded=None)
     progress = BrowserRunProgress()
     try:
         await run_isolated_policy(
             checkout=operator.ROOT, browser_dir=operator.BROWSER,
-            fixture="heldout", objective=SCENARIOS[0].objective,
-            target=SCENARIOS[0].target, expected=SCENARIOS[0].expected,
+            fixture=scenario.fixture, objective=scenario.objective,
+            target=scenario.target, expected=scenario.expected,
             source=source, max_model_calls=6, progress=progress, synthetic_trace=True)
     except BrowserRefusal as exc:
         if exc.code != "MODEL_ABSTAINED":
@@ -370,7 +374,7 @@ async def _frozen_post_fill() -> FrozenRequest:
             progress.state_transition_count != 2 or progress.no_progress_count != 0 or
             progress.task_acceptance_passed or not progress.trace_source_verified or
             len(progress.synthetic_trace) != 2 or
-            [item.get("CONTROL") for item in progress.synthetic_trace] != ["C02", "C03"] or
+            [item.get("CONTROL") for item in progress.synthetic_trace] != list(setup_codes) or
             any(item.get("UI_EFFECT") != "UI_CHANGE_OBSERVED"
                 for item in progress.synthetic_trace)):
         raise BrowserRefusal("CHOICE_PROVENANCE_INVALID")
@@ -381,11 +385,11 @@ async def _frozen_post_fill() -> FrozenRequest:
             kwargs.get("options") != {"temperature": 0, "num_predict": 384}):
         raise BrowserRefusal("CHOICE_REQUEST_INVALID")
     payload = json.loads(messages[1].content)
-    summary = summarize_request(payload, kwargs["format"], operator.ROOT, "heldout")
+    summary = summarize_request(payload, kwargs["format"], operator.ROOT, scenario.fixture)
     if (summary["REMAINING_MODEL_CALLS"] != 4 or
             summary["TARGET_IN_VISIBLE_INPUT"] is not True or
             summary["CHOICE_SCHEMA_MATCHES_CATALOG"] is not True or
-            not any(item["CONTROL"] == "C04" and item["KIND"] == "CLICK"
+            not any(item["CONTROL"] == useful_code and item["KIND"] == "CLICK"
                     for item in summary["CANDIDATES"])):
         raise BrowserRefusal("CHOICE_PROVENANCE_INVALID")
     request = {"messages": [item.model_dump(mode="json") for item in messages],
@@ -429,7 +433,8 @@ def _decode_choice(response: object, frozen: FrozenRequest) -> str:
 
 
 async def _choice_probe(candidate: Candidate, frozen: FrozenRequest,
-                        preflight: dict[str, object], config: object) -> dict[str, object]:
+                        preflight: dict[str, object], config: object, *,
+                        fixture: str = "heldout", useful_code: str = "C04") -> dict[str, object]:
     """Send exactly one frozen source request and collect actual resource evidence."""
     report: dict[str, object] = {
         "INFERENCE_ATTEMPTED": True, "MODEL_CALL_COUNT": 1,
@@ -523,9 +528,9 @@ async def _choice_probe(candidate: Candidate, frozen: FrozenRequest,
         selected = next(item for item in payload["observation"]["actions"]
                         if item["id"] == choice_id)
         code = ("STOP" if selected["kind"] == "stop" else
-                SyntheticTracePolicy.from_checkout(operator.ROOT, "heldout").controls[selected["name"]])
+                SyntheticTracePolicy.from_checkout(operator.ROOT, fixture).controls[selected["name"]])
         report["SYNTHETIC_CHOICE_CODE"] = code
-        report["CHOICE_USEFUL_AT_FROZEN_STATE"] = code == "C04"
+        report["CHOICE_USEFUL_AT_FROZEN_STATE"] = code == useful_code
     return report
 
 
