@@ -8,7 +8,8 @@ optional disposable PostgreSQL mission reader. Both operations are GET-only:
   documents, with an optional 80-character case-insensitive content filter.
 - `/projects/{project_id}/documents/{document_id}` reads an exact opaque ID.
 
-Responses use schema version 1, `PROJECT_MARKDOWN_VAULT` provenance, the
+Pages and exact document details use schema version 1,
+`PROJECT_MARKDOWN_VAULT` provenance, the
 canonical Project ID, filesystem modification timestamp (`recorded_at`), and
 read timestamp (`read_at` on pages). A saved Markdown document is **not** an
 approved fact. No confidence or human review status is inferred.

@@ -40,6 +40,7 @@ class LinkRead(BaseModel):
 
 class DocumentRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    schema_version: int = 1
     document_id: str
     project_id: str
     title: str

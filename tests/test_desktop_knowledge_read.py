@@ -40,7 +40,7 @@ async def test_project_vault_auth_links_search_and_scope(tmp_path: Path) -> None
         assert index["title"] == "Index" and "content" in index and index["content"] is None
         assert index["links"] == [{"label": "Sujet", "target_id": topic["document_id"]}, {"label": "Absent", "target_id": None}]
         detail = (await client.get(base + "/" + index["document_id"], headers=headers)).json()
-        assert detail["content"].startswith("# Index")
+        assert detail["schema_version"] == 1 and detail["content"].startswith("# Index")
         assert (await client.get(base + "?query=connaissance", headers=headers)).json()["documents"][0]["title"] == "Sujet"
         assert (await client.get(base + "?limit=1", headers=headers)).json()["next_offset"] == 1
         assert (await client.get(base + "?offset=1&limit=1", headers=headers)).json()["documents"][0]["title"] == "Sujet"
