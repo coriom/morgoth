@@ -12,6 +12,7 @@ import uvicorn
 from core.runtime import RuntimeHome
 from api.management_app import ManagementSecurity, create_management_app
 from project_manager import ProjectManager, ProjectManagerError
+from agents.desktop_knowledge_read import install_desktop_knowledge_routes
 
 
 def read_private_token(path: Path) -> str:
@@ -51,7 +52,9 @@ def main(argv: list[str] | None = None) -> int:
         token = read_private_token(args.token_file)
         security = ManagementSecurity(token=token, port=args.port)
         home = RuntimeHome(args.home, args.home / "projects")
-        app = create_management_app(ProjectManager(home), security)
+        manager = ProjectManager(home)
+        app = create_management_app(manager, security)
+        install_desktop_knowledge_routes(app, manager)
         if args.test_pg_socket is not None:
             from agents.desktop_read_models import DesktopReadStore, ReadUnavailable
             from agents.desktop_read_routes import install_desktop_read_routes
