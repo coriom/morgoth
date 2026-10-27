@@ -33,6 +33,16 @@ THESIS_COLUMNS = frozenset({"thesis_id", "subject", "claim", "confidence", "evid
                             "superseded_by", "code_version"})
 CONTRADICTION_COLUMNS = frozenset({"contradiction_id", "subject_group", "thesis_id_a",
                                    "thesis_id_b", "detected_at", "resolution"})
+# Project-scoped fixed projections send at most one character beyond each DTO limit.
+# That extra character makes overlong records fail validation without transferring
+# their full content or silently truncating it into a plausible claim.
+THESIS_SELECT = ("thesis_id,left(subject,161) AS subject,left(claim,2049) AS claim,"
+                 "left(confidence,25) AS confidence,left(evidence::text,16385) AS evidence,"
+                 "left(status,25) AS status,left(objective_id,81) AS objective_id,created_at,"
+                 "left(code_version,65) AS code_version,"
+                 "left(quarantine_reason,241) AS quarantine_reason,superseded_by")
+CONTRADICTION_SELECT = ("contradiction_id,left(subject_group,161) AS subject_group,"
+                        "thesis_id_a,thesis_id_b,detected_at,left(resolution,241) AS resolution")
 
 
 class MemoryReadUnavailable(RuntimeError):
@@ -227,6 +237,9 @@ class StructuredMemoryReader:
         role = await conn.fetchrow("SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls FROM pg_roles WHERE rolname=current_user")
         if role is None or any(role.values()):
             raise MemoryReadUnavailable("INVALID_SOURCE_AUTHORITY")
+        exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)", schema)
+        if not exists:
+            raise MemoryReadUnavailable("SOURCE_UNINITIALIZED_OR_INCOMPATIBLE")
         permitted = await conn.fetchval("SELECT has_schema_privilege(current_user,$1,'USAGE')", schema)
         if not permitted:
             raise MemoryReadUnavailable("INVALID_SOURCE_AUTHORITY")
@@ -272,7 +285,7 @@ class StructuredMemoryReader:
             raise MemoryReadUnavailable("INVALID_FILTER")
         schema = project.postgres_schema
         rows = await self._run(project,
-            f'SELECT thesis_id,subject,claim,confidence,evidence::text AS evidence,status,objective_id,created_at,code_version,quarantine_reason,superseded_by FROM "{schema}".theses '
+            f'SELECT {THESIS_SELECT} FROM "{schema}".theses '
             "WHERE ($1='' OR subject ILIKE '%' || $1 || '%') AND ($2='' OR status=$2) AND ($3='' OR confidence=$3) "
             "ORDER BY created_at DESC, thesis_id DESC LIMIT $4 OFFSET $5",
             query, status, confidence, limit+1, offset)
@@ -284,7 +297,7 @@ class StructuredMemoryReader:
         """Read one exact thesis identity in its canonical Project schema."""
         schema = project.postgres_schema
         rows = await self._run(project,
-            f'SELECT thesis_id,subject,claim,confidence,evidence::text AS evidence,status,objective_id,created_at,code_version,quarantine_reason,superseded_by FROM "{schema}".theses WHERE thesis_id=$1', identity)
+            f'SELECT {THESIS_SELECT} FROM "{schema}".theses WHERE thesis_id=$1', identity)
         return _thesis(rows[0], project.id) if rows else None
 
     async def contradictions(self, project: ProjectConfig, *, offset: int, limit: int) -> ContradictionPage:
@@ -293,7 +306,7 @@ class StructuredMemoryReader:
             raise MemoryReadUnavailable("INVALID_FILTER")
         schema = project.postgres_schema
         rows = await self._run(project,
-            f'SELECT contradiction_id,subject_group,thesis_id_a,thesis_id_b,detected_at,resolution FROM "{schema}".contradictions '
+            f'SELECT {CONTRADICTION_SELECT} FROM "{schema}".contradictions '
             'ORDER BY detected_at DESC, contradiction_id DESC LIMIT $1 OFFSET $2', limit+1, offset)
         return ContradictionPage(project_id=project.id, read_at=datetime.now(timezone.utc),
             contradictions=[_contradiction(row, project.id) for row in rows[:limit]],
@@ -303,7 +316,7 @@ class StructuredMemoryReader:
         """Read one exact contradiction identity in its canonical Project schema."""
         schema = project.postgres_schema
         rows = await self._run(project,
-            f'SELECT contradiction_id,subject_group,thesis_id_a,thesis_id_b,detected_at,resolution FROM "{schema}".contradictions WHERE contradiction_id=$1', identity)
+            f'SELECT {CONTRADICTION_SELECT} FROM "{schema}".contradictions WHERE contradiction_id=$1', identity)
         return _contradiction(rows[0], project.id) if rows else None
 
 
