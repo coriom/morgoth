@@ -13,6 +13,9 @@ from core.runtime import RuntimeHome
 from api.management_app import ManagementSecurity, create_management_app
 from project_manager import ProjectManager, ProjectManagerError
 from agents.desktop_knowledge_read import install_desktop_knowledge_routes
+from agents.desktop_structured_memory import (StructuredMemoryReader,
+    load_reader_config, install_structured_memory_routes)
+from agents.desktop_structured_memory import MemoryReadUnavailable
 
 
 def read_private_token(path: Path) -> str:
@@ -45,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--test-pg-socket", type=Path)
+    parser.add_argument("--memory-read-config", type=Path)
     args = parser.parse_args(argv)
     try:
         if not args.home.is_absolute():
@@ -55,6 +59,9 @@ def main(argv: list[str] | None = None) -> int:
         manager = ProjectManager(home)
         app = create_management_app(manager, security)
         install_desktop_knowledge_routes(app, manager)
+        reader = (StructuredMemoryReader(load_reader_config(args.memory_read_config))
+                  if args.memory_read_config is not None else None)
+        install_structured_memory_routes(app, manager, reader)
         if args.test_pg_socket is not None:
             from agents.desktop_read_models import DesktopReadStore, ReadUnavailable
             from agents.desktop_read_routes import install_desktop_read_routes
@@ -63,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             except ReadUnavailable:
                 raise ValueError("disposable read source unavailable") from None
             install_desktop_read_routes(app, ProjectManager(home), reader)
-    except (ValueError, ProjectManagerError):
+    except (ValueError, ProjectManagerError, MemoryReadUnavailable):
         print("management API configuration is invalid", file=sys.stderr)
         return 2
     # Never let ambient Uvicorn settings widen the explicit local launcher.
